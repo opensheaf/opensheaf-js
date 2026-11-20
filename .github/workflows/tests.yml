@@ -1,0 +1,48 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pip install -r requirements-literate.txt
+      - name: the files are tangled from literate/
+        run: literate tangle --check
+      - name: opensheaf-py, the reference, for the tests of parity
+        run: pip install "opensheaf[validate] @ git+https://github.com/opensheaf/opensheaf-py"
+      - name: the tests (core, appendix C, parity with opensheaf-py)
+        run: deno test -A tests/
+      - name: the binary
+        run: |
+          deno task compile
+          ./dist/osheaf --version
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      - name: the tests of the core under Node
+        run: node --test tests/core.test.js tests/identity.test.js
+      - run: node cli/osheaf.js --version
+  weave:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements-literate.txt
+      - run: literate weave --branch "${GITHUB_REF_NAME}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: literate-site
+          path: site

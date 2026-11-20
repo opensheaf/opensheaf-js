@@ -1,0 +1,8 @@
+{
+  "name": "opensheaf-js",
+  "tagline": "the tools of <a href=\"https://opensheaf.org\">OpenSheaf</a> in JavaScript, a literate program",
+  "repository": "https://github.com/opensheaf/opensheaf-js",
+  "site": "site",
+  "logo": "opensheaf-symbol.svg",
+  "logoDark": "invert"
+}

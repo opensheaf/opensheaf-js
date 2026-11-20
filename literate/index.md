@@ -1,0 +1,116 @@
+opensheaf-js, a literate program
+================================
+
+> [!WARNING]
+> **Draft.** OpenSheaf 0.2 is a draft specification: until version 1.0, a
+> revision may change the format in incompatible ways, and these tools
+> follow the latest draft. opensheaf-js is in its first phase: it makes
+> archives, deposits papers and verifies archives; the other commands of
+> `osheaf` are in [opensheaf-py](https://opensheaf.org/opensheaf-py/).
+
+This is the source of [opensheaf-js](https://github.com/opensheaf/opensheaf-js),
+the tools of [OpenSheaf](https://opensheaf.org) (the `osheaf` command) in
+JavaScript, written as a literate program. It is a port of
+[opensheaf-py](https://opensheaf.org/opensheaf-py/), the reference
+implementation, whose commands, options, messages and files it keeps, so
+that either keeps an archive the other made; and it reuses the reading
+and verification of archives of the
+[OpenSheaf Explorer](https://opensheaf.org/explorer/), which the Explorer
+will import from here in turn. It runs on Deno (a command line, and a
+single binary made by `deno compile`), on Node, and, for its core, in
+browsers.
+
+An OpenSheaf archive is a folder of plain files: an
+[OCFL](https://ocfl.io) storage root in which every work is a line of
+versions, decided by one owner, who signs them with Ed25519 keys; every
+version fixed by SHA-512 digests and described by
+[DataCite](https://datacite.org) metadata; works and owners named by the
+digests of their genesis records; owners with key logs that check
+themselves from their names; collections that pin lines of any archive;
+and a discovery document, `opensheaf.json`, that makes it all findable.
+
+The files of the program (`core/*.js`, `cli/*.js`) and its tests are
+*tangled* out of these documents and kept in the repository, so that the
+program runs as it stands; the documents are also *woven* into this
+website. One edits the documents, never the files. The tangler and the
+weaver are [opensheaf-literate](https://opensheaf.org/literate/) (the
+`literate` command), pinned in `requirements-literate.txt` and configured
+by `literate.json`; `literate tangle --where FILE:LINE` tells which line
+of which chapter a line of a tangled file comes from. The JSON Schemas in
+`schemas/` and the symbol `opensheaf-symbol.svg` are copies of the
+specification's own files.
+
+Reading the code
+----------------
+
+Code is set in grey boxes. Above each box stands the name of its chunk,
+with `≡` for the first fragment of a chunk and `+≡` for the ones that
+continue it; a name in angle brackets inside the code is a reference to
+another chunk, and a link to it. Below each box: where the chunk is used,
+and where it continues. The [index of chunks](chunks.html) lists them
+all. Sections of the specification are cited as "section 7.3"; the
+specification is at
+[opensheaf.org](https://opensheaf.org/opensheaf-specification-0.2.html).
+
+The plan
+--------
+
+0. [The plan](00-plan.md): goals, architecture, the map of the modules,
+   the phases, parity with opensheaf-py, and what stays in Python.
+
+Identity (from the Explorer)
+----------------------------
+
+1. [Digests, encodings and signatures](05-crypto.md): SHA-256 and
+   SHA-512, base32, base58btc, and Ed25519 verified as section 7.2 asks.
+2. [Names, keys and sheaf: URIs](06-names.md): genesis records, names,
+   `did:key` URIs, canonical JSON, `sheaf:` URIs.
+3. [Owners and their key logs](07-owners.md): the computed first version,
+   rotation, exposure, ending, fork records, copies met.
+4. [Signatures and the statuses of versions](08-signatures.md).
+5. [Branches and their verdicts](09-branches.md).
+
+Reading and verifying archives (from the Explorer)
+--------------------------------------------------
+
+6. [Reading archives over HTTP](10-http.md): requests, limits, errors.
+7. [Untrusted names and storage layouts](11-paths.md).
+8. [Validating against the JSON Schemas](12-schema.md).
+9. [Document versions and history](13-versions.md).
+10. [An archive read over HTTP](14-archive.md).
+11. [Resolution: copies, pins and sheaf: URIs](15-resolve.md).
+12. [The rules of an archive](16-rules.md).
+13. [Verifying an archive](17-verify.md), in agreement with `osheaf
+    verify`.
+
+Keeping an archive
+------------------
+
+14. [Storage: an archive as files](20-storage.md): on a disk, in memory,
+    over GitHub later; and a storage read over `fetch`.
+15. [Keys: signing, and key files](21-keys.md): Ed25519 with WebCrypto,
+    rotation key files in clear and under a passphrase.
+16. [Writing files as opensheaf-py writes them](22-writing.md): JSON,
+    genesis records, inventories, signature files, key logs.
+17. [The archive kept](23-folder.md): configuration, objects, key logs
+    and statuses, the keys that sign, adding a signed version.
+18. [The main catalogue](24-main-catalogue.md).
+19. [The discovery document and the indexes](25-discovery.md).
+20. [Depositing documents](26-deposit.md).
+21. [A new owner, a new archive](27-init.md).
+22. [Verifying an archive folder](28-verify-folder.md).
+
+The command line
+----------------
+
+23. [The command line](40-cli.md): a folder on a disk, the keys of this
+    device, the commands.
+
+The tests
+---------
+
+24. [The tests](70-tests.md): storages, files, key files, an archive in
+    memory.
+25. [The tests of names, keys and signatures](71-tests-identity.md),
+    against appendix C and the edge cases of Ed25519.
+26. [The tests of parity with opensheaf-py](72-tests-parity.md).

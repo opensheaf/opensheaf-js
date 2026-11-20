@@ -1,0 +1,26 @@
+{
+  "name": "opensheaf",
+  "version": "0.1.0",
+  "description": "The tools of OpenSheaf archives (the osheaf command) in JavaScript: Deno, Node and browsers",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "bin": {
+    "osheaf": "cli/osheaf.js"
+  },
+  "exports": {
+    "./core/*": "./core/*"
+  },
+  "files": ["core/", "cli/", "schemas/", "LICENSE", "README.md"],
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "hash-wasm": "4.12.0",
+    "tweetnacl": "1.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/opensheaf/opensheaf-js.git"
+  },
+  "homepage": "https://opensheaf.org/opensheaf-js/"
+}

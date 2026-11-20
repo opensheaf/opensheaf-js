@@ -1,0 +1,27 @@
+{
+  "version": "5",
+  "specifiers": {
+    "npm:hash-wasm@4.12.0": "4.12.0",
+    "npm:tweetnacl@1.0.3": "1.0.3"
+  },
+  "npm": {
+    "hash-wasm@4.12.0": {
+      "integrity": "sha512-+/2B2rYLb48I/evdOIhP+K/DD2ca2fgBjp6O+GBEnCDk2e4rpeXIK8GvIyRPjTezgmWn9gmKwkQjjx6BtqDHVQ=="
+    },
+    "tweetnacl@1.0.3": {
+      "integrity": "sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:hash-wasm@4.12.0",
+      "npm:tweetnacl@1.0.3"
+    ],
+    "packageJson": {
+      "dependencies": [
+        "npm:hash-wasm@4.12.0",
+        "npm:tweetnacl@1.0.3"
+      ]
+    }
+  }
+}

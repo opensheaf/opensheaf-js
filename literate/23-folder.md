@@ -100,7 +100,14 @@ credential stores:
   replacing one) and gives its path, `read(path)` reads it back;
 - `passphrase({ confirm, where })` and `input(prompt)`: what the person
   types;
-- `newKey()`: a new key (the tests give predictable ones).
+- `newKey()`: a new key (the tests give predictable ones);
+- `fetch(url, init)`: how other archives are read (collections, the
+  entries of members held elsewhere), and `fetchJson(url)`, how the places
+  of keepers are read (chapter [32](32-keepers.md)); the command line
+  points them at the locations configured;
+- `template(name)`: the bytes of a default template of the website
+  (chapter [31](31-website.md)), which the command line reads from
+  `templates/` next to the program.
 
     // in the configuration of an archive:
     export function environment(given = {}) {
@@ -113,6 +120,9 @@ credential stores:
         newKey,
         now: utcNow,
         today,
+        fetch: globalThis.fetch?.bind(globalThis),
+        fetchJson: null,
+        template: null,
         ...given,
       };
     }

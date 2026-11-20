@@ -50,6 +50,8 @@ core/   web-standard ES modules: no Deno.*, no node: modules
   keys                                            keys, signatures, key files
   write, folder, discovery, collect,              keeping an archive
   deposit, init, check
+  describe, collections, website, keepers,        descriptions, collections, the website
+  inputs
 cli/    the command line: node: modules, which Deno has too
   disk       an archive folder on a disk
   keystore   current keys, exported keys, passphrases
@@ -76,11 +78,14 @@ a storage has a `fetch` of its own, so the reading of archives written for
 the Explorer, over HTTP, reads a storage too, and a command judges the
 signatures of a line exactly as a verification does.
 
-**Two libraries.** Argon2id and XSalsa20-Poly1305, which encrypt the keys
+**Three libraries.** Argon2id and XSalsa20-Poly1305, which encrypt the keys
 kept outside an archive, are not in WebCrypto. They come from
 `hash-wasm` 4.12.0 and `tweetnacl` 1.0.3, pinned, loaded only when a key
 file is encrypted or decrypted (chapter [21](21-keys.md) says why these
 two). `hash-wasm` also gives MD5, for the fixity of OCFL inventories.
+YAML, read by `--from FILE` and `osheaf collection sync`, comes from
+`yaml` 2.8.1, pinned the same way and loaded only when a YAML file is read
+(chapter [33](33-inputs.md)).
 
 **The command line on node: modules.** The command line could use
 `Deno.*`; it uses the built-in modules of Node instead (`node:fs`,
@@ -127,6 +132,11 @@ Module map
 | [26](26-deposit.md) | `core/deposit.js` | deposits | opensheaf-py 13 |
 | [27](27-init.md) | `core/init.js` | new owners, new archives | opensheaf-py 18, 19 |
 | [28](28-verify-folder.md) | `core/check.js` | verifying an archive folder | opensheaf-py 17 |
+| [29](29-description.md) | `core/describe.js` | description-only versions, completions | opensheaf-py 14 |
+| [30](30-collections.md) | `core/collections.js` | catalogues and selections, across archives | opensheaf-py 21 |
+| [31](31-website.md) | `core/website.js` | the website (profile `website`) | opensheaf-py 30, 31 |
+| [32](32-keepers.md) | `core/keepers.js` | the link of an owner to its keeper | opensheaf-py 06 |
+| [33](33-inputs.md) | `core/inputs.js` | options from YAML or JSON files | opensheaf-py 60 |
 | [40](40-cli.md) | `cli/*.js` | the command line | opensheaf-py 60 |
 | [70](70-tests.md)–[72](72-tests-parity.md) | `tests/*.test.js` | the tests | |
 
@@ -139,18 +149,21 @@ will be the only copy.
 The phases
 ----------
 
-1. **Foundation** (this version, 0.1.0): the core above; `osheaf init`
+1. **Foundation** (done): the core above; `osheaf init`
    with a new owner (rotation keys exported in clear or under a
    passphrase, the current key in the file store), `osheaf deposit` (a new
    work, new document versions, any source with its PDF, or a PDF alone),
    `osheaf collect`, `osheaf index` (the discovery document and the
    indexes), `osheaf verify`; the tests of appendix C and of parity.
-2. **Descriptions and the website**: `notice`, `relicense`, `relate`,
-   `describe`, `withdraw`, `complete`; `collection` (catalogues and
-   selections, members of any archive, a curated main catalogue); the
-   website of the profile `website` (home page, landing pages, owner pages,
-   sitemap, as opensheaf-py's templates write them), so that `init` makes
-   the same configuration as opensheaf-py; `--from FILE`.
+2. **Descriptions and the website** (done): `notice`, `relicense`,
+   `relate`, `describe`, `withdraw`, `complete`; `collection` (catalogues
+   and selections, members of any archive read over HTTP, a curated main
+   catalogue with `init --curated`, a featured collection); the website of
+   the profile `website` (home page, landing pages, owner pages, sitemap,
+   from opensheaf-py's templates, copied unchanged into `templates/`), so
+   that `init` makes the same configuration as opensheaf-py; `--from
+   FILE`; the presentation and keeper checks of `verify`. See "Phase 2:
+   results and notes" below.
 3. **Owners and keys**: `owner rotate|expose|end|show|init`, `sign`,
    `key new|export|import|forget`; key wallets (GitHub and command
    wallets, envelopes, `key push|pull|list`); passkey unlock
@@ -184,6 +197,64 @@ of chapter [71](71-tests-identity.md) check the computed values of
 appendix C byte for byte. The continuous integration installs
 opensheaf-py from its repository and runs them all.
 
+Phase 2: results and notes
+--------------------------
+
+What the parity tests (chapter [72](72-tests-parity.md)) show:
+
+- every command of descriptions, `deposit --from` a YAML file, and every
+  action of `collection` (members of another archive served over HTTP
+  included) writes the same `object.json`, `datacite.json` and
+  `members.json` as opensheaf-py, byte for byte, the same inventories
+  apart from the times of versions, and says the same; a new work differs
+  only by its name, which its genesis record draws at random;
+- the website written by this program for an archive is the one
+  opensheaf-py writes, file for file and byte for byte: home page (with a
+  featured collection), landing pages (notices, withdrawals, contested
+  marks, keepers, members held elsewhere), owner pages, `style.css`,
+  `sitemap.xml`; `osheaf init` of both writes the same configuration and
+  the same templates;
+- both verifications, with and without `--remote`, give the same findings
+  on every archive of the tests.
+
+Where the two differ, on purpose or not yet:
+
+- **Faults of opensheaf-py kept here, for parity.** A second notice about
+  a line that has one already is lost (the notices of the head are
+  carried after the change, chapter [29](29-description.md)); `collection
+  remove --revision` of a revision of a member that keeps others says "no
+  member matches" (chapter [30](30-collections.md)). Both belong to
+  opensheaf-py, where they should be corrected first.
+- **A fault of opensheaf-py not kept.** opensheaf-py's resolver, given a
+  short form of a `sheaf:` URI of a line held only elsewhere, copies the
+  line without its signatures while expanding the short form, and then
+  finds it unsigned ("not a version"); this program resolves it. The
+  tests name such members by their full URIs.
+- **Messages about unreachable places.** The reason given for an archive
+  or a keeper that cannot be read comes from the network library of each
+  program, and differs in its wording.
+- **Folders as locations.** opensheaf-py reads another archive from a
+  folder given to `--at`; here a folder is reached through the locations
+  (`OPENSHEAF_LOCATIONS`, `locations` of `osheaf.json`), and `--at` takes
+  URLs.
+- **The TeXmacs index** (`index.template`) is written by opensheaf-py;
+  this program warns and leaves it.
+
+Notes for phase 3:
+
+- the owner commands will need `owner end` to test the refusal of an ended
+  owner across the two programs (the refusal itself is the signing of
+  chapter [23](23-folder.md), already in place);
+- the keeper of an owner is read with `env.fetchJson`; a browser Manager
+  will need ORCID's CORS headers, which its public API sends, and a proxy
+  for domains that do not;
+- two options were added to the Explorer's chapters, to be carried to the
+  Explorer (or taken with the core in phase 7): `local` of the resolver
+  (chapter [15](15-resolve.md)), with which the command line lifts the
+  rule against local hosts that the Explorer keeps, and `pages` of
+  `verify` (chapter [17](17-verify.md)), with which the verification of a
+  folder makes the check of the presentation as opensheaf-py makes it.
+
 What stays in Python for now
 ----------------------------
 
@@ -191,7 +262,8 @@ What stays in Python for now
   opensheaf-py, which runs TeXmacs headless; the command line here will
   call TeXmacs as an external program in a later phase. Until then, a
   deposit gives the PDF.
-- Everything of phases 2 to 5, above: `osheaf` of opensheaf-py does it on
+- Everything of phases 3 to 5, above: `osheaf` of opensheaf-py does it on
   the same archives, and the command here says so when asked.
+- The TeXmacs index of an archive (`--index texmacs`).
 - YAML configurations (`osheaf.yaml`), which opensheaf-py reads; this
-  program reads `osheaf.json`.
+  program reads `osheaf.json` (it reads YAML for `--from FILE` only).

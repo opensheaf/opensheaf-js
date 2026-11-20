@@ -63,7 +63,10 @@ The order
 A catalogue in the order `issued-desc` (section 8.2) lists its members by
 their Issued date, then their Available date, newest first; members with
 neither come last; ties go by name and then owner. The Available date
-orders only: it is not part of the citation kept in the member.
+orders only: it is not part of the citation kept in the member. A
+collection of another order, `issued-asc`, gives it to `memberOrder`
+(chapter [30](30-collections.md)), as opensheaf-py sets its `ORDER` for a
+while.
 
     // in the order of the members:
     export const ORDER = 'issued-desc';
@@ -76,11 +79,11 @@ orders only: it is not part of the citation kept in the member.
       return 0;
     }
 
-    export function memberOrder(members) {
+    export function memberOrder(members, order = ORDER) {
       const key = (m) => [m.cite?.issued || '', m.cite?.available || ''];
       const line = (a, b) => compareTuples([a.name ?? '', a.owner ?? ''], [b.name ?? '', b.owner ?? '']);
       const dated = members.filter((m) => key(m).some(Boolean)).sort(line);
-      dated.sort((a, b) => (ORDER === 'issued-desc' ? compareTuples(key(b), key(a)) : compareTuples(key(a), key(b))));
+      dated.sort((a, b) => (order === 'issued-desc' ? compareTuples(key(b), key(a)) : compareTuples(key(a), key(b))));
       return [...dated, ...members.filter((m) => !key(m).some(Boolean)).sort(line)];
     }
 

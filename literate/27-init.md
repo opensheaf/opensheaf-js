@@ -16,15 +16,16 @@ init` do (its chapters
    `.gitattributes` that keeps git from changing the archive's bytes
    (OpenSheaf archives in git, section 4.1);
 3. the main catalogue, sealed and signed, with no members;
-4. the discovery document and the indexes.
+4. the discovery document and the indexes;
+5. the website (profile `website`, chapter [31](31-website.md)): the
+   templates copied into `templates/`, where the curator edits them, and
+   the pages, with the configuration `"index": {"html": {"templates":
+   "templates"}}`, as opensheaf-py writes it.
 
-This phase makes new owners only: an archive for an existing owner
-(`--owner NAME --key-log DIR`), the security levels that keep keys in a
-wallet (`--keys`), and the website and the TeXmacs index (`--index`)
-come later (chapter [00](00-plan.md)). An archive made here has no
-profile, so it has no home page to verify; `osheaf index` of opensheaf-py
-can add the website to it (with `"index": {"html": {"templates":
-"templates"}}` in `osheaf.json` and the profile `website`).
+This program makes new owners only: an archive for an existing owner
+(`--owner NAME --key-log DIR`) and the security levels that keep keys in a
+wallet (`--keys`) come later (chapter [00](00-plan.md)), and the TeXmacs
+index (`--index texmacs`) is opensheaf-py's.
 
 The module is `core/init.js`.
 
@@ -36,6 +37,7 @@ The module is `core/init.js`.
     import { ArchiveFolder, CONFIG_NAME, CONFIG_NAMES, LAYOUTS, exit, stop, short, plural } from './folder.js';
     import { collect } from './collect.js';
     import { writeDiscovery } from './discovery.js';
+    import { readableIndex, TEMPLATES } from './website.js';
 
     <<the messages of owners>>
 
@@ -227,12 +229,13 @@ owner-name layout of section 3.2 unless `--layout hashed`.
         name: args.name,
         contact: args.contact || args.baseUrl,
         baseUrl: args.baseUrl.endsWith('/') ? args.baseUrl : args.baseUrl + '/',
-        profiles: [],
+        profiles: ['website'],
         storageLayout: layout,
         mainCollection: 'main',
         curator: { name: given ? `${family}, ${given}` : family, givenName: given, familyName: family,
                    affiliation: args.affiliation || '' },
         depositor: { name: `${given} ${family}`.trim(), address: args.contact || args.baseUrl },
+        index: { html: { templates: 'templates' } },
       };
       const f = new ArchiveFolder(storage, env);
       f.archive = { ...cfg };
@@ -242,12 +245,15 @@ owner-name layout of section 3.2 unless `--layout hashed`.
       cfg.owner = log.owner;
       await writeText(storage, CONFIG_NAME, jsonText(cfg));
       if (!(await storage.kind('.gitattributes'))) await writeText(storage, '.gitattributes', GITATTRIBUTES);
+      for (const name of TEMPLATES) {
+        if (!(await storage.kind(`templates/${name}`))) await storage.write(`templates/${name}`, await env.template(name));
+      }
       await f.configure();
       await collect(f, { curated: args.curated });
       await writeDiscovery(f);
-      env.out('opensheaf.json and the indexes written (no readable index configured)');
-      env.out(`Done: the archive is made in ${where}, owned by ${short(log.owner)}. Edit ${CONFIG_NAME}, then deposit ` +
-              'a paper: osheaf deposit --new LABEL ...');
+      await readableIndex(f);
+      env.out(`Done: the archive is made in ${where}, owned by ${short(log.owner)}. Edit ${CONFIG_NAME} and ` +
+              'templates/, then deposit a paper: osheaf deposit --new LABEL ...');
       env.err('Note: OpenSheaf 0.2 is a draft; until version 1.0 a revision may change the format in incompatible ' +
               'ways, and archives may have to be rebuilt.');
       return f;

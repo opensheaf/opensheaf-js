@@ -40,9 +40,9 @@ To make a change:
   `Uint8Array`, `TextEncoder`/`TextDecoder`, `URL`. No `Deno.*`, no
   `node:` imports. The core reaches files through a storage (chapter 20)
   and the outside world through the environment of chapter 23. The only
-  packages are `hash-wasm` and `tweetnacl` (pinned in `deno.json` and
-  `package.json`), imported by bare name and only where a key file is
-  encrypted or decrypted, or MD5 computed.
+  packages are `hash-wasm`, `tweetnacl` and `yaml` (pinned in `deno.json`
+  and `package.json`), imported by bare name and only where a key file is
+  encrypted or decrypted, MD5 computed, or a YAML file read.
 - **The command line** (`cli/`) uses `node:` modules, which Deno has too,
   so that one source runs under both. No `Deno.*` there either.
 - **Parity with opensheaf-py.** opensheaf-py is the reference: same
@@ -63,4 +63,6 @@ To make a change:
 Plain files, edited directly: `README.md`, `AGENTS.md`, `CLAUDE.md`,
 `deno.json`, `package.json` (and the lock files), `literate.json`,
 `requirements-literate.txt`, `schemas/` and `opensheaf-symbol.svg` (copies
-of the specification's files), `.github/workflows/*`.
+of the specification's files), `templates/` (copies of opensheaf-py's
+`src/opensheaf/templates/`, unchanged: a parity test checks that they are
+the files `osheaf init` of opensheaf-py writes), `.github/workflows/*`.

@@ -10,13 +10,21 @@
   "exports": {
     "./core/*": "./core/*"
   },
-  "files": ["core/", "cli/", "schemas/", "LICENSE", "README.md"],
+  "files": [
+    "core/",
+    "cli/",
+    "schemas/",
+    "templates/",
+    "LICENSE",
+    "README.md"
+  ],
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
     "hash-wasm": "4.12.0",
-    "tweetnacl": "1.0.3"
+    "tweetnacl": "1.0.3",
+    "yaml": "2.8.1"
   },
   "repository": {
     "type": "git",

@@ -36,11 +36,11 @@ function compareTuples(a, b) {
   return 0;
 }
 
-export function memberOrder(members) {
+export function memberOrder(members, order = ORDER) {
   const key = (m) => [m.cite?.issued || '', m.cite?.available || ''];
   const line = (a, b) => compareTuples([a.name ?? '', a.owner ?? ''], [b.name ?? '', b.owner ?? '']);
   const dated = members.filter((m) => key(m).some(Boolean)).sort(line);
-  dated.sort((a, b) => (ORDER === 'issued-desc' ? compareTuples(key(b), key(a)) : compareTuples(key(a), key(b))));
+  dated.sort((a, b) => (order === 'issued-desc' ? compareTuples(key(b), key(a)) : compareTuples(key(a), key(b))));
   return [...dated, ...members.filter((m) => !key(m).some(Boolean)).sort(line)];
 }
 

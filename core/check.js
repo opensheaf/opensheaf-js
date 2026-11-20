@@ -6,9 +6,14 @@ import { finding } from './rules.js';
 import { storageFetch, readJson, joinPath, ORIGIN } from './storage.js';
 import { ROTATION_FORMAT, SHEET_TITLE } from './keys.js';
 import { unbase64 } from './crypto.js';
+import { objectId } from './names.js';
+import { memberPins } from './versions.js';
+import { ArchiveFolder, environment } from './folder.js';
+import { pageAddress } from './website.js';
+import { keeperOf, keeperLink, successorClaim, NOT_CHECKED } from './keepers.js';
 
 export async function verifyFolder(storage, { schemas, remote = false, fetch = globalThis.fetch,
-                                              digests = true } = {}) {
+                                              digests = true, fetchJson = null } = {}) {
   let base = ORIGIN;
   try {
     const cfg = await readJson(storage, 'osheaf.json');
@@ -20,7 +25,14 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
   let report;
   try {
     const archive = await Archive.open(http, base);
-    report = await verify(archive, { schemas, remote, digests });
+    report = await verify(archive, { schemas, remote, digests, pages: false });
+    if (!archive.old) {
+      const f = await folderOf(storage);
+      if (f) {
+        report.add(...await keeperFindings(f, remote, fetchJson));
+        report.add(...await presentationFindings(f, archive.disc));
+      }
+    }
   } catch (error) {
     if (!(error instanceof FetchError)) throw error;
     report = new Report(base, { remote, digests });
@@ -33,8 +45,113 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
   return report;
 }
 
+async function folderOf(storage) {
+  try {
+    return await ArchiveFolder.open(storage, environment({ out: () => {}, err: () => {} }));
+  } catch {
+    return null;
+  }
+}
+
 export function findingsJson(report) {
   return report.findings.map((f) => ({ severity: f.level, place: f.place, message: f.message }));
+}
+
+export async function keeperFindings(f, remote, fetchJson = null) {
+  const out = [];
+  for (const { id, dir, inv } of await f.objects()) {
+    if (!inv || typeof id !== 'string') continue;
+    if ((await f.readObjectJson(dir, inv, 'object.json'))?.kind !== 'owner') continue;
+    let log;
+    try {
+      log = await f.keyLog(id.split(':')[2]);
+    } catch {
+      continue;
+    }
+    const keeper = log ? await keeperOf(log) : null;
+    if (!keeper) continue;
+    const place = `owner ${log.owner}`;
+    if (!remote) {
+      out.push(finding('result', place, `keeper ${keeper}: not checked (osheaf verify --remote reads its ORCID ` +
+                                        'record or domain, section 6.6)'));
+      continue;
+    }
+    const link = await keeperLink(log, fetchJson);
+    if (link.status === NOT_CHECKED) {
+      out.push(finding('warning', place, `keeper ${keeper}: not checked (${link.reason})`));
+      continue;
+    }
+    out.push(finding('result', place, `keeper ${keeper}: ${link.status} (${link.reason}; section 6.6)`));
+    const claim = successorClaim(log, link);
+    if (claim) out.push(finding('result', place, `successor ${link.successor} ${claim}`));
+  }
+  return out;
+}
+
+export async function presentationFindings(f, disc) {
+  const out = [];
+  const profiles = Array.isArray(disc.profiles) ? disc.profiles : [];
+  const website = profiles.includes('website');
+  const home = await f.storage.read('index.html');
+  const landingPages = profiles.includes('texmacs') || Boolean(f.index.html || f.index.template) ||
+    (await f.storage.kind('paper')) === 'dir';
+  if (!(website || home || landingPages)) return out;
+  const level = website ? 'error' : 'warning';
+  const note = website ? '' : ' (the archive does not declare the profile website)';
+  const report = (place, message) => out.push(finding(level, place, message + (website ? '' : note)));
+  let members = [];
+  const mainId = f.labels.get(f.archive.mainCollection);
+  if (mainId) {
+    const dir = await f.dirOf(mainId);
+    const inv = await f.inventory(dir);
+    const ver = inv ? await f.latestSigned(mainId).catch(() => null) : null;
+    if (ver) members = (await f.readObjectJson(dir, inv, 'members.json', ver))?.members || [];
+  }
+  const page = home ? new TextDecoder().decode(home) : null;
+  if (page === null && website) out.push(finding(level, 'index.html', 'the home page is missing (appendix A.3)'));
+  const gone = new Set(f.tombstones.map((t) => t.id));
+  const ids = (await f.objects()).map((o) => o.id);
+  for (const m of members) {
+    const id = objectId(m?.name, m?.owner);
+    if (gone.has(id)) continue;
+    const pins = memberPins(m);
+    const pin = pins[pins.length - 1]?.pin || '';
+    if (page !== null && !page.includes(pin.slice(0, 32))) report('index.html', `does not show the pin of ${m?.name}`);
+    let dir;
+    try {
+      dir = await f.dirOf(id);
+    } catch {
+      continue;
+    }
+    if ((await f.storage.kind(joinPath(dir, 'inventory.json'))) !== 'file') continue;
+    const landing = `paper/${await pageAddress(f, id, ids)}/index.html`;
+    const bytes = await f.storage.read(landing);
+    const text = bytes ? new TextDecoder().decode(bytes) : '';
+    if (!(await landingNames(f, text, m.name, m.owner, id, dir))) {
+      report(landing, `no landing page giving the sheaf: URI of ${where(f, id)} (appendix A.3)`);
+    }
+  }
+  return out;
+}
+
+function where(f, id) {
+  const parts = (id || '').split(':');
+  if (parts.length === 3 && parts[1] === parts[2]) return `owner ${parts[1]}`;
+  return f.labelOf(id) || id || '?';
+}
+
+async function landingNames(f, text, name, owner, id, dir) {
+  if (text.includes(`sheaf:${name}:${owner}`)) return true;
+  let originator = null;
+  try {
+    const inv = await f.inventory(dir);
+    const g = await f.readLogical(dir, inv, 'genesis.json', 'v1');
+    if (!g) return false;
+    originator = JSON.parse(new TextDecoder().decode(g)).originator ?? null;
+  } catch {
+    return false;
+  }
+  return originator === owner && new RegExp(`sheaf:${name}(?![a-z0-9:/])`).test(text);
 }
 
 const ROTATION_NAME = /^rotation-[a-z2-7]{16}-[a-z2-7]{16}\.txt$/;

@@ -11,10 +11,14 @@ so nothing here is written twice. Only the command line touches a disk,
 a terminal or the environment; everything it does to an archive is done
 by `core/` (chapters [20](20-storage.md) to [28](28-verify-folder.md)).
 
-This phase has the commands of the first path from nothing to a verified
-archive: `init`, `deposit`, `collect`, `index` (without the website) and
-`verify`. The others answer that they are in opensheaf-py for now
-(chapter [00](00-plan.md) gives the order in which they come).
+This phase has the commands that make and keep an archive of one's own:
+`init`, `deposit` (`--from` a file, chapter [33](33-inputs.md)),
+`notice`, `withdraw`, `complete`, `relate`, `relicense`, `describe`
+(chapter [29](29-description.md)), `collect`, `collection` (chapter
+[30](30-collections.md)), `index` and `verify`; every command that changes
+the archive writes the website again (chapter [31](31-website.md)). The
+others answer that they are in opensheaf-py for now (chapter
+[00](00-plan.md) gives the order in which they come).
 
 The three files are `cli/disk.js` (an archive folder on a disk),
 `cli/keystore.js` (the current keys of this device, the exported
@@ -357,6 +361,11 @@ arguments ends with the status 2, as argparse does.
     import { writeDiscovery } from '../core/discovery.js';
     import { verifyFolder, findingsJson } from '../core/check.js';
     import { loadSchemas } from '../core/schema.js';
+    import { notice, withdraw, complete, relate, relicense, describe, RELATIONS } from '../core/describe.js';
+    import * as collections from '../core/collections.js';
+    import { present, readableIndex, hasWebsite } from '../core/website.js';
+    import { fetchJsonWith } from '../core/keepers.js';
+    import { loadEntries, merge, UsageProblem } from '../core/inputs.js';
 
     export const VERSION = '0.1.0';
 
@@ -375,7 +384,7 @@ The options are those of opensheaf-py, for the commands of this phase.
     // in the options of the commands:
     const flag = (dest) => ({ dest, flag: true });
     const value = (dest, extra = {}) => ({ dest, ...extra });
-    const int = (dest) => ({ dest, type: 'int' });
+    const int = (dest, extra = {}) => ({ dest, type: 'int', ...extra });
 
     const DEPOSIT = {
       positionals: ['label', 'source'],
@@ -396,6 +405,9 @@ The options are those of opensheaf-py, for the commands of this phase.
       defaults: { type: 'Preprint' },
     };
 
+    const I_KNOW = { '--i-know': flag('iKnow') };
+    const MEMBERS = (more) => ({ positionals: ['collection!', 'uri+'], options: { ...more, '--message': value('message') } });
+
     export const COMMANDS = {
       init: {
         help: 'create an archive (osheaf.json, storage root, owner, main catalogue)',
@@ -414,16 +426,80 @@ The options are those of opensheaf-py, for the commands of this phase.
         },
       },
       deposit: { help: 'deposit a document (any source with --pdf); --new seals a new work under a new label', ...DEPOSIT },
+      relicense: {
+        help: 'description-only version with a new licence', positionals: ['label'],
+        options: { '--rights': value('rights', { check: checkRights }), '--method': value('method'),
+                   '--date': value('date'), '--message': value('message'), '--from': value('fromFile'), ...I_KNOW },
+      },
+      relate: {
+        help: 'description-only version linking the same work elsewhere', positionals: ['label'],
+        options: { '--to': value('to'), '--relation': value('relation', { choices: RELATIONS }),
+                   '--issued': value('issued'), '--message': value('message'), '--from': value('fromFile'), ...I_KNOW },
+        defaults: { relation: 'IsIdenticalTo' },
+      },
+      describe: {
+        help: 'description-only version correcting the title, abstract, keywords or authors', positionals: ['label'],
+        options: { '--title': value('title'), '--abstract': value('abstract'), '--abstract-file': value('abstractFile'),
+                   '--keyword': value('keyword', { repeat: true }), '--author': value('author', { repeat: true }),
+                   '--message': value('message'), '--from': value('fromFile'), ...I_KNOW },
+      },
+      notice: {
+        help: 'a notice about a document version (description-only)', positionals: ['label!'],
+        options: { '--about': int('about', { required: true }), '--text': value('text', { required: true }),
+                   '--file': value('file'), '--date': value('date'), '--message': value('message'), ...I_KNOW },
+      },
+      withdraw: {
+        help: 'withdraw a document (description-only; the content stays)', positionals: ['label!'],
+        options: { '--reason': value('reason', { required: true }), '--file': value('file'), '--date': value('date'),
+                   '--message': value('message'), ...I_KNOW },
+      },
+      complete: {
+        help: 'add the sources of a version deposited without them', positionals: ['label!'],
+        options: { '--version': int('version', { required: true }), '--source': value('source', { required: true }),
+                   '--extra-source': value('extraSource', { repeat: true }), '--source-format': value('sourceFormat'),
+                   '--message': value('message'), ...I_KNOW },
+      },
       collect: { help: 'new version of the main catalogue when needed', positionals: [],
                  options: { '--i-know': flag('iKnow') } },
-      index: { help: 'write opensheaf.json and the indexes (the website: opensheaf-py)', positionals: [], options: {} },
+      collection: {
+        help: 'catalogues and selections, with members of any archive',
+        actions: {
+          new: { help: 'a new, empty collection', positionals: ['label!'],
+                 options: { '--type': value('type', { choices: ['catalogue', 'selection'], required: true }),
+                            '--title': value('title', { required: true }), '--description': value('description'),
+                            '--order': value('order', { choices: ['manual', 'issued-desc', 'issued-asc'] }),
+                            '--owner': value('owner') } },
+          add: { help: 'add members, or revisions of a member of a selection',
+                 ...MEMBERS({ '--revision': int('revision', { repeat: true }), '--at': value('at', { repeat: true }),
+                              '--follow': flag('follow') }) },
+          remove: { help: 'remove members, or revisions', ...MEMBERS({ '--revision': int('revision', { repeat: true }) }) },
+          follow: { help: 'members of a catalogue that follow their lines', ...MEMBERS({ '--off': flag('off') }) },
+          update: { help: 'follow the members that follow their lines', positionals: ['collection*'], options: {} },
+          status: { help: 'the status of every member (section 8.5)', positionals: ['collection!'], options: {} },
+          sync: { help: 'write a collection from collection.yaml', positionals: ['collection!'],
+                  options: { '--from': value('fromFile', { required: true }), '--message': value('message') } },
+        },
+      },
+      index: { help: 'write opensheaf.json, the indexes and the website', positionals: [],
+               options: { '--no-html': flag('noHtml') } },
       verify: { help: 'check the archive (section 14 of the specification)', positionals: [],
                 options: { '--remote': flag('remote'), '--json': flag('json') } },
     };
 
-    const LATER = ['relicense', 'relate', 'describe', 'notice', 'withdraw', 'complete', 'resolve', 'collection',
-                   'mirror', 'branch', 'accept', 'draft', 'seal', 'takedown', 'zenodo', 'arxiv', 'owner', 'sign',
-                   'key', 'help-config'];
+    const LATER = ['resolve', 'mirror', 'branch', 'accept', 'draft', 'seal', 'takedown', 'zenodo', 'arxiv', 'owner',
+                   'sign', 'key', 'help-config'];
+
+A positional argument is optional (`label`), required (`label!`), one or
+more (`uri+`) or any number (`collection*`); an option may be required, as
+in argparse, which names what is missing.
+
+    // in the options of the commands:
+    const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER' };
+
+    function positional(p) {
+      const m = /^([a-zA-Z]+)([!+*]?)$/.exec(p);
+      return { name: m[1], kind: m[2], metavar: METAVARS[m[1]] || m[1].toUpperCase() };
+    }
 
 The reading of the arguments:
 
@@ -450,8 +526,24 @@ The reading of the arguments:
       }
       out.cmd = argv[k++] ?? null;
       if (out.cmd === null) throw new UsageError('osheaf: error: the following arguments are required: command');
-      const spec = COMMANDS[out.cmd];
+      let spec = COMMANDS[out.cmd];
       if (!spec) return out;
+      let where = out.cmd;
+      if (spec.actions) {
+        const action = argv[k++];
+        if (action === '-h' || action === '--help') {
+          out.args = { help: true };
+          return out;
+        }
+        if (action === undefined) throw new UsageError(`osheaf ${out.cmd}: error: the following arguments are required: action`);
+        if (!Object.hasOwn(spec.actions, action)) {
+          throw new UsageError(`osheaf ${out.cmd}: error: argument action: invalid choice: '${action}' (choose from ` +
+                               `${Object.keys(spec.actions).map((c) => `'${c}'`).join(', ')})`);
+        }
+        out.action = action;
+        spec = spec.actions[action];
+        where = `${out.cmd} ${action}`;
+      }
       const args = { ...(spec.defaults || {}) };
       for (const o of Object.values(spec.options)) if (o.repeat) args[o.dest] = [];
       const positionals = [];
@@ -469,37 +561,61 @@ The reading of the arguments:
           continue;
         }
         const eq = a.indexOf('=');
-        const name = option(spec, eq < 0 ? a : a.slice(0, eq), out.cmd);
+        const name = option(spec, eq < 0 ? a : a.slice(0, eq), where);
         const o = spec.options[name];
         if (o.flag) {
-          if (eq >= 0) throw new UsageError(`osheaf ${out.cmd}: error: argument ${name}: ignored explicit argument`);
+          if (eq >= 0) throw new UsageError(`osheaf ${where}: error: argument ${name}: ignored explicit argument`);
           args[o.dest] = true;
           continue;
         }
         let v = eq >= 0 ? a.slice(eq + 1) : argv[++k];
-        if (v === undefined) throw new UsageError(`osheaf ${out.cmd}: error: argument ${name}: expected one argument`);
+        if (v === undefined) throw new UsageError(`osheaf ${where}: error: argument ${name}: expected one argument`);
         if (o.type === 'int') {
-          if (!/^[-+]?[0-9]+$/.test(v.trim())) throw new UsageError(`osheaf ${out.cmd}: error: argument ${name}: invalid int value: '${v}'`);
+          if (!/^[-+]?[0-9]+$/.test(v.trim())) throw new UsageError(`osheaf ${where}: error: argument ${name}: invalid int value: '${v}'`);
           v = Number(v);
         }
         if (o.choices && !o.choices.includes(v)) {
-          throw new UsageError(`osheaf ${out.cmd}: error: argument ${name}: invalid choice: '${v}' (choose from ` +
+          throw new UsageError(`osheaf ${where}: error: argument ${name}: invalid choice: '${v}' (choose from ` +
                                `${o.choices.map((c) => `'${c}'`).join(', ')})`);
         }
         if (o.check) {
           try {
             o.check(v);
           } catch (error) {
-            throw new UsageError(`osheaf ${out.cmd}: error: argument ${name}: ${error.message}`);
+            throw new UsageError(`osheaf ${where}: error: argument ${name}: ${error.message}`);
           }
         }
         if (o.repeat) args[o.dest].push(v);
         else args[o.dest] = v;
       }
-      if (positionals.length > spec.positionals.length) {
-        throw new UsageError(`osheaf ${out.cmd}: error: unrecognized arguments: ${positionals.slice(spec.positionals.length).join(' ')}`);
+      if (args.help) {
+        out.args = args;
+        return out;
       }
-      spec.positionals.forEach((p, i) => { args[p] = positionals[i] ?? null; });
+      const specs = spec.positionals.map(positional);
+      const many = specs.findIndex((p) => p.kind === '+' || p.kind === '*');
+      const fixed = many < 0 ? specs.length : specs.length - 1;
+      if (many < 0 && positionals.length > specs.length) {
+        throw new UsageError(`osheaf ${where}: error: unrecognized arguments: ${positionals.slice(specs.length).join(' ')}`);
+      }
+      const missing = [];
+      let at = 0;
+      specs.forEach((p, i) => {
+        if (i === many) {
+          const take = Math.max(0, positionals.length - fixed);
+          args[p.name] = positionals.slice(at, at + take);
+          at += take;
+          if (p.kind === '+' && !take) missing.push(p.metavar);
+        } else {
+          args[p.name] = positionals[at] ?? null;
+          if (positionals[at] === undefined && p.kind === '!') missing.push(p.metavar);
+          at++;
+        }
+      });
+      for (const [o, d] of Object.entries(spec.options)) {
+        if (d.required && args[d.dest] === undefined && !missing.includes(o)) missing.push(o);
+      }
+      if (missing.length) throw new UsageError(`osheaf ${where}: error: the following arguments are required: ${missing.join(', ')}`);
       out.args = args;
       return out;
     }
@@ -540,6 +656,9 @@ the status 1.
       });
       env.keyStore ??= fileKeyStore({ warn: (t) => env.warn(t) });
       env.passphrase ??= passphrases(process.env, (t) => env.warn(t));
+      if (!given.fetch) env.fetch = locatedFetch(() => env.locations || {});
+      env.fetchJson ??= fetchJsonWith(env.fetch);
+      env.template ??= defaultTemplate;
       return env;
     }
 
@@ -547,13 +666,61 @@ the status 1.
       const where = await findRoot(root || process.cwd());
       const f = await ArchiveFolder.open(new DiskStorage(where), env);
       if (f.old) throw new Stop(REBUILD);
+      env.locations = f.archive.locations || {};
       return f;
     }
 
-    function website(f) {
-      if (f.index.html || f.index.template) {
-        f.env.warn('the website is not written by opensheaf-js 0.1.0: run osheaf index of opensheaf-py to write it again');
+The templates of the website are the files of `templates/` next to the
+program (a binary made by `deno compile` carries them, with `--include
+templates`).
+
+    // in running a command:
+    export async function defaultTemplate(name) {
+      try {
+        return new Uint8Array(await fs.readFile(new URL(`../templates/${name}`, import.meta.url)));
+      } catch {
+        return null;
       }
+    }
+
+Other archives are read where they are configured to be, as opensheaf-py
+reads them: `locations` of `osheaf.json` and `OPENSHEAF_LOCATIONS`
+(`URL=TARGET;URL=TARGET`, the latter winning) map a base URL, or a prefix
+of one, to another URL or to a folder of this computer; the longest prefix
+applies. An archive under development, or a copy of it, is so read where
+it is while its members record the address where it will be published.
+
+    // in running a command:
+    export function locations(configured = {}, text = process.env.OPENSHEAF_LOCATIONS || '') {
+      const out = { ...configured };
+      for (const part of text.split(';')) {
+        const k = part.indexOf('=');
+        if (k >= 0 && part.slice(0, k).trim()) out[part.slice(0, k).trim()] = part.slice(k + 1).trim();
+      }
+      return out;
+    }
+
+    export function locate(url, found) {
+      for (const prefix of Object.keys(found).sort((a, b) => b.length - a.length)) {
+        if (url.startsWith(prefix)) return found[prefix] + url.slice(prefix.length);
+      }
+      return url;
+    }
+
+    export function locatedFetch(configured, base = globalThis.fetch?.bind(globalThis)) {
+      return async (url, init = {}) => {
+        const target = locate(String(url), locations(configured()));
+        if (/^https?:\/\//.test(target)) return base(target, init);
+        const file = target.startsWith('file://') ? fileURLToPath(target.split('?')[0]) : decodeURIComponent(target.split('?')[0]);
+        try {
+          const st = await fs.lstat(file);
+          if (!st.isFile()) return new Response('not found', { status: 404 });
+          const bytes = new Uint8Array(await fs.readFile(file));
+          return new Response(init.method === 'HEAD' ? null : bytes, { status: 200, headers: { 'content-length': String(bytes.length) } });
+        } catch {
+          return new Response('not found', { status: 404 });
+        }
+      };
     }
 
 ### The commands
@@ -573,46 +740,166 @@ them to the deposit of chapter [26](26-deposit.md).
       return { name: path.basename(given), bytes: new Uint8Array(await fs.readFile(given)) };
     }
 
+    async function extraSources(specs) {
+      const out = [];
+      for (const spec of specs || []) {
+        const k = spec.indexOf('=');
+        const file = await readFile(k < 0 ? spec : spec.slice(0, k));
+        out.push({ ...file, logical: (k < 0 ? '' : spec.slice(k + 1)) || file.name });
+      }
+      return out;
+    }
+
+    async function depositRun(f, args) {
+      const a = { ...args };
+      a.source = args.source ? await readFile(args.source) : null;
+      a.pdf = args.pdf ? await readFile(args.pdf) : null;
+      a.extraSource = (await extraSources(args.extraSource)).map((x) => ({ ...x, logical: x.logical === x.name ? '' : x.logical }));
+      a.abstractFile = args.abstractFile ? await fs.readFile(args.abstractFile, 'utf-8') : null;
+      await deposit(f, a);
+    }
+
+A command that takes `--from FILE` runs once for each entry of the file,
+each with the options of the command line and, for those it left out,
+those of the entry (chapter [33](33-inputs.md)); the options opensheaf-py
+requires of each run (a label, a title, authors, ...) are checked after
+the merge.
+
+    // in the commands:
+    const REQUIRED = { deposit: ['label', 'title', 'author'], relicense: ['label', 'rights', 'method'],
+                       relate: ['label', 'to'], describe: ['label'], init: ['name', 'baseUrl', 'curator'] };
+    const PY_NAMES = { label: 'id', baseUrl: 'base-url' };
+
+    function defaultsOf(cmd) {
+      const spec = COMMANDS[cmd];
+      const out = {};
+      for (const p of spec.positionals) out[positional(p).name] = null;
+      for (const o of Object.values(spec.options)) out[o.dest] = o.repeat ? [] : spec.defaults?.[o.dest];
+      return out;
+    }
+
+    async function runsOf(cmd, args) {
+      let entries = [{}];
+      if (args.fromFile) {
+        let text;
+        try {
+          text = await fs.readFile(args.fromFile, 'utf-8');
+        } catch {
+          throw new Stop(`no file ${args.fromFile}`);
+        }
+        entries = await loadEntries(args.fromFile, text);
+      }
+      const out = [];
+      for (const entry of entries) {
+        const ns = merge(args, entry, defaultsOf(cmd), cmd, { id: 'label' });
+        const missing = (REQUIRED[cmd] || []).filter((k) => ns[k] === undefined || ns[k] === null ||
+                                                            (Array.isArray(ns[k]) && !ns[k].length));
+        if (missing.length) throw new UsageProblem(`${cmd}: missing ` + missing.map((m) => PY_NAMES[m] || m).join(', '));
+        if (ns.rights !== undefined && ns.rights !== null && ['deposit', 'relicense'].includes(cmd)) {
+          try {
+            checkRights(ns.rights);
+          } catch (error) {
+            throw new UsageProblem(`${cmd}: ${error.message}`);
+          }
+        }
+        if (typeof ns.after === 'string') ns.after = Number.parseInt(ns.after, 10);
+        out.push(ns);
+      }
+      return out;
+    }
+
+    async function each(root, cmd, args, env, run) {
+      const todo = await runsOf(cmd, args);
+      const f = await openArchive(root, env);
+      for (const ns of todo) await run(f, ns);
+      await present(f);
+      return 0;
+    }
+
+The commands of descriptions read the files they are given (the statement
+of a notice or a withdrawal, the sources of a completion, an abstract) and
+hand them to chapter [29](29-description.md). Every command that changes
+the archive writes the website again, when the archive has one.
+
+    // in the commands:
     const RUN = {
       async init(root, args, env) {
-        const where = path.resolve(args.folder || '.');
+        const [a] = await runsOf('init', args);
+        const where = path.resolve(a.folder || '.');
         await fs.mkdir(where, { recursive: true });
-        if (args.fromFile) throw new Stop('--from is read by opensheaf-py only (for now): give the options on the command line.');
-        if (args.keyLog) throw new Stop(sentence('--key-log: an archive of an existing owner is made by opensheaf-py'));
+        if (a.keyLog) throw new Stop(sentence('--key-log: an archive of an existing owner is made by opensheaf-py'));
         env.exportFolder = exportFolder(where);
-        await init(new DiskStorage(where), env, args, where);
+        await init(new DiskStorage(where), env, a, where);
         return 0;
       },
 
-      async deposit(root, args, env) {
-        const f = await openArchive(root, env);
-        if (args.fromFile) throw new Stop('--from is read by opensheaf-py only (for now): give the options on the command line.');
-        const a = { ...args };
-        a.source = args.source ? await readFile(args.source) : null;
-        a.pdf = args.pdf ? await readFile(args.pdf) : null;
-        a.extraSource = [];
-        for (const spec of args.extraSource) {
-          const k = spec.indexOf('=');
-          const file = await readFile(k < 0 ? spec : spec.slice(0, k));
-          a.extraSource.push({ ...file, logical: k < 0 ? '' : spec.slice(k + 1) });
+      deposit: (root, args, env) => each(root, 'deposit', args, env, depositRun),
+      relicense: (root, args, env) => each(root, 'relicense', args, env, relicense),
+      relate: (root, args, env) => each(root, 'relate', args, env, relate),
+
+      describe: (root, args, env) => each(root, 'describe', args, env, async (f, a) => {
+        if (a.abstractFile) {
+          if (a.abstract !== undefined && a.abstract !== null) throw new Stop('describe: give --abstract or --abstract-file, not both');
+          a = { ...a, abstractFile: { text: await fs.readFile(a.abstractFile, 'utf-8') } };
         }
-        a.abstractFile = args.abstractFile ? await fs.readFile(args.abstractFile, 'utf-8') : null;
-        await deposit(f, a);
-        website(f);
+        await describe(f, a);
+      }),
+
+      async notice(root, args, env) {
+        const f = await openArchive(root, env);
+        await notice(f, { ...args, file: args.file ? await readFile(args.file) : null });
+        await present(f);
+        return 0;
+      },
+
+      async withdraw(root, args, env) {
+        const f = await openArchive(root, env);
+        await withdraw(f, { ...args, file: args.file ? await readFile(args.file) : null });
+        await present(f);
+        return 0;
+      },
+
+      async complete(root, args, env) {
+        const f = await openArchive(root, env);
+        const extra = (await extraSources(args.extraSource)).map(({ logical, bytes }) => ({ logical, bytes }));
+        await complete(f, { ...args, source: await readFile(args.source), extraSource: extra });
+        await present(f);
         return 0;
       },
 
       async collect(root, args, env) {
         const f = await openArchive(root, env);
         await collect(f, { iKnow: args.iKnow });
-        website(f);
+        await present(f);
+        return 0;
+      },
+
+`osheaf collection` runs one of the actions of chapter
+[30](30-collections.md); `sync` reads its file here.
+
+    // in the commands:
+      async collection(root, args, env) {
+        const f = await openArchive(root, env);
+        const a = { ...args };
+        if (args.action === 'sync') {
+          try {
+            a.fromFile = { name: args.fromFile, given: args.fromFile, text: await fs.readFile(args.fromFile, 'utf-8') };
+          } catch {
+            throw new Stop(`no file ${args.fromFile}`);
+          }
+        }
+        const run = { new: collections.newCollection, add: collections.add, remove: collections.remove,
+                      follow: collections.follow, update: collections.update, status: collections.status,
+                      sync: collections.sync }[args.action];
+        await run(f, a);
+        if (args.action !== 'status') await present(f);
         return 0;
       },
 
       async index(root, args, env) {
         const f = await openArchive(root, env);
         await writeDiscovery(f);
-        if (f.index.html || f.index.template) website(f);
+        if (hasWebsite(f)) await readableIndex(f);
         else env.out('opensheaf.json and the indexes written (no readable index configured)');
         return 0;
       },
@@ -625,7 +912,15 @@ next to the program (a binary made by `deno compile` carries them, with
       async verify(root, args, env) {
         const where = await findRoot(root || process.cwd());
         const schemas = await loadSchemas(async (url) => JSON.parse(await fs.readFile(fileURLToPath(url), 'utf-8')));
-        const report = await verifyFolder(new DiskStorage(where), { schemas, remote: Boolean(args.remote) });
+        let configured = {};
+        try {
+          configured = JSON.parse(await fs.readFile(path.join(where, 'osheaf.json'), 'utf-8')).locations || {};
+        } catch {
+          // no locations
+        }
+        env.locations = configured;
+        const report = await verifyFolder(new DiskStorage(where), { schemas, remote: Boolean(args.remote),
+                                                                    fetch: env.fetch, fetchJson: env.fetchJson });
         if (args.json) {
           env.out(JSON.stringify(findingsJson(report), null, 2));
         } else {
@@ -650,18 +945,27 @@ next to the program (a binary made by `deno compile` carries them, with
     the archive.
 
     Commands:
-    ${Object.entries(COMMANDS).map(([c, s]) => `  ${c.padEnd(9)}${s.help}`).join('\n')}
+    ${Object.entries(COMMANDS).map(([c, s]) => `  ${c.padEnd(11)}${s.help}`).join('\n')}
 
-    The other commands of opensheaf-py (owner, key, collection, mirror, branch,
+    The website (osheaf.json "index": {"html": ...}) is written again after every
+    command that changes the archive. deposit, relicense, relate, describe and
+    init also take their options from a YAML or JSON file: --from FILE.
+
+    The other commands of opensheaf-py (owner, key, resolve, mirror, branch,
     zenodo, arxiv, ...) come in later versions; until then, use opensheaf-py.
 
     Warning: OpenSheaf 0.2 is a draft. Until version 1.0, a revision may change
     the format in incompatible ways, and archives may have to be rebuilt.`;
 
-    function usageOf(cmd) {
-      const s = COMMANDS[cmd];
+    function usageOf(cmd, action) {
+      if (COMMANDS[cmd].actions && !action) {
+        const acts = Object.entries(COMMANDS[cmd].actions).map(([a, x]) => `  ${a.padEnd(8)}${x.help}`).join('\n');
+        return `usage: osheaf ${cmd} [-h] {${Object.keys(COMMANDS[cmd].actions).join(',')}} ...\n\n${COMMANDS[cmd].help}\n\n${acts}`;
+      }
+      const s = action ? COMMANDS[cmd].actions[action] : COMMANDS[cmd];
+      cmd = action ? `${cmd} ${action}` : cmd;
       const opts = Object.entries(s.options).map(([o, d]) => (d.flag ? `[${o}]` : `[${o} ${d.dest.toUpperCase()}]`));
-      return `usage: osheaf ${cmd} [-h] ${opts.join(' ')} ${s.positionals.map((p) => `[${p.toUpperCase()}]`).join(' ')}\n\n${s.help}`;
+      return `usage: osheaf ${cmd} [-h] ${opts.join(' ')} ${s.positionals.map((p) => `[${positional(p).metavar}]`).join(' ')}\n\n${s.help}`;
     }
 
     export async function main(argv, given = {}) {
@@ -674,7 +978,7 @@ next to the program (a binary made by `deno compile` carries them, with
         env.err(error.message);
         return 2;
       }
-      const { cmd, root, args } = parsed;
+      const { cmd, root, args, action } = parsed;
       if (cmd === '--version') {
         env.out(`osheaf (opensheaf-js) ${VERSION}`);
         return 0;
@@ -690,15 +994,19 @@ next to the program (a binary made by `deno compile` carries them, with
         return 2;
       }
       if (args.help) {
-        env.out(usageOf(cmd));
+        env.out(usageOf(cmd, action));
         return 0;
       }
       try {
-        return await RUN[cmd](root, args, env);
+        return await RUN[cmd](root, { ...args, action }, env);
       } catch (error) {
         if (error instanceof Stop) {
           env.err(error.message);
           return 1;
+        }
+        if (error instanceof UsageProblem) {
+          env.err(`osheaf: error: ${error.message}`);
+          return 2;
         }
         throw error;
       }

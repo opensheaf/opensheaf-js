@@ -58,7 +58,7 @@ export class Report {
 }
 
 export async function verify(given, { schemas, remote = true, digests = false, signal,
-                                      progress = () => {}, onFinding } = {}) {
+                                      progress = () => {}, onFinding, pages = true } = {}) {
   const report = new Report(given, { remote, digests });
   if (onFinding) report.listeners.add(onFinding);
   const http = given.http.another({ budget: null });
@@ -74,7 +74,7 @@ export async function verify(given, { schemas, remote = true, digests = false, s
     if (archive.old) {
       add('error', 'archive', 'specification 0.1: rebuild (section 16.1)');
     } else {
-      const v = new Verification(archive, { report, add, schema, options, aborted, remote, digests, progress, http });
+      const v = new Verification(archive, { report, add, schema, options, aborted, remote, digests, progress, http, pages });
       await v.run();
     }
   } catch (error) {
@@ -123,7 +123,7 @@ class Verification {
     await this.lines();
     await this.archiveAsAWhole();
     await this.indexes();
-    await this.presentation();
+    if (this.pages) await this.presentation();
     if (this.digests) await this.contentDigests();
     for (const { level, message } of this.resolver?.notes || []) this.add(level, 'resolution', message);
   }

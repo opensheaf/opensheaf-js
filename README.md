@@ -6,9 +6,10 @@
 > [!WARNING]
 > **Draft.** OpenSheaf 0.2 is a draft specification. Until version 1.0, any
 > revision may change the format in incompatible ways, and archives made now
-> may have to be rebuilt. opensheaf-js is at its first phase: it makes
-> archives, deposits papers and verifies archives; for everything else, use
-> [opensheaf-py](https://github.com/opensheaf/opensheaf-py).
+> may have to be rebuilt. opensheaf-js is at its second phase: it makes
+> archives and their websites, deposits papers, keeps their descriptions
+> and collections, and verifies archives; for owners, keys and everything
+> else, use [opensheaf-py](https://github.com/opensheaf/opensheaf-py).
 
 The tools of [OpenSheaf](https://opensheaf.org) archives (the `osheaf`
 command) in JavaScript: a port of
@@ -28,22 +29,36 @@ and the phases.
 
 ## Status
 
-Phase 1 (version 0.1.0):
+Phases 1 and 2 (version 0.1.0):
 
 - `osheaf init DIR --new-owner --export KEYS`: an archive and a new owner
   (rotation keys exported, in clear with `--no-passphrase` or under a
   passphrase; the current key in `~/.config/opensheaf/keys/`), the main
-  catalogue sealed and signed, the discovery document and the indexes;
+  catalogue sealed and signed (`--curated`: chosen by hand), the
+  discovery document, the indexes and the website, with its templates
+  copied into `templates/`;
 - `osheaf deposit LABEL SOURCE --pdf PDF --title ... --author ... --new`,
   and new versions without `--new`; a PDF alone with `--no-source REASON`;
-- `osheaf collect`, `osheaf index` (the discovery document and the indexes,
-  not yet the website), `osheaf verify [--json]`.
+  `--from FILE.yaml` (one entry or several);
+- `osheaf notice`, `withdraw`, `complete`, `relate`, `relicense`,
+  `describe`: description-only versions and completions;
+- `osheaf collection new|add|remove|follow|update|status|sync`:
+  catalogues and selections, with members of any archive, read over HTTP;
+- `osheaf collect`, `osheaf index` (the discovery document, the indexes
+  and the website: home page, landing pages, owner pages, sitemap),
+  `osheaf verify [--remote] [--json]`.
 
-Archives made by opensheaf-js pass `osheaf verify` of opensheaf-py with no
-finding, and the other way round; rotation keys exported by one sign with
-the other. TeXmacs sources without a PDF, the website, owners' key
-rotation, wallets, collections, mirrors, branches, arXiv and Zenodo are
-in opensheaf-py, and come here in later phases.
+Every command that changes an archive writes its website again. The files
+written are those opensheaf-py writes, byte for byte (the times of
+versions aside): the parity tests compare them, and the websites the two
+write for one archive are the same. Archives made by opensheaf-js pass
+`osheaf verify` of opensheaf-py with no finding, and the other way round;
+rotation keys exported by one sign with the other. Other archives are read
+where `OPENSHEAF_LOCATIONS` (or `locations` in `osheaf.json`) says, as
+opensheaf-py reads them. TeXmacs sources without a PDF, the TeXmacs
+index, owners' key rotation, wallets, mirrors, branches, arXiv and Zenodo
+are in opensheaf-py, and come here in later phases; the differences known
+are listed in [the plan](literate/00-plan.md#phase-2-results-and-notes).
 
 ## Running
 
@@ -71,7 +86,7 @@ A single binary, which needs nothing installed (not committed; made in
 `dist/`):
 
 ```
-deno task compile        # deno compile -A --include schemas --output dist/osheaf cli/osheaf.js
+deno task compile        # deno compile -A --include schemas --include templates --output dist/osheaf cli/osheaf.js
 ./dist/osheaf --version
 ```
 

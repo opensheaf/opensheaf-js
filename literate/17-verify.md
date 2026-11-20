@@ -119,7 +119,7 @@ An archive of version 0.1 is not verified: it must be rebuilt (section
 
     // in core/verify.js:
     export async function verify(given, { schemas, remote = true, digests = false, signal,
-                                          progress = () => {}, onFinding } = {}) {
+                                          progress = () => {}, onFinding, pages = true } = {}) {
       const report = new Report(given, { remote, digests });
       if (onFinding) report.listeners.add(onFinding);
       const http = given.http.another({ budget: null });
@@ -135,7 +135,7 @@ An archive of version 0.1 is not verified: it must be rebuilt (section
         if (archive.old) {
           add('error', 'archive', 'specification 0.1: rebuild (section 16.1)');
         } else {
-          const v = new Verification(archive, { report, add, schema, options, aborted, remote, digests, progress, http });
+          const v = new Verification(archive, { report, add, schema, options, aborted, remote, digests, progress, http, pages });
           await v.run();
         }
       } catch (error) {
@@ -191,7 +191,7 @@ of lines.
         await this.lines();
         await this.archiveAsAWhole();
         await this.indexes();
-        await this.presentation();
+        if (this.pages) await this.presentation();
         if (this.digests) await this.contentDigests();
         for (const { level, message } of this.resolver?.notes || []) this.add(level, 'resolution', message);
       }
@@ -964,6 +964,10 @@ line without a label `paper/<name>/`, followed by `-<owner>` when the
 archive holds several lines of that name. The URI is in canonical form,
 `sheaf:<name>` for the originator's line (sections 12.1 and 12.2), or
 with its owner part, which a page written before 0.2 gives.
+
+A verification of an archive folder (chapter [28](28-verify-folder.md))
+makes this check otherwise, as opensheaf-py makes it from the files and
+the configuration of the folder, and asks for none here (`pages: false`).
 
     // in core/verify.js:
       async presentation() {

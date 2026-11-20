@@ -6,6 +6,7 @@ import { writeText } from './storage.js';
 import { ArchiveFolder, CONFIG_NAME, CONFIG_NAMES, LAYOUTS, exit, stop, short, plural } from './folder.js';
 import { collect } from './collect.js';
 import { writeDiscovery } from './discovery.js';
+import { readableIndex, TEMPLATES } from './website.js';
 
 export const SINGLE_ROTATION_RISK = 'With a single rotation key, its loss leaves the owner unable ever to change ' +
   'its keys or end, and its theft lets the thief take the owner over (sections 6.2 and 15.1).';
@@ -152,12 +153,13 @@ export async function init(storage, env, args, where) {
     name: args.name,
     contact: args.contact || args.baseUrl,
     baseUrl: args.baseUrl.endsWith('/') ? args.baseUrl : args.baseUrl + '/',
-    profiles: [],
+    profiles: ['website'],
     storageLayout: layout,
     mainCollection: 'main',
     curator: { name: given ? `${family}, ${given}` : family, givenName: given, familyName: family,
                affiliation: args.affiliation || '' },
     depositor: { name: `${given} ${family}`.trim(), address: args.contact || args.baseUrl },
+    index: { html: { templates: 'templates' } },
   };
   const f = new ArchiveFolder(storage, env);
   f.archive = { ...cfg };
@@ -167,12 +169,15 @@ export async function init(storage, env, args, where) {
   cfg.owner = log.owner;
   await writeText(storage, CONFIG_NAME, jsonText(cfg));
   if (!(await storage.kind('.gitattributes'))) await writeText(storage, '.gitattributes', GITATTRIBUTES);
+  for (const name of TEMPLATES) {
+    if (!(await storage.kind(`templates/${name}`))) await storage.write(`templates/${name}`, await env.template(name));
+  }
   await f.configure();
   await collect(f, { curated: args.curated });
   await writeDiscovery(f);
-  env.out('opensheaf.json and the indexes written (no readable index configured)');
-  env.out(`Done: the archive is made in ${where}, owned by ${short(log.owner)}. Edit ${CONFIG_NAME}, then deposit ` +
-          'a paper: osheaf deposit --new LABEL ...');
+  await readableIndex(f);
+  env.out(`Done: the archive is made in ${where}, owned by ${short(log.owner)}. Edit ${CONFIG_NAME} and ` +
+          'templates/, then deposit a paper: osheaf deposit --new LABEL ...');
   env.err('Note: OpenSheaf 0.2 is a draft; until version 1.0 a revision may change the format in incompatible ' +
           'ways, and archives may have to be rebuilt.');
   return f;

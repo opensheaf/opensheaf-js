@@ -48,6 +48,9 @@ export function environment(given = {}) {
     newKey,
     now: utcNow,
     today,
+    fetch: globalThis.fetch?.bind(globalThis),
+    fetchJson: null,
+    template: null,
     ...given,
   };
 }

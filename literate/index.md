@@ -98,19 +98,28 @@ Keeping an archive
 19. [The discovery document and the indexes](25-discovery.md).
 20. [Depositing documents](26-deposit.md).
 21. [A new owner, a new archive](27-init.md).
-22. [Verifying an archive folder](28-verify-folder.md).
+22. [Verifying an archive folder](28-verify-folder.md), with the
+    presentation and the keepers checked as opensheaf-py checks them.
+23. [Descriptions](29-description.md): notices, withdrawals, completions,
+    related works, licences and corrections.
+24. [Collections](30-collections.md): catalogues and selections, with
+    members of any archive.
+25. [The website](31-website.md): home page, landing pages, owner pages
+    and sitemap, from opensheaf-py's templates.
+26. [Keepers](32-keepers.md): the link of an owner to its keeper.
+27. [Options from files](33-inputs.md): `--from FILE`, YAML or JSON.
 
 The command line
 ----------------
 
-23. [The command line](40-cli.md): a folder on a disk, the keys of this
+28. [The command line](40-cli.md): a folder on a disk, the keys of this
     device, the commands.
 
 The tests
 ---------
 
-24. [The tests](70-tests.md): storages, files, key files, an archive in
+29. [The tests](70-tests.md): storages, files, key files, an archive in
     memory.
-25. [The tests of names, keys and signatures](71-tests-identity.md),
+30. [The tests of names, keys and signatures](71-tests-identity.md),
     against appendix C and the edge cases of Ed25519.
-26. [The tests of parity with opensheaf-py](72-tests-parity.md).
+31. [The tests of parity with opensheaf-py](72-tests-parity.md).

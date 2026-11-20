@@ -139,7 +139,9 @@ local addresses fc00::/7 (also as IPv4-mapped IPv6 addresses). An archive
 that is itself on such a host, as one under development is, may name
 others: what is local to it is local to its reader. A name of the public
 DNS that resolves to a private address is not seen; a browser does not
-tell a page the address it connects to.
+tell a page the address it connects to. The command line, which is not a
+page in the reader's browser and fetches what opensheaf-py fetches, makes
+its resolvers with `local: true`, which lifts this rule.
 
 `localKind` says what a host is, as the URL parser writes it (IPv4
 addresses in dotted decimal, IPv6 ones in brackets, in hexadecimal), or
@@ -199,9 +201,10 @@ pool and the page budget of the first).
 
     // in core/resolve.js:
     export class Resolver {
-      constructor(http, home = null) {
+      constructor(http, home = null, { local = false } = {}) {
         this.http = http;
         this.home = home;
+        this.local = local;
         this.archives = new Map();
         this.logs = new Map();
         this.notes = [];
@@ -209,7 +212,7 @@ pool and the page budget of the first).
       }
 
       again() {
-        const fresh = new Resolver(this.http.another());
+        const fresh = new Resolver(this.http.another(), null, { local: this.local });
         if (this.home) fresh.home = this.home;
         return fresh;
       }
@@ -262,7 +265,7 @@ page of a collection shows under "What was met" and a verification under
 
       refused(base) {
         const kind = localKind(new URL(base).hostname);
-        if (!kind) return null;
+        if (!kind || this.local) return null;
         if (this.home && localKind(new URL(this.home.base).hostname)) return null;
         return `not fetched: ${new URL(base).hostname} is ${kind}, which the explorer fetches only for an archive ` +
           'that is itself on a local or private host';

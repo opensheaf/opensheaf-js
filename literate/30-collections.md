@@ -52,7 +52,7 @@ versions (section 8.5).
 
     <<writing a collection>>
 
-    <<the commands>>
+    <<the commands of collections>>
 
     <<following and statuses>>
 
@@ -282,7 +282,7 @@ collection declares, `issued-desc` or `issued-asc`.
 The commands
 ------------
 
-    // in the commands:
+    // in the commands of collections:
     export async function held(f, label) {
       const collId = await lineOf(f, label);
       const dir = await f.dirOf(collId);
@@ -338,9 +338,10 @@ The commands
     }
 
 A member is named by a label, a `sheaf:` URI, or the beginning of its
-name.
+name. `--revision` removes those revisions of a member of a selection,
+and the member with its last one; nothing removed is an error.
 
-    // in the commands:
+    // in the commands of collections:
     export function matches(f, m, text) {
       if (f.labels.has(text)) return f.labels.get(text) === objectId(m.name, m.owner);
       let u;
@@ -355,15 +356,19 @@ name.
     export async function remove(f, a) {
       const { collId, mem } = await held(f, a.collection);
       const out = [];
+      let changed = false;
       for (const m of mem.members) {
         if (!a.uri.some((t) => matches(f, m, t))) {
           out.push(m);
         } else if (a.revision?.length && m.revisions?.length) {
-          m.revisions = m.revisions.filter((x) => !a.revision.includes(x.documentVersion));
-          if (m.revisions.length) out.push(m);
+          const kept = m.revisions.filter((x) => !a.revision.includes(x.documentVersion));
+          changed ||= kept.length < m.revisions.length;
+          if (kept.length) out.push({ ...m, revisions: kept });
+        } else {
+          changed = true;
         }
       }
-      if (same(out, mem.members) && out.length === mem.members.length) exit('no member matches');
+      if (!changed) exit('no member matches');
       mem.members = out;
       return write(f, collId, mem, { message: a.message || `Removed: ${a.uri.join(', ')}` });
     }

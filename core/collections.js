@@ -258,15 +258,19 @@ export function matches(f, m, text) {
 export async function remove(f, a) {
   const { collId, mem } = await held(f, a.collection);
   const out = [];
+  let changed = false;
   for (const m of mem.members) {
     if (!a.uri.some((t) => matches(f, m, t))) {
       out.push(m);
     } else if (a.revision?.length && m.revisions?.length) {
-      m.revisions = m.revisions.filter((x) => !a.revision.includes(x.documentVersion));
-      if (m.revisions.length) out.push(m);
+      const kept = m.revisions.filter((x) => !a.revision.includes(x.documentVersion));
+      changed ||= kept.length < m.revisions.length;
+      if (kept.length) out.push({ ...m, revisions: kept });
+    } else {
+      changed = true;
     }
   }
-  if (same(out, mem.members) && out.length === mem.members.length) exit('no member matches');
+  if (!changed) exit('no member matches');
   mem.members = out;
   return write(f, collId, mem, { message: a.message || `Removed: ${a.uri.join(', ')}` });
 }
@@ -282,186 +286,6 @@ export async function follow(f, a) {
   }
   return write(f, collId, mem, { message: a.message || (a.off ? 'Not followed: ' : 'Followed: ') + a.uri.join(', ') });
 }
-
-async function readFile(given) {
-  try {
-    const st = await fs.stat(given);
-    if (!st.isFile()) throw new Error();
-  } catch {
-    throw new Stop(`no file ${given}`);
-  }
-  return { name: path.basename(given), bytes: new Uint8Array(await fs.readFile(given)) };
-}
-
-async function extraSources(specs) {
-  const out = [];
-  for (const spec of specs || []) {
-    const k = spec.indexOf('=');
-    const file = await readFile(k < 0 ? spec : spec.slice(0, k));
-    out.push({ ...file, logical: (k < 0 ? '' : spec.slice(k + 1)) || file.name });
-  }
-  return out;
-}
-
-async function depositRun(f, args) {
-  const a = { ...args };
-  a.source = args.source ? await readFile(args.source) : null;
-  a.pdf = args.pdf ? await readFile(args.pdf) : null;
-  a.extraSource = (await extraSources(args.extraSource)).map((x) => ({ ...x, logical: x.logical === x.name ? '' : x.logical }));
-  a.abstractFile = args.abstractFile ? await fs.readFile(args.abstractFile, 'utf-8') : null;
-  await deposit(f, a);
-}
-
-const REQUIRED = { deposit: ['label', 'title', 'author'], relicense: ['label', 'rights', 'method'],
-                   relate: ['label', 'to'], describe: ['label'], init: ['name', 'baseUrl', 'curator'] };
-const PY_NAMES = { label: 'id', baseUrl: 'base-url' };
-
-function defaultsOf(cmd) {
-  const spec = COMMANDS[cmd];
-  const out = {};
-  for (const p of spec.positionals) out[positional(p).name] = null;
-  for (const o of Object.values(spec.options)) out[o.dest] = o.repeat ? [] : spec.defaults?.[o.dest];
-  return out;
-}
-
-async function runsOf(cmd, args) {
-  let entries = [{}];
-  if (args.fromFile) {
-    let text;
-    try {
-      text = await fs.readFile(args.fromFile, 'utf-8');
-    } catch {
-      throw new Stop(`no file ${args.fromFile}`);
-    }
-    entries = await loadEntries(args.fromFile, text);
-  }
-  const out = [];
-  for (const entry of entries) {
-    const ns = merge(args, entry, defaultsOf(cmd), cmd, { id: 'label' });
-    const missing = (REQUIRED[cmd] || []).filter((k) => ns[k] === undefined || ns[k] === null ||
-                                                        (Array.isArray(ns[k]) && !ns[k].length));
-    if (missing.length) throw new UsageProblem(`${cmd}: missing ` + missing.map((m) => PY_NAMES[m] || m).join(', '));
-    if (ns.rights !== undefined && ns.rights !== null && ['deposit', 'relicense'].includes(cmd)) {
-      try {
-        checkRights(ns.rights);
-      } catch (error) {
-        throw new UsageProblem(`${cmd}: ${error.message}`);
-      }
-    }
-    if (typeof ns.after === 'string') ns.after = Number.parseInt(ns.after, 10);
-    out.push(ns);
-  }
-  return out;
-}
-
-async function each(root, cmd, args, env, run) {
-  const todo = await runsOf(cmd, args);
-  const f = await openArchive(root, env);
-  for (const ns of todo) await run(f, ns);
-  await present(f);
-  return 0;
-}
-
-const RUN = {
-  async init(root, args, env) {
-    const [a] = await runsOf('init', args);
-    const where = path.resolve(a.folder || '.');
-    await fs.mkdir(where, { recursive: true });
-    if (a.keyLog) throw new Stop(sentence('--key-log: an archive of an existing owner is made by opensheaf-py'));
-    env.exportFolder = exportFolder(where);
-    await init(new DiskStorage(where), env, a, where);
-    return 0;
-  },
-
-  deposit: (root, args, env) => each(root, 'deposit', args, env, depositRun),
-  relicense: (root, args, env) => each(root, 'relicense', args, env, relicense),
-  relate: (root, args, env) => each(root, 'relate', args, env, relate),
-
-  describe: (root, args, env) => each(root, 'describe', args, env, async (f, a) => {
-    if (a.abstractFile) {
-      if (a.abstract !== undefined && a.abstract !== null) throw new Stop('describe: give --abstract or --abstract-file, not both');
-      a = { ...a, abstractFile: { text: await fs.readFile(a.abstractFile, 'utf-8') } };
-    }
-    await describe(f, a);
-  }),
-
-  async notice(root, args, env) {
-    const f = await openArchive(root, env);
-    await notice(f, { ...args, file: args.file ? await readFile(args.file) : null });
-    await present(f);
-    return 0;
-  },
-
-  async withdraw(root, args, env) {
-    const f = await openArchive(root, env);
-    await withdraw(f, { ...args, file: args.file ? await readFile(args.file) : null });
-    await present(f);
-    return 0;
-  },
-
-  async complete(root, args, env) {
-    const f = await openArchive(root, env);
-    const extra = (await extraSources(args.extraSource)).map(({ logical, bytes }) => ({ logical, bytes }));
-    await complete(f, { ...args, source: await readFile(args.source), extraSource: extra });
-    await present(f);
-    return 0;
-  },
-
-  async collect(root, args, env) {
-    const f = await openArchive(root, env);
-    await collect(f, { iKnow: args.iKnow });
-    await present(f);
-    return 0;
-  },
-
-  async collection(root, args, env) {
-    const f = await openArchive(root, env);
-    const a = { ...args };
-    if (args.action === 'sync') {
-      try {
-        a.fromFile = { name: args.fromFile, given: args.fromFile, text: await fs.readFile(args.fromFile, 'utf-8') };
-      } catch {
-        throw new Stop(`no file ${args.fromFile}`);
-      }
-    }
-    const run = { new: collections.newCollection, add: collections.add, remove: collections.remove,
-                  follow: collections.follow, update: collections.update, status: collections.status,
-                  sync: collections.sync }[args.action];
-    await run(f, a);
-    if (args.action !== 'status') await present(f);
-    return 0;
-  },
-
-  async index(root, args, env) {
-    const f = await openArchive(root, env);
-    await writeDiscovery(f);
-    if (hasWebsite(f)) await readableIndex(f);
-    else env.out('opensheaf.json and the indexes written (no readable index configured)');
-    return 0;
-  },
-
-  async verify(root, args, env) {
-    const where = await findRoot(root || process.cwd());
-    const schemas = await loadSchemas(async (url) => JSON.parse(await fs.readFile(fileURLToPath(url), 'utf-8')));
-    let configured = {};
-    try {
-      configured = JSON.parse(await fs.readFile(path.join(where, 'osheaf.json'), 'utf-8')).locations || {};
-    } catch {
-      // no locations
-    }
-    env.locations = configured;
-    const report = await verifyFolder(new DiskStorage(where), { schemas, remote: Boolean(args.remote),
-                                                                fetch: env.fetch, fetchJson: env.fetchJson });
-    if (args.json) {
-      env.out(JSON.stringify(findingsJson(report), null, 2));
-    } else {
-      for (const f of report.findings) env.out(`${f.level}: ${f.place}: ${f.message}`);
-      const c = report.counts();
-      env.out((c.error ? `${c.error} error(s)` : 'OK') + `, ${c.warning} warning(s), ${c.result} result(s)`);
-    }
-    return report.counts().error ? 1 : 0;
-  },
-};
 
 export async function update(f, a) {
   let labels = a.collection || [];

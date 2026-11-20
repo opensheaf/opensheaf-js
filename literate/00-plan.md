@@ -219,17 +219,16 @@ What the parity tests (chapter [72](72-tests-parity.md)) show:
 
 Where the two differ, on purpose or not yet:
 
-- **Faults of opensheaf-py kept here, for parity.** A second notice about
-  a line that has one already is lost (the notices of the head are
-  carried after the change, chapter [29](29-description.md)); `collection
-  remove --revision` of a revision of a member that keeps others says "no
-  member matches" (chapter [30](30-collections.md)). Both belong to
-  opensheaf-py, where they should be corrected first.
-- **A fault of opensheaf-py not kept.** opensheaf-py's resolver, given a
-  short form of a `sheaf:` URI of a line held only elsewhere, copies the
-  line without its signatures while expanding the short form, and then
-  finds it unsigned ("not a version"); this program resolves it. The
-  tests name such members by their full URIs.
+- **Faults of opensheaf-py, corrected in both.** A second notice about
+  a line that has one already was lost (the notices of the head were
+  carried over those of the change, chapter [29](29-description.md));
+  `collection remove --revision` of a revision of a member that keeps
+  others said "no member matches" (chapter [30](30-collections.md)); and
+  opensheaf-py's resolver, given a short form of a `sheaf:` URI of a line
+  held only elsewhere, copied the line without its signatures and found
+  it unsigned. All three were corrected in opensheaf-py (its commits
+  24afb1d, 27653cf and fb22886), this program follows, and the parity
+  tests use a second notice, `remove --revision` and a short form again.
 - **Messages about unreachable places.** The reason given for an archive
   or a keeper that cannot be read comes from the network library of each
   program, and differs in its wording.

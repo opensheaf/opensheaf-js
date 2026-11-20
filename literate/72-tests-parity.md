@@ -459,6 +459,7 @@ Descriptions by both
         ok(s.py(['notice', 'bare', '--about', '1', '--text', 'Sources found.'], { cwd: arch }), 'py notice');
         ok(s.py(['collect'], { cwd: arch }), 'py collect');
         const runs = [
+          ['notice', 'bare', '--about', '1', '--text', 'A second notice.'],
           ['notice', 'paper', '--about', '1', '--text', 'A notice.', '--file', '../statement.md', '--date', '2025-01-02'],
           ['withdraw', 'paper', '--reason', 'An error.', '--file', '../statement.md'],
           ['relate', 'paper', '--to', 'arxiv:2501.00001', '--relation', 'IsVariantFormOf', '--issued', '2024-12-01'],
@@ -585,6 +586,7 @@ network.
         ok(s.py(['collect'], { cwd: arch, more }), 'py collect');
         const theirs = JSON.parse(await readFile(path.join(other, 'opensheaf.json'), 'utf-8')).objects.find((o) => o.label === 'op').id;
         const at = ['--at', 'https://example.org/other/'];
+        const short = `sheaf:${theirs.split(':')[1].slice(0, 16)}`;
         for (const args of [['collection', 'new', 'sel', '--type', 'selection', '--title', 'A selection', '--description', 'Vetted.'],
                             ['collection', 'new', 'cat', '--type', 'catalogue', '--title', 'A catalogue', '--order', 'issued-desc']]) {
           const { a, b } = await both(s, arch, args, { more });
@@ -595,7 +597,7 @@ network.
           ['collection', 'add', 'cat', theirs, ...at, '--follow'],
           ['collection', 'add', 'sel', theirs, ...at, '--revision', '1'],
           ['collection', 'add', 'cat', 'paper'],
-          ['collection', 'add', 'sel', theirs, ...at, '--revision', '2'],
+          ['collection', 'add', 'sel', short, ...at, '--revision', '2'],
           ['collection', 'follow', 'cat', theirs, '--off'],
           ['collection', 'follow', 'cat', theirs],
         ];
@@ -611,6 +613,9 @@ network.
                 { cwd: other }), 'other v3');
         let { a, b } = await both(s, arch, ['collection', 'update'], { more });
         await sameArchives(a, b);
+        ({ a, b } = await both(s, arch, ['collection', 'remove', 'sel', short, '--revision', '1'], { more }));
+        await sameArchives(a, b);
+        ok(s.py(['collection', 'remove', 'sel', theirs, '--revision', '1'], { cwd: arch, more }), 'remove --revision');
         await both(s, arch, ['collection', 'remove', 'sel', theirs, '--revision', '1'], { more, status: 1 });
         ({ a, b } = await both(s, arch, ['collection', 'remove', 'cat', 'paper'], { more }));
         await sameArchives(a, b);

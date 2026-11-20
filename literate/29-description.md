@@ -82,11 +82,10 @@ command's `change`. The object description is copied from the head and
 changed; its notices and its history are then carried forward as a
 deposit carries them (chapter [26](26-deposit.md)).
 
-opensheaf-py carries the notices after the change, so that the notices of
-the head replace those the change made: a second notice about a line that
-has one already is not kept. This is a fault of opensheaf-py, which this
-port keeps, so that the two write the same files, until it is corrected
-there.
+The notices are carried after the change: those of the head first, in
+their order, then those the change adds, so that a second notice about a
+line keeps the first (opensheaf-py lost it until it was corrected there,
+and this port with it, for parity).
 
     // in a description-only version:
     export async function descriptionVersion(f, label, change, message, addFiles = null, acknowledged = false) {

@@ -1,5 +1,6 @@
 // Generated from literate/26-deposit.md by opensheaf-literate: edit the document, not this file.
 import { LABEL } from './names.js';
+import { same } from './schema.js';
 import { dateOf, isEvidence } from './versions.js';
 import { jsonBytes } from './write.js';
 import { writeDiscovery } from './discovery.js';
@@ -119,7 +120,10 @@ export async function carryForward(f, prev, obj, dir, inv, newVer, afterDoc = nu
     if (afterDoc !== null && afterDoc !== undefined) exit('--after needs an existing document');
     return;
   }
-  if (prev.notices?.length) obj.notices = [...prev.notices];
+  if (prev.notices?.length) {
+    const kept = [...prev.notices];
+    obj.notices = [...kept, ...(obj.notices || []).filter((n) => !kept.some((k) => same(k, n)))];
+  }
   if ((prev.history === undefined || prev.history === null) && (afterDoc === null || afterDoc === undefined)) return;
   const hist = [...(prev.history?.length ? prev.history : await defaultHistory(f, dir, inv))];
   const docs = new Map();

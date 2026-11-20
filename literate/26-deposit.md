@@ -18,6 +18,7 @@ The command line reads the files and gives them as bytes; the module,
 
     // in core/deposit.js:
     import { LABEL } from './names.js';
+    import { same } from './schema.js';
     import { dateOf, isEvidence } from './versions.js';
     import { jsonBytes } from './write.js';
     import { writeDiscovery } from './discovery.js';
@@ -159,7 +160,9 @@ The history, carried forward
 ----------------------------
 
 A new object version keeps what persists (section 4.2): the notices of
-the head, unchanged, with their files, and the history of document
+the head, unchanged, with their files, followed by the notices the new
+version adds that the head lacks (a second notice about a line keeps the
+first), and the history of document
 versions when the head has one. A new document version is appended to the
 history, or placed after document version `--after N` (a version found
 later), which then writes a history; a version without a history follows
@@ -181,7 +184,10 @@ the default order of section 4.2, which needs none.
         if (afterDoc !== null && afterDoc !== undefined) exit('--after needs an existing document');
         return;
       }
-      if (prev.notices?.length) obj.notices = [...prev.notices];
+      if (prev.notices?.length) {
+        const kept = [...prev.notices];
+        obj.notices = [...kept, ...(obj.notices || []).filter((n) => !kept.some((k) => same(k, n)))];
+      }
       if ((prev.history === undefined || prev.history === null) && (afterDoc === null || afterDoc === undefined)) return;
       const hist = [...(prev.history?.length ? prev.history : await defaultHistory(f, dir, inv))];
       const docs = new Map();

@@ -21,7 +21,8 @@ The tests of chapters [47](47-github-storage.md) and
 - **the same requests by the template's script and by this program**: the
   script `osheaf_issue.py` of the archive template with opensheaf-py, and
   `carryOut` with this program's command line (`tests/request.js`), on two
-  copies of one archive; the files are compared as the parity tests of
+  copies of one archive (outside GitHub's workflows as far as the script
+  can tell: it refuses to run there without the workflows' key); the files are compared as the parity tests of
   chapter [72](72-tests-parity.md) compare them. These run when
   opensheaf-py is installed and the script is found (`OSHEAF_ISSUE`, or
   the template's repository next to this one);
@@ -697,7 +698,8 @@ out.
     async function scriptSandbox() {
       const root = await mkdtemp(path.join(os.tmpdir(), 'osheaf-requests-'));
       const env = { PATH: process.env.PATH, HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'xdg'),
-                    OPENSHEAF_KEY_STORE: 'file', LANG: 'C.UTF-8', OSHEAF: PY };
+                    OPENSHEAF_KEY_STORE: 'file', LANG: 'C.UTF-8', OSHEAF: PY,
+                    GITHUB_ACTIONS: '', OPENSHEAF_SIGNING_KEY: '' };
       env.DENO_DIR = process.env.DENO_DIR || path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Caches/deno'
         : '.cache/deno');
       await mkdir(env.HOME);

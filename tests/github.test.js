@@ -337,7 +337,8 @@ const noScript = !PY ? 'opensheaf-py is not installed (set OSHEAF_PY)'
 async function scriptSandbox() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'osheaf-requests-'));
   const env = { PATH: process.env.PATH, HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'xdg'),
-                OPENSHEAF_KEY_STORE: 'file', LANG: 'C.UTF-8', OSHEAF: PY };
+                OPENSHEAF_KEY_STORE: 'file', LANG: 'C.UTF-8', OSHEAF: PY,
+                GITHUB_ACTIONS: '', OPENSHEAF_SIGNING_KEY: '' };
   env.DENO_DIR = process.env.DENO_DIR || path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Caches/deno'
     : '.cache/deno');
   await mkdir(env.HOME);

@@ -26,7 +26,7 @@ import { browserEnvironment, schemasOf, directWrite, keyFromText, walletLocks, o
          prefetched, checkWallet, walletEntries, passphraseConfirmed, checkPassphrase, keyToPush, pushKey,
          enrollPlan, openWithPassphrase, enrollPasskey, rotationKeysFromTexts, rotationKeysFromWallet, walletRotationKeys,
          newKeys, rotationFiles, checksConfirmed, keepRotationKeys, directRotate, ownerKeyLog, keyLogFolder, signingCopy,
-         directSetup, seedLine, sealedBox, openSealedBox, storeSecret, newOwnerKeys } from '../web/manager.js';
+         directSetup, seedLine, sealedBox, openSealedBox, storeSecret, newOwnerKeys, ownerLabelProblem } from '../web/manager.js';
 import { writeKeyLog } from '../core/write.js';
 import { verifyFolder } from '../core/check.js';
 
@@ -536,8 +536,15 @@ test('an archive set up by the Manager with an owner made in the page is the one
     const g2 = fakeGitHub();
     g2.create(REPO, Object.fromEntries(files));
     const { 'Base URL': _, ...noBase } = fields;
+    const taken = await directSetup({ repo: REPO, github: client(g2), fields: { ...noBase, Purpose: 'papers' },
+                                      keyLog: await keyLogFolder(log), ownerLabel: 'main',
+                                      defaultBase: async () => ({ url: 'https://example.org/reading/', rule: 'r' }),
+                                      env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
+                                      schemas }).then(() => null, (e) => e);
+    assert.match(String(taken), /`main` is already taken/);
+    assert.equal(g2.files(REPO).has('osheaf.json'), false);
     const second = await directSetup({ repo: REPO, github: client(g2), fields: { ...noBase, Purpose: 'papers' },
-                                       keyLog: await keyLogFolder(log),
+                                       keyLog: await keyLogFolder(log), ownerLabel: 'jane-doe',
                                        defaultBase: async () => ({ url: 'https://example.org/reading/',
                                                                    rule: 'the domain of the owner\'s GitHub Pages' }),
                                        env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
@@ -545,6 +552,22 @@ test('an archive set up by the Manager with an owner made in the page is the one
     assert.equal(second.ok, true, second.message);
     assert.match(second.message, /owned by `[a-z2-7]{52}`\. Its base URL is https:\/\/example\.org\/reading\/ \(the domain of the owner's GitHub Pages\)/);
     assert.equal(JSON.parse(text(g2.files(REPO).get('osheaf.json'))).index.html.featured, undefined);
+    // the owner labelled in the archive: in the discovery document and the indexes, verified by both
+    const labelled = JSON.parse(text(g2.files(REPO).get('opensheaf.json'))).objects.find((o) => o.id === `sheaf:${owner}:${owner}`);
+    assert.equal(labelled.label, 'jane-doe');
+    const d = path.join(s.root, 'd');
+    for (const [x, bytes] of g2.files(REPO)) {
+      await mkdir(path.dirname(path.join(d, x)), { recursive: true });
+      await writeFile(path.join(d, x), bytes);
+    }
+    const v2 = s.run([PY], ['verify', '--json'], d);
+    assert.equal(v2.status, 0, v2.stdout + v2.stderr);
+    assert.deepEqual(JSON.parse(v2.stdout).filter((f) => f.severity !== 'result'), []);
+    // opensheaf-py keeps the label: its index is the same once written again
+    const before = await readFile(path.join(d, 'opensheaf.json'), 'utf-8');
+    const ix = s.run([PY], ['index'], d);
+    assert.equal(ix.status, 0, ix.stdout + ix.stderr);
+    assert.equal(await readFile(path.join(d, 'opensheaf.json'), 'utf-8'), before);
     const again = await directSetup({ repo: REPO, github: client(g2), fields, keyLog: await keyLogFolder(log),
                                       env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
                                       schemas });
@@ -852,6 +875,8 @@ test('the keys of a new owner made in the page, and the secret of the workflows'
   const alone = await ownerKeyLog({ ...keys, workflows: null });
   assert.deepEqual(alone.latest().keys.keys, [keys.current.did]);
   await assert.rejects(ownerKeyLog(keys, { keeper: 'example.org' }), /a keeper is an ORCID iD/);
+  assert.equal(ownerLabelProblem('jane-doe'), null);
+  for (const bad of ['Jane', 'jane--doe', '-jane', 'x'.repeat(65)]) assert.match(ownerLabelProblem(bad), /not a valid label/);
   const copy = await signingCopy(keys.current);
   assert.ok(keys.current.seed.some((b) => b !== 0));
   assert.equal(copy.seed, null);

@@ -15,6 +15,7 @@ import { writeKeyLog, newOwner } from '../core/write.js';
 import { MemoryStorage } from '../core/storage.js';
 import { base64 } from '../core/keys.js';
 import { writeDiscovery } from '../core/discovery.js';
+import { readableIndex, hasWebsite } from '../core/website.js';
 import { verifyFolder } from '../core/check.js';
 import { short, plural, Stop } from '../core/folder.js';
 
@@ -445,11 +446,40 @@ export async function signingCopy(key) {
   return sealedKey(await Key.fromSeed(Uint8Array.from(key.seed)));
 }
 
-export async function directSetup({ repo, github, fields, keyLog, defaultBase = null, env, schemas, mirror = null,
-                                    cache = new Map(), origin = 'the OpenSheaf manager', progress = () => {},
-                                    attempts = 3 }) {
+export async function directSetup({ repo, github, fields, keyLog, defaultBase = null, ownerLabel = '', env, schemas,
+                                    mirror = null, cache = new Map(), origin = 'the OpenSheaf manager',
+                                    progress = () => {}, attempts = 3 }) {
+  const owner = ownerLabel ? (await keyLog.storage.read(`${keyLog.dir ? keyLog.dir + '/' : ''}inventory.json`)) : null;
+  const after = ownerLabel ? async (storage) => {
+    const id = JSON.parse(new TextDecoder().decode(owner)).id;
+    await labelOwner(storage, env, id.split(':')[1], ownerLabel);
+  } : null;
   return directWrite({ repo, github, operation: 'setup', fields, env, schemas, mirror, cache, origin, progress, attempts,
-                       options: { keyLog, defaultBase } });
+                       options: { keyLog, defaultBase }, after });
+}
+
+const LABEL = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+export function ownerLabelProblem(label) {
+  if (!LABEL.test(label) || label.length > 64) {
+    return `\`${label}\` is not a valid label: at most 64 characters, lower-case letters and digits, words joined by \`-\``;
+  }
+  return null;
+}
+
+export async function labelOwner(storage, env, owner, label) {
+  const problem = ownerLabelProblem(label);
+  if (problem) throw new OwnerError(problem);
+  const f = await ArchiveFolder.open(storage, env);
+  const id = objectId(owner, owner);
+  const taken = f.labels.get(label);
+  if ((taken && taken !== id) || label === f.archive.mainCollection) {
+    throw new OwnerError(`\`${label}\` is already taken in this archive`);
+  }
+  for (const [l, i] of [...f.labels]) if (i === id) f.labels.delete(l);
+  f.labels.set(label, id);
+  await writeDiscovery(f);
+  if (hasWebsite(f)) await readableIndex(f);
 }
 
 export function seedLine(key) {
@@ -511,10 +541,20 @@ export function prefetched(path, size = null) {
 
 export async function directWrite({ repo, github, operation, fields, files = {}, env, schemas, assets = null,
                                     mirror = null, cache = new Map(), origin = 'the OpenSheaf manager',
-                                    progress = () => {}, attempts = 3, options = {} }) {
+                                    progress = () => {}, attempts = 3, options = {}, after = null }) {
   const done = await oneCommit(repo, github, async (storage) => {
     progress('carrying out');
     const answer = await carryOut(storage, env, operation, fields, files, { origin, schemas, digests: false, ...options });
+    if (answer.ok && after) {
+      await after(storage);
+      if (schemas) {
+        const report = await verifyFolder(storage, { schemas, digests: false, fetch: env.fetch, fetchJson: env.fetchJson });
+        if (report.counts().error) {
+          throw new OwnerError(`the archive would not verify: ${report.findings.filter((x) => x.level === 'error')
+            .slice(0, 5).map((x) => `${x.place}: ${x.message}`).join('; ')}`);
+        }
+      }
+    }
     if (answer.ok) progress('committing');
     return { message: answer.ok ? answer.commitMessage : null, answer };
   }, { mirror, cache, attempts, prepare: async (storage) => {

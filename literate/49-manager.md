@@ -45,6 +45,7 @@ was made from.
     import { MemoryStorage } from '../core/storage.js';
     import { base64 } from '../core/keys.js';
     import { writeDiscovery } from '../core/discovery.js';
+    import { readableIndex, hasWebsite } from '../core/website.js';
     import { verifyFolder } from '../core/check.js';
     import { short, plural, Stop } from '../core/folder.js';
 
@@ -720,11 +721,51 @@ archive's branch: the setup of chapter [48](48-requests.md) with this key
 log, `defaultBase` giving the base URL when the form leaves it empty.
 
     // in the owner, made in the page:
-    export async function directSetup({ repo, github, fields, keyLog, defaultBase = null, env, schemas, mirror = null,
-                                        cache = new Map(), origin = 'the OpenSheaf manager', progress = () => {},
-                                        attempts = 3 }) {
+    export async function directSetup({ repo, github, fields, keyLog, defaultBase = null, ownerLabel = '', env, schemas,
+                                        mirror = null, cache = new Map(), origin = 'the OpenSheaf manager',
+                                        progress = () => {}, attempts = 3 }) {
+      const owner = ownerLabel ? (await keyLog.storage.read(`${keyLog.dir ? keyLog.dir + '/' : ''}inventory.json`)) : null;
+      const after = ownerLabel ? async (storage) => {
+        const id = JSON.parse(new TextDecoder().decode(owner)).id;
+        await labelOwner(storage, env, id.split(':')[1], ownerLabel);
+      } : null;
       return directWrite({ repo, github, operation: 'setup', fields, env, schemas, mirror, cache, origin, progress, attempts,
-                           options: { keyLog, defaultBase } });
+                           options: { keyLog, defaultBase }, after });
+    }
+
+A label for the owner in the archive (section 3.1: an archive may label
+any line it lists, owner objects included), given when the archive is set
+up: written in the discovery document as the labels of documents and
+collections are, and kept there by every later command of either program,
+which take the labels of the discovery document as they find them; the
+indexes and the website are written again. `osheaf` has no command that
+labels an owner object; the label is the archive's, not signed by the
+owner. It is checked as a label of a collection is (at most 64
+characters here), and must not be taken.
+
+    // in the owner, made in the page:
+    const LABEL = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+    export function ownerLabelProblem(label) {
+      if (!LABEL.test(label) || label.length > 64) {
+        return `\`${label}\` is not a valid label: at most 64 characters, lower-case letters and digits, words joined by \`-\``;
+      }
+      return null;
+    }
+
+    export async function labelOwner(storage, env, owner, label) {
+      const problem = ownerLabelProblem(label);
+      if (problem) throw new OwnerError(problem);
+      const f = await ArchiveFolder.open(storage, env);
+      const id = objectId(owner, owner);
+      const taken = f.labels.get(label);
+      if ((taken && taken !== id) || label === f.archive.mainCollection) {
+        throw new OwnerError(`\`${label}\` is already taken in this archive`);
+      }
+      for (const [l, i] of [...f.labels]) if (i === id) f.labels.delete(l);
+      f.labels.set(label, id);
+      await writeDiscovery(f);
+      if (hasWebsite(f)) await readableIndex(f);
     }
 
 A secret for the workflows
@@ -823,7 +864,9 @@ files to match their inventories (`digests: false`): they are git blobs,
 named by their content, and unchanged. The prefetch reads twelve files
 at a time: most come from the mirror, a CDN.
 
-`progress(phase)` is told `reading`, `carrying out` and `committing`.
+`after(storage)`, given for the setup, changes the storage once the
+request is carried out (the owner's label, above), which is then verified
+again. `progress(phase)` is told `reading`, `carrying out` and `committing`.
 The answer is that of `carryOut`, with the commit (`null` when the
 request was refused, and nothing was committed).
 
@@ -836,10 +879,20 @@ request was refused, and nothing was committed).
 
     export async function directWrite({ repo, github, operation, fields, files = {}, env, schemas, assets = null,
                                         mirror = null, cache = new Map(), origin = 'the OpenSheaf manager',
-                                        progress = () => {}, attempts = 3, options = {} }) {
+                                        progress = () => {}, attempts = 3, options = {}, after = null }) {
       const done = await oneCommit(repo, github, async (storage) => {
         progress('carrying out');
         const answer = await carryOut(storage, env, operation, fields, files, { origin, schemas, digests: false, ...options });
+        if (answer.ok && after) {
+          await after(storage);
+          if (schemas) {
+            const report = await verifyFolder(storage, { schemas, digests: false, fetch: env.fetch, fetchJson: env.fetchJson });
+            if (report.counts().error) {
+              throw new OwnerError(`the archive would not verify: ${report.findings.filter((x) => x.level === 'error')
+                .slice(0, 5).map((x) => `${x.place}: ${x.message}`).join('; ')}`);
+            }
+          }
+        }
         if (answer.ok) progress('committing');
         return { message: answer.ok ? answer.commitMessage : null, answer };
       }, { mirror, cache, attempts, prepare: async (storage) => {

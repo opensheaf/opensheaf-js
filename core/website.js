@@ -6,7 +6,11 @@ import { Http } from './http.js';
 import { pathOf } from './paths.js';
 import { sha512hex } from './write.js';
 import { compareText, joinPath } from './storage.js';
-import { GENESIS, OBJ, plural, exit } from './folder.js';
+import { GENESIS, OBJ, CONFIG_NAME, plural, exit } from './folder.js';
+import { readJson, writeText } from './storage.js';
+import { LABEL } from './names.js';
+import { writeDiscovery } from './discovery.js';
+import { lineOf } from './describe.js';
 import { displayName } from './deposit.js';
 import { keeperOf, keeperLink, successorClaim, CONFIRMED } from './keepers.js';
 
@@ -429,7 +433,16 @@ export async function render(f, members, { home = true, featured = null, keeperF
   for (const [url, last] of urls) sm.push(`  <url><loc>${esc(url)}</loc>` + (last ? `<lastmod>${last}</lastmod>` : '') + '</url>');
   sm.push('</urlset>');
   await f.storage.write('sitemap.xml', new TextEncoder().encode(sm.join('\n') + '\n'));
-  for (const [folder, keep] of [['paper', new Set(written)], ['owner', new Set(ownerPages)]]) {
+  const moved = [];
+  const former = Object.entries(f.archive.formerAddresses || {}).sort((a, b) => compareText(a[0], b[0]));
+  for (const [address, id] of former) {
+    if (written.includes(address) || !pages.has(id) || !LABEL.test(address)) continue;
+    const slug = site.lines.get(id).slug;
+    await f.storage.write(`paper/${address}/index.html`,
+                          new TextEncoder().encode(redirectPage(`../${slug}/`, `${base}paper/${slug}/`)));
+    moved.push(address);
+  }
+  for (const [folder, keep] of [['paper', new Set([...written, ...moved])], ['owner', new Set(ownerPages)]]) {
     for (const entry of (await f.storage.list(folder)) || []) {
       if (entry.kind === 'dir' && !keep.has(entry.name)) await removeAll(f.storage, `${folder}/${entry.name}`);
     }
@@ -437,7 +450,17 @@ export async function render(f, members, { home = true, featured = null, keeperF
   return written.length;
 }
 
-async function removeAll(storage, path) {
+export const REDIRECT_MARK = '<!-- opensheaf: a former address -->';
+
+export function redirectPage(href, canonical) {
+  return `<!DOCTYPE html>\n${REDIRECT_MARK}\n<html lang="en">\n<head>\n<meta charset="utf-8">\n` +
+    `<title>Moved</title>\n<link rel="canonical" href="${esc(canonical)}">\n` +
+    '<meta name="robots" content="noindex">\n' +
+    `<meta http-equiv="refresh" content="0; url=${esc(href)}">\n</head>\n` +
+    `<body><p>This page has moved to <a href="${esc(href)}">${esc(canonical)}</a>.</p></body>\n</html>\n`;
+}
+
+export async function removeAll(storage, path) {
   if ((await storage.kind(path)) === 'dir') {
     for (const entry of (await storage.list(path)) || []) await removeAll(storage, `${path}/${entry.name}`);
   }
@@ -765,5 +788,109 @@ export async function present(f) {
     await readableIndex(f);
   } catch (error) {
     f.env.err(`warning: the website was not regenerated (${error.message}); run osheaf index`);
+  }
+}
+
+export async function labelCommand(f, args) {
+  const env = f.env;
+  const given = [args.line, args.label].filter((x) => x);
+  const owner = args.owner || null, unset = Boolean(args.unset);
+  let id, fresh, extra;
+  if (owner) {
+    if (!OWNER_NAME_RE.test(owner)) exit(`--owner: an owner name, not ${owner}`);
+    id = `sheaf:${owner}:${owner}`;
+    if ((await f.storage.kind(joinPath(await f.dirOf(id), 'inventory.json'))) !== 'file') {
+      exit(`the archive holds no key log of ${owner}`);
+    }
+    [fresh = null, ...extra] = given;
+  } else {
+    if (!given.length) exit('osheaf label LINE LABEL, or osheaf label --owner OWNER LABEL; --unset removes the label');
+    id = await lineOf(f, given[0]);
+    fresh = given[1] ?? null;
+    extra = given.slice(2);
+  }
+  if (id.startsWith('sheaf:draft:')) exit('a draft has no label: its identifier names it (section 10.1)');
+  if (extra.length || Boolean(fresh) === unset) exit('give the new label, or --unset');
+  const old = f.labelOf(id);
+  const cfg = await readJson(f.storage, CONFIG_NAME);
+  const featured = cfg.index?.html?.featured;
+  if (fresh) {
+    if (!LABEL.test(fresh) || fresh.length > 64) {
+      exit('a label must match ^[a-z0-9]+(-[a-z0-9]+)*$ and have at most 64 characters');
+    }
+    if (fresh === old) {
+      env.out(`${fresh}: unchanged`);
+      return;
+    }
+    if (f.labels.has(fresh) || fresh === cfg.mainCollection) {
+      exit(`${fresh} is the label of another line already: ${f.labels.get(fresh) ?? 'the main catalogue'}`);
+    }
+    if (fresh.length > 32) env.err(`warning: ${fresh} is longer than 32 characters (it appears in every URL of the website)`);
+  } else if (old === null) {
+    env.out(`${id}: has no label`);
+    return;
+  } else if (old === cfg.mainCollection || old === featured) {
+    exit(`${old} names the ${old === cfg.mainCollection ? 'main catalogue' : 'featured collection'} in ` +
+         `${CONFIG_NAME}: give it another label instead`);
+  }
+  const dir = await f.dirOf(id);
+  const kind = ((await f.readObjectJson(dir, await f.inventory(dir), OBJ)) || {}).kind;
+  const before = await pageAddress(f, id);
+  if (old) f.labels.delete(old);
+  if (fresh) f.labels.set(fresh, id);
+  const after = await pageAddress(f, id);
+  const former = { ...(cfg.formerAddresses || {}) };
+  delete former[after];
+  const moves = ['document', 'collection'].includes(kind) && before !== after;
+  if (moves) {
+    former[before] = id;
+    await moveHtmlVersion(f, id, before, after, former);
+  }
+  const sorted = Object.entries(former).sort((a, b) => compareText(a[0], b[0]));
+  if (sorted.length) cfg.formerAddresses = Object.fromEntries(sorted);
+  else delete cfg.formerAddresses;
+  if (old && cfg.mainCollection === old) cfg.mainCollection = fresh;
+  if (old && featured === old) cfg.index.html.featured = fresh;
+  await f.writeConfig(cfg);
+  f.changed();
+  await writeDiscovery(f);
+  env.out(fresh ? `Done: ${id} is labelled ${fresh}` + (old ? `, no longer ${old}.` : '.')
+    : `Done: ${id} has no label any more (it was ${old}).`);
+  if (moves) env.out(`Its old address paper/${before}/ leads to paper/${after}/ (${CONFIG_NAME}, formerAddresses).`);
+  if (f.index.template) env.out('Run osheaf index to typeset the TeXmacs index with the new label.');
+}
+
+const OWNER_NAME_RE = /^[a-z2-7]{52}$/;
+
+async function redirectOnly(f, folder, address) {
+  if ((await f.storage.kind(folder)) !== 'dir') return false;
+  const entries = (await f.storage.list(folder)) || [];
+  if (entries.length !== 1 || entries[0].name !== `${address}.html` || entries[0].kind !== 'file') return false;
+  return new TextDecoder().decode(await f.storage.read(`${folder}/${address}.html`)).includes(REDIRECT_MARK);
+}
+
+async function moveTree(storage, from, to) {
+  for (const e of (await storage.list(from)) || []) {
+    if (e.kind === 'dir') await moveTree(storage, `${from}/${e.name}`, `${to}/${e.name}`);
+    else await storage.write(`${to}/${e.name}`, await storage.read(`${from}/${e.name}`));
+  }
+  await removeAll(storage, from);
+}
+
+async function moveHtmlVersion(f, id, before, after, former) {
+  const src = `site/${before}`, dst = `site/${after}`;
+  if ((await f.storage.kind(`${src}/${before}.html`)) !== 'file' || (await redirectOnly(f, src, before))) return;
+  if (await f.storage.kind(dst)) {
+    if (!(await redirectOnly(f, dst, after))) exit(`${dst} is in the way of the HTML version of ${id}`);
+    await removeAll(f.storage, dst);
+  }
+  await moveTree(f.storage, src, dst);
+  await f.storage.write(`${dst}/${after}.html`, await f.storage.read(`${dst}/${before}.html`));
+  await f.storage.remove(`${dst}/${before}.html`);
+  for (const [address, i] of Object.entries(former)) {
+    if (i === id && LABEL.test(address)) {
+      await writeText(f.storage, `site/${address}/${address}.html`,
+                      redirectPage(`../${after}/${after}.html`, `${f.archive.baseUrl}site/${after}/${after}.html`));
+    }
   }
 }

@@ -1,9 +1,9 @@
 // Generated from literate/42-takedown.md by opensheaf-literate: edit the document, not this file.
-import { nameOf } from './names.js';
+import { nameOf, LABEL } from './names.js';
 import { sidecarDigest } from './owners.js';
-import { joinPath } from './storage.js';
+import { joinPath, readJson } from './storage.js';
 import { writeIndexes, writeDiscovery } from './discovery.js';
-import { OBJ, GENESIS, exit } from './folder.js';
+import { OBJ, GENESIS, CONFIG_NAME, exit } from './folder.js';
 import { lineOf } from './describe.js';
 
 export function tombstoneOf(f, id) {
@@ -94,7 +94,19 @@ export async function takedown(f, args) {
   await writeIndexes(f);
   const label = f.labelOf(id);
   if (label) f.labels.delete(label);
-  for (const folder of [`paper/${label || name}`, `site/${label || name}`]) await removeFolder(f.storage, folder);
+  const cfg = await readJson(f.storage, CONFIG_NAME);
+  const former = { ...(cfg.formerAddresses || {}) };
+  const gone = Object.keys(former).filter((a) => former[a] === id);
+  for (const folder of [`paper/${label || name}`, `site/${label || name}`,
+                        ...gone.filter((a) => LABEL.test(a)).map((a) => `site/${a}`)]) {
+    await removeFolder(f.storage, folder);
+  }
+  if (gone.length) {
+    for (const a of gone) delete former[a];
+    if (Object.keys(former).length) cfg.formerAddresses = former;
+    else delete cfg.formerAddresses;
+    await f.writeConfig(cfg);
+  }
   await removeFolder(f.storage, dir);
   await removeEmptyAbove(f.storage, dir);
   f.changed();

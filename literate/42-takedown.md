@@ -14,7 +14,9 @@ What a takedown does, as opensheaf-py does it:
 
 - it deletes a sealed object, its witness folder included, from the
   storage root, with the folders the deletion leaves empty, and its
-  landing page and HTML version; the rest of the website is written again
+  landing page and HTML version, and its former addresses
+  (`formerAddresses` of `osheaf.json`, written by `osheaf label`, chapter
+  [31](31-website.md)), their pages and their record; the rest of the website is written again
   after the command, as after every change, and leaves out every member
   whose line has a tombstone (chapter [31](31-website.md));
 - it leaves in place the key logs a line's copy carries (section 6.5);
@@ -35,11 +37,11 @@ A draft is never taken down: it is deleted, and leaves no tombstone
 (chapter [41](41-drafts.md)).
 
     // in core/takedown.js:
-    import { nameOf } from './names.js';
+    import { nameOf, LABEL } from './names.js';
     import { sidecarDigest } from './owners.js';
-    import { joinPath } from './storage.js';
+    import { joinPath, readJson } from './storage.js';
     import { writeIndexes, writeDiscovery } from './discovery.js';
-    import { OBJ, GENESIS, exit } from './folder.js';
+    import { OBJ, GENESIS, CONFIG_NAME, exit } from './folder.js';
     import { lineOf } from './describe.js';
 
     <<takedown: the tombstone of a line, and its return>>
@@ -176,7 +178,19 @@ catalogue keeps its member, a pin of a version now removed (section
       await writeIndexes(f);
       const label = f.labelOf(id);
       if (label) f.labels.delete(label);
-      for (const folder of [`paper/${label || name}`, `site/${label || name}`]) await removeFolder(f.storage, folder);
+      const cfg = await readJson(f.storage, CONFIG_NAME);
+      const former = { ...(cfg.formerAddresses || {}) };
+      const gone = Object.keys(former).filter((a) => former[a] === id);
+      for (const folder of [`paper/${label || name}`, `site/${label || name}`,
+                            ...gone.filter((a) => LABEL.test(a)).map((a) => `site/${a}`)]) {
+        await removeFolder(f.storage, folder);
+      }
+      if (gone.length) {
+        for (const a of gone) delete former[a];
+        if (Object.keys(former).length) cfg.formerAddresses = former;
+        else delete cfg.formerAddresses;
+        await f.writeConfig(cfg);
+      }
       await removeFolder(f.storage, dir);
       await removeEmptyAbove(f.storage, dir);
       f.changed();

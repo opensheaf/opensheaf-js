@@ -11,6 +11,7 @@ import { readJson, readText, writeText, joinPath, MemoryStorage } from './storag
 import { jsonText } from './write.js';
 import { parseData } from './inputs.js';
 import { init } from './init.js';
+import { keyWallet } from './owner.js';
 
 export class Problem extends Error {}
 
@@ -766,6 +767,8 @@ async function setupOp(r, form, origin) {
     if (value) args[option] = value;
   }
   await initCommand(r, args);
+  const wallet = field(form, 'Key wallet');
+  if (wallet) await osheaf(r, (f) => keyWallet(f, { owner, add: wallet }, f.env), { presented: false });
   if ((await r.storage.kind(KEY_LOG)) === 'dir') await removeTree(r.storage, KEY_LOG);
   const purpose = field(form, 'Purpose').toLowerCase() || 'papers';
   let done;

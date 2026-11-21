@@ -23,20 +23,28 @@ enrolled. There are two kinds of wallet, as in opensheaf-py (its chapter
   archive.
 
 The wallet is named by `--keys` (the commands that make keys) or
-`--wallet` (the key commands), or configured: `OPENSHEAF_WALLET` (text or
-JSON) wins, then `keys` of the user's configuration file
-`~/.config/opensheaf/config.json`, then `keys` of `osheaf.json`, which may
-name a GitHub wallet only.
+`--wallet` (the key commands), or configured. Wallets and owners are many
+to many: a wallet may hold the keys of several owners, several people may
+share an owner's keys in one wallet (each with a passkey of their own), and
+an owner's keys may be in several wallets. So the user's configuration file
+`~/.config/opensheaf/config.json` lists the wallets the user reads
+(`{"wallets": [...]}`), and `keys` of `osheaf.json` hints, for each owner,
+the wallets that hold its keys (`{"<owner>": {"wallets": [...]}}`, GitHub
+wallets only). `OPENSHEAF_WALLET` (text or JSON) wins; otherwise the keys
+of an owner are looked for in its hinted wallets, then in the user's, the
+first that holds keys of the owner being used.
 
 The core reaches the outside through the environment of the command
-(chapter [23](23-folder.md)): `env.wallets` gives the user's configuration,
-`OPENSHEAF_WALLET`, a `fetch` and a token for GitHub, and a runner of
-shell commands. The module is `core/wallets.js`.
+(chapter [23](23-folder.md)): `env.wallets` gives the user's configuration
+(`userConfig`, the commands of a command wallet; `userFile`, the whole
+file, when it can be read, and `writeUserFile`, for `osheaf key wallets
+--add`), `OPENSHEAF_WALLET`, a `fetch` and a token for GitHub, and a runner
+of shell commands. The module is `core/wallets.js`.
 
     // in core/wallets.js:
     import { OWNER_NAME } from './names.js';
     import { readKey, keyFileText, addPasskey as addPasskeyLock, KeyError, PassphraseNeeded, KINDS, ROTATION,
-             ENVELOPE, PASSKEY_RP, wrapsOf, base64 } from './keys.js';
+             ENVELOPE, PASSKEY_RP, wrapsOf, base64, passkeysOf } from './keys.js';
     import { unbase64, utf8 } from './crypto.js';
     import { short } from './folder.js';
 
@@ -107,24 +115,98 @@ archive itself, which is public, and never a wallet.
       if (spec.startsWith('github:')) {
         const repo = spec.slice('github:'.length);
         if (!REPO.test(repo)) throw new WalletError(`a GitHub wallet is github:OWNER/REPO: ${spec}`);
-        return new GitHubWallet(repo, env.wallets.github, forbidden);
+        return new GitHubWallet(repo, env.wallets?.github, forbidden);
       }
       if (spec === 'command') return new CommandWallet(config || env.wallets.userConfig(), env.wallets);
       throw new WalletError(`a security level is offline, github:OWNER/REPO or command: ${spec}`);
     }
 
-    export function configuredWallet(config, env, { forbidden = [] } = {}) {
-      config = config && typeof config === 'object' && !Array.isArray(config) ? config : {};
-      if (config.wallet === 'command' || COMMANDS.some((c) => c in config)) {
-        throw new WalletError('osheaf.json configures a command wallet ("keys"), whose commands would run on this ' +
-          'machine: they are read only from your own configuration. Move "keys" to ' +
-          `${env.wallets.userConfigPath()} (or to ${WALLET}), and leave osheaf.json without it`);
+The wallets of an owner, in the order they are tried (opensheaf-py's
+`candidates`): that of `OPENSHEAF_WALLET` alone; or else those
+`osheaf.json` hints for the owner (its entry's `wallets`, and `wallet`,
+then those of the entry for every owner, the earlier form `{"wallet":
+...}`), then the user's (`wallets` of the file, then its earlier `keys`),
+each once. A command wallet anywhere in `osheaf.json` is refused.
+`candidateWallets` gives `[wallet, place]`, which the Manager uses too.
+
+    // in choosing a wallet:
+    export const CONFIG_FILE = 'osheaf.json';
+
+    function isMap(x) {
+      return x !== null && typeof x === 'object' && !Array.isArray(x);
+    }
+
+    function named(e) {
+      if (!isMap(e)) return [];
+      const out = Array.isArray(e.wallets) ? e.wallets.filter((w) => typeof w === 'string') : [];
+      return e.wallet ? [...out, String(e.wallet)] : out;
+    }
+
+    export function hints(config, owner = null) {
+      config = isMap(config) ? config : {};
+      const out = [];
+      for (const w of [...(owner ? named(config[owner]) : []), ...named(config)]) if (!out.includes(w)) out.push(w);
+      return out;
+    }
+
+    export function userWallets(env) {
+      const data = env.wallets.userFile ? env.wallets.userFile() : { keys: env.wallets.userConfig() };
+      const out = isMap(data) && Array.isArray(data.wallets)
+        ? data.wallets.filter((w) => typeof w === 'string' && w.trim()).map((w) => w.trim()) : [];
+      const old = isMap(data) && isMap(data.keys) ? data.keys.wallet : null;
+      return old && !out.includes(String(old)) ? [...out, String(old)] : out;
+    }
+
+    export function checkArchiveConfig(config, env) {
+      config = isMap(config) ? config : {};
+      const entries = [config, ...Object.entries(config).filter(([k, v]) => OWNER_NAME.test(k) && isMap(v)).map(([, v]) => v)];
+      for (const e of entries) {
+        if (named(e).includes('command') || COMMANDS.some((c) => c in e)) {
+          throw new WalletError('osheaf.json configures a command wallet ("keys"), whose commands would run on ' +
+            'this machine: they are read only from your own configuration. Move "keys" to ' +
+            `${env.wallets.userConfigPath()} (or to ${WALLET}), and leave osheaf.json without it`);
+        }
       }
+    }
+
+    export function candidateWallets(config, env, owner = null) {
+      checkArchiveConfig(config, env);
       const given = (env.wallets.walletEnv() || '').trim();
-      if (given) return parseWallet(given, env, { forbidden });
-      const user = env.wallets.userConfig();
-      if (user.wallet) return parseWallet(String(user.wallet), env, { config: user, forbidden });
-      return parseWallet(config.wallet, env, { forbidden });
+      if (given) return [[given, WALLET]];
+      const out = hints(config, owner).map((w) => [w, CONFIG_FILE]);
+      const seen = new Set(out.map(([w]) => w));
+      for (const w of userWallets(env)) if (!seen.has(w)) out.push([w, env.wallets.userConfigPath()]);
+      return out;
+    }
+
+The wallet of an owner is then the first candidate that holds keys of
+it (its folder listed); one that cannot be read or listed is passed over;
+a single candidate is taken without a listing; when none holds keys of the
+owner, the first, where its keys would go. Without an owner, the first.
+
+    // in choosing a wallet:
+    export async function configuredWallet(config, env, { forbidden = [], owner = null } = {}) {
+      const named = candidateWallets(config, env, owner);
+      const wallets = [];
+      for (const [spec] of named) {
+        let w;
+        try {
+          w = parseWallet(spec, env, { forbidden });
+        } catch (error) {
+          if (named.length === 1 || !(error instanceof WalletError)) throw error;
+          continue;
+        }
+        if (w) wallets.push(w);
+      }
+      if (wallets.length <= 1 || !owner) return wallets[0] || null;
+      for (const w of wallets) {
+        try {
+          if ((await w.entries(owner)).length) return w;
+        } catch (error) {
+          if (!(error instanceof WalletError)) throw error;
+        }
+      }
+      return wallets[0];
     }
 
 The archive's own repositories
@@ -298,6 +380,11 @@ command in the shell, and answers its status and outputs.
               "write":  "...",                          receives the key file on its standard input
               "list":   "...",                          optional: prints "<owner> <k>" per key
               "forget": "..."}}                         optional: removes a key
+
+    {"wallets": ["github:OWNER/REPO", "command", ...]}  the key wallets you read, in order: the
+                                                        keys of an owner are looked for in those
+                                                        osheaf.json hints for it, then in these
+                                                        (osheaf key wallets --add|--remove)
 
     The commands run in the shell; {owner} is the owner name, {k} the 16 characters
     that name the key, {kind} current or rotation. read prints the key file as it was
@@ -483,6 +570,33 @@ before its seed (never the seed), and its locks.
         if (!out.includes(method)) out.push(method);
       }
       return out;
+    }
+
+For `osheaf key wallets`, and for the Manager, which shows the owners of
+a wallet before the person chooses those to unlock: `ownersHeld` sums a
+wallet up by owner, `[owner, number of keys, locks in words]`: by the
+passphrase, by so many passkeys (counted by credential over the owner's
+keys: each person or device family that enrolled one), or not at all.
+
+    // in keys in and out of a wallet:
+    export async function ownersHeld(wallet, owner = null) {
+      const by = new Map();
+      for (const [o, kid] of await wallet.entries(owner)) {
+        const text = await readAny(wallet, o, kid);
+        const held = locks(text);
+        const b = by.get(o) || { n: 0, phrase: false, creds: new Set(), bare: 0 };
+        b.n += 1;
+        b.phrase ||= held.includes('passphrase');
+        for (const p of passkeysOf(text)) b.creds.add(p.cred);
+        if (!held.length) b.bare += 1;
+        by.set(o, b);
+      }
+      return [...by].map(([o, b]) => {
+        const words = [...(b.phrase ? ['passphrase'] : []),
+                       ...(b.creds.size ? [`${b.creds.size} passkey${b.creds.size !== 1 ? 's' : ''}`] : []),
+                       ...(b.bare ? [`${b.bare} without a lock`] : [])];
+        return [o, b.n, words.join(', ') || 'no lock'];
+      });
     }
 
     export async function listing(wallet, owner = null) {

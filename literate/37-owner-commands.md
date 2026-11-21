@@ -55,7 +55,8 @@ The module is `core/owner.js`.
     import { rotate, end, pull, describeLog, loadKeyLog, checked, OwnerError } from './keylogs.js';
     import { keeperLink, keeperOf, successorClaim, NOT_CHECKED } from './keepers.js';
     import { WalletError, parseWallet, configuredWallet, archiveRepositories, putKey, getKey, readAny,
-             addPasskey as addPasskeyToWallet, listing, locks, describeEntry, risk, CommandWallet, OFFLINE } from './wallets.js';
+             addPasskey as addPasskeyToWallet, listing, locks, describeEntry, risk, CommandWallet, OFFLINE,
+             hints, candidateWallets, userWallets, ownersHeld, WALLET } from './wallets.js';
     import { UnlockFailed } from './passkey.js';
     import { writeDiscovery } from './discovery.js';
     import { exportAndConfirm, keyLabel, rotationLine, ownerInit, SINGLE_ROTATION_RISK } from './init.js';
@@ -193,7 +194,9 @@ The wallet of a command
 
 The security level `--keys` (or `--wallet`): `offline` or nothing is
 none; `command` is the command wallet configured; else the wallet named.
-A command that reads keys takes the wallet named, or the one configured.
+A command that reads keys takes the wallet named, or the one configured
+for the owner it is about (chapter [35](35-wallets.md)): `owner` null, for
+a command about no owner yet, takes the first wallet configured.
 
     // in the wallet of a command:
     export async function forbiddenRepositories(f) {
@@ -201,20 +204,20 @@ A command that reads keys takes the wallet named, or the one configured.
       return archiveRepositories(f.env.wallets?.remotes ? await f.env.wallets.remotes() : '', f.archive.baseUrl);
     }
 
-    export async function configured(f, env = f.env) {
+    export async function configured(f, env = f.env, owner = null) {
       try {
-        return configuredWallet(f?.archive.keys, env, { forbidden: await forbiddenRepositories(f) });
+        return await configuredWallet(f?.archive.keys, env, { forbidden: await forbiddenRepositories(f), owner });
       } catch (error) {
         return walletStop(error);
       }
     }
 
-    export async function levelWallet(f, args, env = f.env) {
+    export async function levelWallet(f, args, env = f.env, owner = null) {
       const spec = args.keys || args.wallet || OFFLINE;
       if (spec === OFFLINE) return null;
       try {
         if (spec === 'command') {
-          const w = await configured(f, env);
+          const w = await configured(f, env, owner);
           return w instanceof CommandWallet ? w : parseWallet(spec, env);
         }
         return parseWallet(spec, env, { forbidden: await forbiddenRepositories(f) });
@@ -223,8 +226,8 @@ A command that reads keys takes the wallet named, or the one configured.
       }
     }
 
-    async function walletFor(f, args, env) {
-      const w = (await levelWallet(f, args, env)) || (await configured(f, env));
+    async function walletFor(f, args, env, owner = null) {
+      const w = (await levelWallet(f, args, env, owner)) || (await configured(f, env, owner));
       if (!w) {
         stop('no key wallet: give --wallet github:OWNER/REPO (or command), or configure one in ' +
              `${env.wallets.userConfigPath()} or osheaf.json ("keys": {"wallet": ...}) or in OPENSHEAF_WALLET`);
@@ -232,9 +235,41 @@ A command that reads keys takes the wallet named, or the one configured.
       return w;
     }
 
-    export function walletConfig(args) {
+    export function walletConfig(args, owner) {
       const spec = args.keys || '';
-      return spec.startsWith('github:') ? { wallet: spec } : null;
+      return spec.startsWith('github:') ? { [owner]: { wallets: [spec] } } : null;
+    }
+
+A GitHub wallet given to a command that keeps keys in it is recorded in
+`osheaf.json` as a hint for the owner, added to those it has, unless it is
+one of them (opensheaf-py's `record_wallet`); `hinted` adds or removes one.
+`writeConfig` writes `osheaf.json` and the settings of this run.
+
+    // in the wallet of a command:
+    export async function writeConfig(f, cfg) {
+      await f.writeConfig(cfg);
+    }
+
+    export function hinted(cfg, owner, spec, add = true) {
+      const given = cfg.keys && typeof cfg.keys === 'object' && !Array.isArray(cfg.keys) ? { ...cfg.keys } : {};
+      let own = hints({ [owner]: given[owner] }, owner);
+      own = add ? [...own, spec] : own.filter((w) => w !== spec);
+      if (own.length) given[owner] = { wallets: own };
+      else delete given[owner];
+      const out = { ...cfg };
+      if (Object.keys(given).length) out.keys = given;
+      else delete out.keys;
+      return out;
+    }
+
+    export async function recordWallet(f, owner, spec) {
+      spec = (spec || '').trim();
+      if (!f || !spec.startsWith('github:')) return;
+      const cfg = await readJson(f.storage, CONFIG_NAME);
+      if (!cfg || hints(cfg.keys, owner).includes(spec)) return;
+      await writeConfig(f, hinted(cfg, owner, spec));
+      f.env.out(`The key wallet ${spec} is recorded in ${CONFIG_NAME} for ${short(owner)} ` +
+                `(osheaf key wallet --remove ${spec} removes it).`);
     }
 
     export function keptWhere(args, w, resolved) {
@@ -306,7 +341,7 @@ version needs.
     export async function rotationSigners(f, args, owner, prev) {
       const env = f.env;
       if (args.rotationKey?.length) return [await rotationKeysFromFiles(f, args.rotationKey, owner), null];
-      const w = (await configured(f)) || (await levelWallet(f, args));
+      const w = (await configured(f, env, owner)) || (await levelWallet(f, args, env, owner));
       if (!w) {
         stop('give the rotation keys that sign the new version of the key log (--rotation-key FILE), ' +
              'or the wallet that keeps them (--keys github:OWNER/REPO)');
@@ -337,9 +372,9 @@ Owner init, in an archive
 -------------------------
 
 `osheaf owner init` makes another owner in an archive (chapter
-[27](27-init.md) makes it), adds it to the owners of `osheaf.json`, with
-the GitHub wallet of `--keys` if the archive names none, and writes the
-discovery document again.
+[27](27-init.md) makes it), adds it to the owners of `osheaf.json`, records
+the GitHub wallet of `--keys` as a hint for it, and writes the discovery
+document again.
 
     // in owner init, in an archive:
     export async function ownerInitCommand(f, args) {
@@ -352,11 +387,8 @@ discovery document again.
           f.archive.owners = [...(f.archive.owners || []), log.owner];
           changed = true;
         }
-        if (walletConfig(args) && !('keys' in cfg)) {
-          cfg.keys = f.archive.keys = walletConfig(args);
-          changed = true;
-        }
         if (changed) await writeText(f.storage, CONFIG_NAME, jsonText(cfg));
+        await recordWallet(f, log.owner, args.keys);
       }
       await writeDiscovery(f);
     }
@@ -384,7 +416,7 @@ keys exposed. Moving from a wallet to the offline level (`--keys offline
       const who = short(owner);
       const prev = log.latest();
       if (!prev) stop(`the owner ${who} has ended (section 6.3): its key log takes no new version`);
-      const w = await levelWallet(f, args);
+      const w = await levelWallet(f, args, env, owner);
       if (!w && !args.export) {
         stop('give --export DIR, a folder outside the archive where the new rotation keys are written ' +
              '(or keep them in a wallet, a lower security level: --keys github:OWNER/REPO|command)');
@@ -426,6 +458,7 @@ keys exposed. Moving from a wallet to the offline level (`--keys offline
       env.out(rotationLine(nRot, nextThreshold, keptWhere(args, w, resolved), true));
       if (exposed.length) env.out('What an exposed key alone signed is contested (section 7.3): osheaf sign signs it again.');
       if (source && !w) env.err(MOVED_UP(source.name));
+      if (w) await recordWallet(f, owner, args.keys);
     }
 
     export async function ownerExpose(f, args) {
@@ -604,7 +637,7 @@ what the wallet holds, without a secret.
       const who = short(owner);
       const latest = log.latest();
       if (!latest) stop(`the owner ${who} has ended (section 6.3)`);
-      const w = await walletFor(f, args, env);
+      const w = await walletFor(f, args, env, owner);
       const dids = args.did?.length ? [...args.did] : [...latest.keys.keys];
       const here = await currentHere(f, owner, dids);
       if (!here.length) stop(`this computer holds none of the keys ${dids.map(short).join(', ')} of ${who}`);
@@ -618,6 +651,7 @@ what the wallet holds, without a secret.
       const n = here.length;
       if (there.size === n) {
         env.out(`${n === 1 ? 'The current key' : `The ${n} current keys`} of ${who} ${n === 1 ? 'is' : 'are'} already in ${w.name}.`);
+        await recordWallet(f, owner, args.wallet);
         return;
       }
       env.warn(risk(w.name, owner));
@@ -642,6 +676,7 @@ what the wallet holds, without a secret.
       const lock = plain ? 'with no lock (--plain-current)'
         : unlocked.length ? 'locked with your passkey and your passphrase' : 'locked with your passphrase';
       env.out(`Done: ${plural(n - there.size, 'current key')} of ${who} saved to ${w.name}, ${lock}.`);
+      await recordWallet(f, owner, args.wallet);
     }
 
     export async function keyPull(f, args) {
@@ -649,7 +684,7 @@ what the wallet holds, without a secret.
       const [owner, log] = await ownerOf(f, args);
       const latest = log.latest();
       if (!latest) stop(`the owner ${short(owner)} has ended (section 6.3)`);
-      const w = await walletFor(f, args, env);
+      const w = await walletFor(f, args, env, owner);
       if (!env.keyStore.keptOnDevice()) {
         env.out(notKept(w, owner));
         return;
@@ -702,7 +737,7 @@ through the environment.
 
     // in push, pull and list:
     export async function pullFromWallet(f, owner, latest, found) {
-      const w = await configured(f);
+      const w = await configured(f, f.env, owner);
       if (!w) return found;
       const held = new Set(found.map((k) => k.did));
       const more = await pullCurrentKeys(f.env, w, owner, latest.keys.keys.filter((d) => !held.has(d)));
@@ -710,8 +745,8 @@ through the environment.
     }
 
     export async function keyList(f, args, env) {
-      const w = await walletFor(f, args, env);
       const owner = args.owner || null;
+      const w = await walletFor(f, args, env, owner || f?.archive.owner || null);
       let rows;
       try {
         rows = await listing(w, owner);
@@ -728,6 +763,150 @@ through the environment.
                      ...rows.map(([o, , kind, did, version, l]) => [short(o), kind, short(did), version || '-', l.join(', ') || 'none'])];
       const widths = [0, 1, 2, 3].map((i) => Math.max(...table.map((r) => [...r[i]].length)));
       for (const r of table) env.out('  ' + r.slice(0, 4).map((c, i) => c + ' '.repeat(widths[i] - [...c].length)).join('  ') + '  ' + r[4]);
+    }
+
+`osheaf key wallet` and `osheaf key wallets`, the two sides of the many
+to many (opensheaf-py's `key_wallet` and `key_wallets`): the wallets in
+which the keys of an owner are looked for, in order, with the hints of
+`osheaf.json` added (`--add`) or removed (`--remove`); and the wallets of
+the person, with, for each, the owners whose keys it holds and their
+locks, and the list of the configuration file changed. The configuration
+file is written as Python's `json.dumps(..., indent=2, ensure_ascii=False)`
+writes it.
+
+    // in push, pull and list:
+    export async function keyWallet(f, args, env) {
+      const owner = keyOwner(f, args), who = short(owner);
+      const add = args.add || null, remove = args.remove || null;
+      if (add && remove) stop('give --add or --remove, not both');
+      if (!add && !remove) {
+        let found;
+        try {
+          found = candidateWallets(f?.archive.keys, env, owner);
+        } catch (error) {
+          walletStop(error);
+        }
+        if (!found.length) {
+          env.out(`No key wallet is configured for ${who}: osheaf key wallet --add github:OWNER/REPO hints one ` +
+                  `in ${CONFIG_NAME}, osheaf key wallets --add github:OWNER/REPO adds one to yours.`);
+          return;
+        }
+        env.out(`The keys of ${who} are looked for in, in order:`);
+        const width = Math.max(...found.map(([w]) => [...w].length));
+        for (const [w, where] of found) env.out(`  ${w + ' '.repeat(width - [...w].length)}  ${where}`);
+        return;
+      }
+      if (!f) stop(`run the command in an archive: the hints are in its ${CONFIG_NAME}`);
+      if (!f.archiveOwners().includes(owner)) stop(`${who} is not an owner of this archive`);
+      const cfg = await readJson(f.storage, CONFIG_NAME);
+      const own = cfg.keys && typeof cfg.keys === 'object' && !Array.isArray(cfg.keys)
+        ? hints({ [owner]: cfg.keys[owner] }, owner) : [];
+      if (remove) {
+        if (!own.includes(remove)) {
+          if (hints(cfg.keys).includes(remove)) {
+            stop(`${CONFIG_NAME} hints ${remove} for every owner ("keys": {"wallet": ...}): edit ${CONFIG_NAME} to remove it`);
+          }
+          env.out(`${CONFIG_NAME} hints no ${remove} for ${who}.`);
+          return;
+        }
+        await writeConfig(f, hinted(cfg, owner, remove, false));
+        env.out(`Done: ${CONFIG_NAME} no longer hints ${remove} for ${who}.`);
+        return;
+      }
+      if (!add.startsWith('github:')) {
+        stop(`${CONFIG_NAME} names GitHub wallets only, github:OWNER/REPO: a command wallet is configured ` +
+             `in ${env.wallets.userConfigPath()} or in ${WALLET}`);
+      }
+      let w;
+      try {
+        w = parseWallet(add, env);
+      } catch (error) {
+        walletStop(error);
+      }
+      if ((await forbiddenRepositories(f)).has(w.repo.toLowerCase())) {
+        stop(`${w.repo} is a repository of this archive, which is public: a key wallet is a private repository of its own`);
+      }
+      if (own.includes(add)) {
+        env.out(`${CONFIG_NAME} hints ${add} for ${who} already.`);
+        return;
+      }
+      await writeConfig(f, hinted(cfg, owner, add));
+      env.out(`Done: ${CONFIG_NAME} hints ${add} for ${who}.`);
+    }
+
+    export async function keyWallets(f, args, env) {
+      const add = args.add || null, remove = args.remove || null;
+      if (add && remove) stop('give --add or --remove, not both');
+      if (add || remove) return changeUserWallets(env, add, remove);
+      const listed = [];
+      try {
+        const given = (env.wallets.walletEnv() || '').trim();
+        if (given) listed.push([given, WALLET]);
+        for (const o of f?.archive.owner ? f.archiveOwners() : []) {
+          for (const w of hints(f.archive.keys, o)) listed.push([w, CONFIG_NAME]);
+        }
+        for (const w of userWallets(env)) listed.push([w, env.wallets.userConfigPath()]);
+      } catch (error) {
+        walletStop(error);
+      }
+      const seen = new Set(), rows = [];
+      for (const [spec, where] of listed) {
+        if (!seen.has(spec) && !spec.startsWith('{')) {
+          seen.add(spec);
+          rows.push([spec, where]);
+        }
+      }
+      if (!rows.length) {
+        env.out('No key wallet is configured: osheaf key wallets --add github:OWNER/REPO adds one.');
+        return;
+      }
+      const forbidden = await forbiddenRepositories(f);
+      for (const [spec, where] of rows) {
+        env.out(`${spec} (${where}):`);
+        let held;
+        try {
+          const w = parseWallet(spec, env, { forbidden });
+          held = w ? await ownersHeld(w) : [];
+        } catch (error) {
+          if (!(error instanceof WalletError)) throw error;
+          env.out(`  cannot be read: ${error.message}`);
+          continue;
+        }
+        if (!held.length) env.out('  holds no key');
+        for (const [o, n, lock] of held) env.out(`  ${short(o)}  ${plural(n, 'key').padEnd(7)} ${lock}`);
+      }
+    }
+
+    async function changeUserWallets(env, add, remove) {
+      const p = env.wallets.userConfigPath();
+      let data;
+      try {
+        data = env.wallets.userFile();
+      } catch (error) {
+        walletStop(error);
+      }
+      const listed = Array.isArray(data.wallets) ? data.wallets.filter((w) => typeof w === 'string') : [];
+      if (add) {
+        try {
+          parseWallet(add, env);
+        } catch (error) {
+          walletStop(error);
+        }
+        if (add === '' || add === OFFLINE || add.startsWith('{')) stop('a wallet is github:OWNER/REPO or command');
+        if (listed.includes(add)) {
+          env.out(`${add} is one of your wallets already.`);
+          return;
+        }
+        data.wallets = [...listed, add];
+      } else {
+        if (!listed.includes(remove)) {
+          const old = data.keys && typeof data.keys === 'object' ? data.keys.wallet : null;
+          stop(remove === old ? `${remove} is named by "keys" of ${p}: edit it there` : `${remove} is not one of your wallets`);
+        }
+        data.wallets = listed.filter((w) => w !== remove);
+      }
+      env.wallets.writeUserFile(data);
+      env.out(`Done: ${add || remove} is ${add ? 'added to' : 'removed from'} your wallets (${p}).`);
     }
 
 Passkeys that open keys
@@ -886,7 +1065,7 @@ in an archive, pulls the current keys this device lacks.
     }
 
     export async function keyEnroll(f, args, env) {
-      const owner = keyOwner(f, args), w = await walletFor(f, args, env);
+      const owner = keyOwner(f, args), w = await walletFor(f, args, env, owner);
       askedOf(env).noBrowser = Boolean(args.noBrowser);
       try {
         await w.checkWritable();
@@ -966,7 +1145,7 @@ in an archive, pulls the current keys this device lacks.
     }
 
     export async function keyUnlock(f, args, env) {
-      const owner = keyOwner(f, args), w = await walletFor(f, args, env);
+      const owner = keyOwner(f, args), w = await walletFor(f, args, env, owner);
       askedOf(env).noBrowser = Boolean(args.noBrowser);
       const who = short(owner);
       env.err(`Reading the keys of ${who} in ${w.name}…`);
@@ -1135,7 +1314,7 @@ remove passkey locks instead.
         await forgetHere(env, owner, dids);
         return;
       }
-      const w = await walletFor(f, args, env);
+      const w = await walletFor(f, args, env, owner);
       let rows;
       try {
         rows = await listing(w, owner);
@@ -1176,7 +1355,7 @@ remove passkey locks instead.
     async function forgetPasskeyWraps(f, args, env) {
       const cred = args.passkey || null, rp = args.rp || null;
       if (args.did?.length || args.used) stop('--passkey and --rp remove passkey locks, and name no key');
-      const owner = keyOwner(f, args), w = await walletFor(f, args, env);
+      const owner = keyOwner(f, args), w = await walletFor(f, args, env, owner);
       const who = short(owner);
       try {
         await w.checkWritable();

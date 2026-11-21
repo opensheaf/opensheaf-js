@@ -191,7 +191,7 @@ export async function init(storage, env, args, where) {
     f.changed();
   }
   cfg.owner = log.owner;
-  if (args.newOwner && walletConfig(args)) cfg.keys = walletConfig(args);
+  if (args.newOwner && walletConfig(args, log.owner)) cfg.keys = walletConfig(args, log.owner);
   await writeText(storage, CONFIG_NAME, jsonText(cfg));
   if (!(await storage.kind('.gitattributes'))) await writeText(storage, '.gitattributes', GITATTRIBUTES);
   for (const name of TEMPLATES) {
@@ -201,6 +201,10 @@ export async function init(storage, env, args, where) {
   await collect(f, { curated: args.curated });
   await writeDiscovery(f);
   await readableIndex(f);
+  if (cfg.keys) {
+    env.out(`The key wallet ${args.keys} is recorded in ${CONFIG_NAME} for ${short(log.owner)} ` +
+            `(osheaf key wallet --remove ${args.keys} removes it).`);
+  }
   env.out(`Done: the archive is made in ${where}, owned by ${short(log.owner)}. Edit ${CONFIG_NAME} and ` +
           'templates/, then deposit a paper: osheaf deposit --new LABEL ...');
   env.err('Note: OpenSheaf 0.2 is a draft; until version 1.0 a revision may change the format in incompatible ' +

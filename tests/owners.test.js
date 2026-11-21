@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readdir, readFile, writeFile, cp, mkdir } from 'node:fs/promises';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { main } from '../cli/osheaf.js';
@@ -108,6 +109,17 @@ async function sandbox({ repos = null, security = null } = {}) {
                    clearLater: (t) => box.cleared.push(t) },
       wallets: {
         userConfig: () => JSON.parse(environ.USER_CONFIG || '{}'), userConfigPath: () => path.join(root, 'config', 'opensheaf', 'config.json'),
+        userFile: () => {
+          try {
+            return JSON.parse(readFileSync(path.join(root, 'config', 'opensheaf', 'config.json'), 'utf-8'));
+          } catch {
+            return { keys: JSON.parse(environ.USER_CONFIG || '{}') };
+          }
+        },
+        writeUserFile: (data) => {
+          mkdirSync(path.join(root, 'config', 'opensheaf'), { recursive: true });
+          writeFileSync(path.join(root, 'config', 'opensheaf', 'config.json'), JSON.stringify(data, null, 2) + '\n');
+        },
         walletEnv: () => environ.OPENSHEAF_WALLET || '', remotes: async () => environ.REMOTES || '',
         run: async (command, input) => runShell(command, input),
         github: { api: 'https://api.github.invalid', fetch: github.fetch, token: async () => 'a token' },
@@ -236,7 +248,8 @@ test('an owner in a GitHub wallet', async () => {
     const a = await archive(box, 'arch', ['--keys', 'github:me/keys']);
     const repo = Object.keys(fakeFiles(box));
     assert.equal(repo.length, 4);
-    assert.deepEqual(JSON.parse(await readFile(path.join(a.dir, 'osheaf.json'), 'utf-8')).keys, { wallet: 'github:me/keys' });
+    assert.deepEqual(JSON.parse(await readFile(path.join(a.dir, 'osheaf.json'), 'utf-8')).keys,
+                     { [a.owner]: { wallets: ['github:me/keys'] } });
     const list = await box.ok([...a.r, 'key', 'list']);
     assert.match(list.out, /The wallet github:me\/keys holds 4 keys:/);
     assert.equal((list.out.match(/rotation/g) || []).length, 3);
@@ -270,6 +283,51 @@ test('an owner in a GitHub wallet', async () => {
 function fakeFiles(box) {
   return box.githubRepos['me/keys'].files;
 }
+
+test('the wallets of each owner', async () => {
+  const box = await sandbox({ repos: { 'me/keys': { visibility: 'private', files: {} },
+                                       'me/other': { visibility: 'private', files: {} } } });
+  try {
+    const a = await archive(box, 'arch', ['--keys', 'github:me/keys']);
+    await box.ok([...a.r, 'owner', 'init', '--keys', 'github:me/other', '--yes']);
+    const cfgOf = async () => JSON.parse(await readFile(path.join(a.dir, 'osheaf.json'), 'utf-8'));
+    const second = (await cfgOf()).owners[0];
+    assert.deepEqual((await cfgOf()).keys, { [a.owner]: { wallets: ['github:me/keys'] },
+                                             [second]: { wallets: ['github:me/other'] } });
+    assert.match((await box.ok([...a.r, 'key', 'list', '--owner', second])).out, /The wallet github:me\/other holds 4 keys of/);
+    await box.ok([...a.r, 'key', 'push', '--wallet', 'github:me/other']);
+    assert.deepEqual((await cfgOf()).keys[a.owner], { wallets: ['github:me/keys', 'github:me/other'] });
+    await box.ok([...a.r, 'key', 'wallet', '--add', 'github:me/missing']);
+    await box.ok([...a.r, 'key', 'wallet', '--remove', 'github:me/keys']);
+    assert.deepEqual((await cfgOf()).keys[a.owner], { wallets: ['github:me/other', 'github:me/missing'] });
+    assert.equal((await box.ok([...a.r, 'key', 'wallet'])).out,
+                 `The keys of ${a.owner.slice(0, 8)}\u2026${a.owner.slice(-4)} are looked for in, in order:\n` +
+                 '  github:me/other    osheaf.json\n  github:me/missing  osheaf.json');
+    assert.match((await box.ok([...a.r, 'key', 'pull'])).out, /already on this computer|Pulled/);
+    await box.ok([...a.r, 'key', 'wallet', '--remove', 'github:me/missing']);
+    assert.equal((await box.run([...a.r, 'key', 'wallet', '--add', 'command'])).status, 1);
+    const user = path.join(box.root, 'config', 'opensheaf', 'config.json');
+    await mkdir(path.dirname(user), { recursive: true });
+    await writeFile(user, JSON.stringify({ other: 1 }));
+    await box.ok([...a.r, 'key', 'wallets', '--add', 'github:me/keys']);
+    assert.deepEqual(JSON.parse(await readFile(user, 'utf-8')), { other: 1, wallets: ['github:me/keys'] });
+    const listed = (await box.ok([...a.r, 'key', 'wallets'])).out.split('\n');
+    assert.equal(listed[0], 'github:me/other (osheaf.json):');
+    assert.equal(listed[3], `github:me/keys (${user}):`);
+    assert.deepEqual(listed[4].trim().split(/\s+/).slice(1), ['4', 'keys', 'passphrase']);
+    await box.ok([...a.r, 'key', 'wallet', '--owner', a.owner, '--remove', 'github:me/other']);
+    await box.ok([...a.r, 'key', 'wallets', '--remove', 'github:me/keys']);
+    assert.deepEqual(JSON.parse(await readFile(user, 'utf-8')).wallets, []);
+    const cfg = await cfgOf();
+    cfg.keys = { wallet: 'github:me/other' };
+    await writeFile(path.join(a.dir, 'osheaf.json'), JSON.stringify(cfg, null, 2) + '\n');
+    assert.match((await box.run([...a.r, 'key', 'wallet', '--owner', second, '--remove', 'github:me/other'])).said,
+                 /every owner/);
+    assert.match((await box.ok([...a.r, 'key', 'wallet'])).out, /github:me\/other  osheaf\.json/);
+  } finally {
+    await box.done();
+  }
+});
 
 test('the wallets refused', async () => {
   const box = await sandbox();

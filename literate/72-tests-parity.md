@@ -57,6 +57,14 @@ never the user's:
     each updating what the other imported; the same requests to Zenodo
     and the same object versions; a deposit stopped after publication
     and completed by the other program.
+13. the wallets of each owner: the hints of `osheaf.json` and the
+    person's wallets, listed, added and removed by both, with the same
+    files and words (`key wallet`, `key wallets`, `key push --wallet`);
+14. labels: `osheaf label` by both writes the same discovery document,
+    indexes, configuration and website, the pages at the old addresses
+    and the HTML version moved included, for a document, the main
+    catalogue and an owner, and a takedown removes the same.
+
 12. an owner made by the Manager for a new archive: its key log is the one
     `osheaf init --new-owner --key DID` makes, byte for byte; its rotation
     files are opensheaf-py's and sign with it; the archive the Manager
@@ -118,6 +126,10 @@ tests are skipped, with the reason.
     <<parity: a new current key made by the Manager>>
 
     <<parity: an owner made by the Manager>>
+
+    <<parity: the wallets of each owner>>
+
+    <<parity: labels>>
 
 Running the two
 ---------------
@@ -1306,6 +1318,122 @@ by the Manager for GitHub, opens with PyNaCl's `SealedBox` (libsodium's
         assert.equal(sealed.length, 32 + 16 + line.length);
         const opened = ok(s.run([python], ['-c', PY_SEALED, recipient, Buffer.from(sealed).toString('base64')]), 'py open').stdout.trim();
         assert.equal(opened, line);
+      } finally {
+        await s.done();
+      }
+    });
+
+The wallets of each owner
+-------------------------
+
+An archive of opensheaf-py hosts two owners, each with its keys in a
+wallet of its own (the double of GitHub has both). Both programs list the
+wallets of the owner, add and remove a hint, record the second wallet
+when a key is pushed there (the first push puts the key, the second
+finds it there: both record the hint), and write the same `osheaf.json`;
+with a
+configuration file of their own each (they run one after the other),
+they add a wallet to it, writing the same file, and list the wallets with
+the owners each holds and their locks in the same words.
+
+    // in parity: the wallets of each owner:
+    test('the wallets of each owner, by both', { skip }, async () => {
+      const s = await sandbox();
+      const w = await wallets(s);
+      try {
+        await writeFile(path.join(w.state, 'repos.json'), JSON.stringify({ 'me/keys': true, 'me/other': true, 'me/open': false }));
+        const more = w.more;
+        const arch = path.join(s.root, 'arch');
+        ok(s.py(['init', arch, '--name', 'Papers', '--base-url', 'https://example.org/papers/', '--curator', 'Doe, Jane',
+                 '--new-owner', '--keys', 'github:me/keys', '--yes'], { more }), 'py init --keys');
+        ok(s.py(['owner', 'init', '--keys', 'github:me/other', '--yes'], { cwd: arch, more }), 'py owner init --keys');
+        const cfgOf = (d) => readFile(path.join(d, 'osheaf.json'), 'utf-8');
+        const second = JSON.parse(await cfgOf(arch)).owners[0];
+        await both(s, arch, ['key', 'wallet'], { more });
+        await both(s, arch, ['key', 'wallet', '--owner', second], { more });
+        let r = await both(s, arch, ['key', 'wallet', '--add', 'github:me/other'], { more });
+        assert.equal(await cfgOf(r.b), await cfgOf(r.a));
+        r = await both(s, arch, ['key', 'wallet', '--remove', 'github:me/keys'], { more });
+        assert.equal(await cfgOf(r.b), await cfgOf(r.a));
+        await both(s, arch, ['key', 'wallet', '--add', 'command'], { more, status: 1 });
+        for (const [d, run] of [['pa', s.py], ['ja', s.js]]) {
+          await cp(arch, path.join(s.root, d), { recursive: true });
+          ok(run(['key', 'push', '--wallet', 'github:me/other'], { cwd: path.join(s.root, d), more }), `${d} key push`);
+        }
+        assert.equal(await cfgOf(path.join(s.root, 'ja')), await cfgOf(path.join(s.root, 'pa')));
+        assert.deepEqual(JSON.parse(await cfgOf(path.join(s.root, 'pa'))).keys[second], { wallets: ['github:me/other'] });
+        const mine = (d) => ({ ...more, XDG_CONFIG_HOME: path.join(s.root, d) });
+        const p = ok(s.py(['key', 'wallets', '--add', 'github:me/keys'], { cwd: arch, more: mine('xp') }), 'py wallets --add');
+        const j = ok(s.js(['key', 'wallets', '--add', 'github:me/keys'], { cwd: arch, more: mine('xj') }), 'js wallets --add');
+        assert.equal(said(j).replace('/xj/', '/xp/'), said(p));
+        const user = (d) => readFile(path.join(s.root, d, 'opensheaf', 'config.json'), 'utf-8');
+        assert.equal(await user('xj'), await user('xp'));
+        const lp = ok(s.py(['key', 'wallets'], { cwd: arch, more: mine('xp') }), 'py wallets').stdout;
+        const lj = ok(s.js(['key', 'wallets'], { cwd: arch, more: mine('xj') }), 'js wallets').stdout;
+        assert.equal(lj.replaceAll('/xj/', '/xp/'), lp);
+        assert.match(lp, /^github:me\/keys \(osheaf\.json\):\n  \S+  4 keys  passphrase\ngithub:me\/other \(osheaf\.json\):\n/);
+      } finally {
+        w.stop();
+        await s.done();
+      }
+    });
+
+Labels
+------
+
+An archive of opensheaf-py with two papers, a TeXmacs-like HTML version
+of the first in `site/`, and its main catalogue. Each command is run by
+both on copies of the same archive, and every file is compared after it:
+a paper relabelled (its page moved, the old address leading there, the
+HTML version moved with its image), relabelled again, the main catalogue
+relabelled (renamed in `osheaf.json`), the owner labelled and unlabelled,
+a label removed, the refusals, and the paper taken down with its old
+addresses.
+
+    // in parity: labels:
+    async function sameFiles(a, b) {
+      const A = await filesOf(a), B = await filesOf(b);
+      assert.deepEqual([...B.keys()].sort(), [...A.keys()].sort());
+      for (const [p, bytes] of A) assert.deepEqual(B.get(p), bytes, p);
+    }
+
+    test('labels changed by both', { skip }, async () => {
+      const s = await sandbox();
+      try {
+        await papers(s);
+        ok(s.py(await initArgs('arch', path.join(s.root, 'keys'))), 'py init');
+        const arch = path.join(s.root, 'arch');
+        for (const label of ['one', 'two']) {
+          ok(s.py(['deposit', label, '../paper.tex', ...DEPOSIT, '--new'], { cwd: arch }), `py deposit ${label}`);
+        }
+        ok(s.py(['collect'], { cwd: arch }), 'py collect');
+        await mkdir(path.join(arch, 'site', 'one'), { recursive: true });
+        await writeFile(path.join(arch, 'site', 'one', 'one.html'), '<img src="one-1.png">');
+        await writeFile(path.join(arch, 'site', 'one', 'one-1.png'), 'png');
+        const owner = JSON.parse(await readFile(path.join(arch, 'osheaf.json'), 'utf-8')).owner;
+        const steps = [['label', 'one', 'first'], ['label', 'first', 'premier'], ['label', 'main', 'papers'],
+                       ['label', '--owner', owner, 'jane-doe'], ['label', '--owner', owner, '--unset'],
+                       ['label', 'two', '--unset']];
+        let base = arch;
+        for (const step of steps) {
+          const r = await both(s, base, step);
+          await sameFiles(r.a, r.b);
+          await rm(path.join(s.root, 'next'), { recursive: true, force: true });
+          await cp(r.a, path.join(s.root, 'next'), { recursive: true });
+          base = path.join(s.root, 'next');
+        }
+        const files = await filesOf(base);
+        assert.match(files.get('paper/one/index.html').toString(), /url=\.\.\/premier\//);
+        assert.match(files.get('site/one/one.html').toString(), /url=\.\.\/premier\/premier\.html/);
+        assert.equal(files.get('site/premier/one-1.png').toString(), 'png');
+        assert.equal(JSON.parse(files.get('osheaf.json')).mainCollection, 'papers');
+        for (const bad of [['label', 'premier', 'papers'], ['label', 'premier', 'Bad'], ['label', 'papers', '--unset'],
+                           ['label', 'premier']]) {
+          await both(s, base, bad, { status: 1 });
+        }
+        const r = await both(s, base, ['takedown', 'premier', '--reason', 'At the request of the holder of the rights.', '--yes']);
+        await sameFiles(r.a, r.b);
+        assert.deepEqual(verified(s, r.a).filter((f) => !f.startsWith('result: ')), []);
       } finally {
         await s.done();
       }

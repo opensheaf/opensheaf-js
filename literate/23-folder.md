@@ -165,7 +165,9 @@ The archive folder
 
 An archive is opened from its storage: the configuration and the
 discovery document, from which the labels of lines and the tombstones
-are read, as opensheaf-py's `configure` reads them.
+are read, as opensheaf-py's `configure` reads them. `writeConfig` writes
+`osheaf.json` back, as Python's `json.dumps(..., indent=2)` writes it, and
+the settings of this run with it (opensheaf-py's `write_config`).
 
     // in the archive folder:
     export class ArchiveFolder {
@@ -219,6 +221,14 @@ are read, as opensheaf-py's `configure` reads them.
 
       depositor() {
         return { name: this.archive.depositor.name, address: this.archive.depositor.address };
+      }
+
+      async writeConfig(cfg) {
+        await this.storage.write(CONFIG_NAME, jsonBytes(cfg));
+        this.archive = Object.fromEntries(Object.entries(cfg).filter(([k]) => k !== 'texmacs' && k !== 'index'));
+        this.archive.profiles ??= [];
+        this.archive.contact ??= this.archive.baseUrl;
+        this.index = cfg.index || {};
       }
 
       async dirOf(id) {

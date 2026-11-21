@@ -5,7 +5,8 @@ import { fetchJsonWith } from '../core/keepers.js';
 import { Key, readKey, passkeysOf, passkeySalt, passkeyKek, Passkey, wrapsOf, PASSKEY_RP, KeyError, PassphraseNeeded,
          CURRENT, ROTATION, newKey, readRotationKey, rotationKeyText, rotationFileName, rotationKeySheet,
          sheetCheck } from '../core/keys.js';
-import { describeEntry, putKey, addPasskey, readAny, WalletError } from '../core/wallets.js';
+import { describeEntry, putKey, addPasskey, readAny, WalletError, hints, ownersHeld } from '../core/wallets.js';
+import { keyWallet } from '../core/owner.js';
 import { sameBytes, unbase64 } from '../core/crypto.js';
 import { oneCommit } from '../core/github.js';
 import { carryOut } from '../core/requests.js';
@@ -24,7 +25,7 @@ export { carryOut, Problem, OPERATIONS, WORKFLOW_ONLY, NEW_PAPER, NEW_VERSION } 
 export { popupUrl, popupRequest, openPopupAnswer, sameCode, confirmationCode, POPUP, POPUP_ENROLL, POPUP_MESSAGES,
          UNLOCK_ORIGIN, UnlockFailed } from '../core/passkey.js';
 export { Key, readKey, KeyError, PASSKEY_RP, CURRENT, ROTATION, newKey, sheetCheck } from '../core/keys.js';
-export { GitHubWallet, WalletError } from '../core/wallets.js';
+export { GitHubWallet, WalletError, hints as walletHints, ownersHeld } from '../core/wallets.js';
 export { OwnerError } from '../core/keylogs.js';
 export { ArchiveFolder, Stop } from '../core/folder.js';
 export { verifyFolder } from '../core/check.js';
@@ -260,6 +261,45 @@ export async function enrollPasskey(wallet, plan, passphrase, cred, prf, { cost 
   } finally {
     kek.fill(0);
   }
+}
+
+export function walletCandidates(settings, owner, given = []) {
+  const out = [];
+  for (const w of [...hints(settings?.keys, owner), ...given]) {
+    if (typeof w === 'string' && /^github:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(w) && !out.includes(w)) out.push(w);
+  }
+  return out;
+}
+
+export async function holdingWallet(wallets, owner) {
+  for (const w of wallets) {
+    try {
+      if ((await w.entries(owner)).length) return w;
+    } catch (error) {
+      if (!(error instanceof WalletError)) throw error;
+    }
+  }
+  return null;
+}
+
+export async function directRecordWallet({ repo, github, env, owner, wallet, mirror = null, cache = new Map(),
+                                           origin = 'the OpenSheaf manager', attempts = 3 }) {
+  const said = [];
+  const quiet = { ...env, out: (l) => said.push(l), err: (l) => said.push(l) };
+  const done = await oneCommit(repo, github, async (storage) => {
+    said.length = 0;
+    const f = await ArchiveFolder.open(storage, quiet);
+    try {
+      await keyWallet(f, { owner, add: wallet }, quiet);
+    } catch (error) {
+      if (error instanceof Stop) throw new OwnerError(error.message);
+      throw error;
+    }
+    const recorded = said.some((l) => l.startsWith('Done: '));
+    return { message: recorded ? `Key wallet ${wallet} hinted for ${short(owner)} in osheaf.json (${origin})\n` : null,
+             recorded };
+  }, { mirror, cache, attempts });
+  return { recorded: Boolean(done.recorded), commit: done.commit || null, said };
 }
 
 export function walletRotationKeys(entries, next) {

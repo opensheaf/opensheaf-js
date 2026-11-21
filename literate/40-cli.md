@@ -462,7 +462,7 @@ arguments ends with the status 2, as argparse does.
     import { loadSchemas } from '../core/schema.js';
     import { notice, withdraw, complete, relate, relicense, describe, RELATIONS } from '../core/describe.js';
     import * as collections from '../core/collections.js';
-    import { present, readableIndex, hasWebsite } from '../core/website.js';
+    import { present, readableIndex, hasWebsite, labelCommand } from '../core/website.js';
     import { fetchJsonWith } from '../core/keepers.js';
     import { loadEntries, merge, UsageProblem } from '../core/inputs.js';
     import * as owners from '../core/owner.js';
@@ -625,6 +625,8 @@ The options are those of opensheaf-py, for the commands of this phase.
       seal: { help: 'seal the work of a draft as a new line (section 10.2)', positionals: ['draft!'],
               options: { '--label': value('newLabel', { required: true }), '--owner': value('owner'),
                          '--delete-draft': flag('deleteDraft'), '--message': value('message') } },
+      label: { help: 'give a line a label, change it, or remove it (--unset); the old address of its page redirects',
+               positionals: ['line', 'label'], options: { '--owner': value('owner'), '--unset': flag('unset') } },
       takedown: { help: 'delete an object, leaving a tombstone (section 13.2)', positionals: ['label!'],
                   options: { '--reason': value('reason', { required: true }), '--by-law': flag('byLaw'),
                              '--keeper': flag('keeper'), '--yes': flag('yes') },
@@ -1237,6 +1239,12 @@ The options of `owner`, `key`, `sign` and `help-config` are opensheaf-py's
                   options: { '--new-passkey': flag('newPasskey'), ...WALLET, '--no-browser': flag('noBrowser') } },
         unlock: { help: 'open the keys of the wallet with the passkey; pull the current keys', positionals: [],
                   options: { ...WALLET, '--no-browser': flag('noBrowser') } },
+        wallet: { help: "the key wallets in which the owner's keys are looked for; hint one for the owner in osheaf.json " +
+                        '(--add), or remove a hint (--remove)', positionals: [],
+                  options: { '--owner': value('owner'), '--add': value('add'), '--remove': value('remove') } },
+        wallets: { help: 'your key wallets, with the owners whose keys each holds and their locks; add one to your ' +
+                         'configuration (--add), or remove one (--remove)', positionals: [],
+                   options: { '--add': value('add'), '--remove': value('remove') } },
       },
     },
     'help-config': { help: 'describe osheaf.json and your own configuration (key wallets)', positionals: [], options: {} },
@@ -1273,7 +1281,8 @@ passkey hand-off, reading files and the standard input (module
     env.asked ??= {};
 
 Running them. The key commands that may run outside an archive (`list`,
-`import`, `export`, `enroll`, `unlock`) do, unless `--root` names one;
+`import`, `export`, `enroll`, `unlock`, `wallet`, `wallets`) do, unless
+`--root` names one;
 `owner show` and the key commands leave the website as it is; the others
 write it again.
 
@@ -1312,7 +1321,7 @@ write it again.
 
     async key(root, args, env) {
       let f = null;
-      if (['list', 'import', 'export', 'enroll', 'unlock'].includes(args.action)) {
+      if (['list', 'import', 'export', 'enroll', 'unlock', 'wallet', 'wallets'].includes(args.action)) {
         try {
           f = await openArchive(root, env);
         } catch (error) {
@@ -1323,7 +1332,8 @@ write it again.
       }
       const run = { new: owners.keyNew, push: owners.keyPush, pull: owners.keyPull, list: owners.keyList,
                     forget: owners.keyForget, export: owners.keyExport, import: owners.keyImport,
-                    enroll: owners.keyEnroll, unlock: owners.keyUnlock }[args.action];
+                    enroll: owners.keyEnroll, unlock: owners.keyUnlock, wallet: owners.keyWallet,
+                    wallets: owners.keyWallets }[args.action];
       await run(f, args, env);
       return 0;
     },
@@ -1353,8 +1363,13 @@ opensheaf-py's does, then the user's own:
                       "affiliation": "..."},
           "depositor": {"name": "Given Family", "address": "https://..."},
           "index": {"html": {"templates": "templates", "featured": "<label>"}},
-          "keys": {"wallet": "github:OWNER/REPO"}       optional: the GitHub key wallet (a command
-                                             wallet only in ~/.config/opensheaf/config.json)
+          "keys": {"<owner name>": {"wallets": ["github:OWNER/REPO", ...]}, ...}   optional:
+                                             hints, the GitHub key wallets that hold the keys of
+                                             each owner (osheaf key wallet --add|--remove); a
+                                             general {"wallet": ...} is a hint for every owner;
+                                             your own wallets are in ~/.config/opensheaf/config.json
+          "formerAddresses": {"<address>": "sheaf:<name>:<owner>"}   written by osheaf label:
+                                             the old addresses of relabelled lines, which redirect
         }
 
     The private keys of the owner are never in the archive (section 15.4): the
@@ -1363,8 +1378,8 @@ opensheaf-py's does, then the user's own:
     folder outside the archive (osheaf owner init --export DIR), unless the owner
     chooses a lower security level, a key wallet, which keeps them encrypted
     under a passphrase (--keys github:OWNER/REPO, a private repository, or
-    --keys command); OPENSHEAF_WALLET or ~/.config/opensheaf/config.json override
-    "keys", and only they may configure a command wallet.
+    --keys command); OPENSHEAF_WALLET overrides "keys", and only it and
+    ~/.config/opensheaf/config.json may configure a command wallet.
     `;
 
 The outside world
@@ -1385,7 +1400,7 @@ the archive:
 - files and the standard input, read as text.
 
     // in cli/outside.js:
-    import { promises as fs, readFileSync } from 'node:fs';
+    import { promises as fs, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
     import path from 'node:path';
     import os from 'node:os';
     import process from 'node:process';
@@ -1453,6 +1468,28 @@ The wallets' side, and the rest:
       return found && typeof found === 'object' && !Array.isArray(found) ? found : {};
     }
 
+    export function userFile(env = process.env) {
+      const p = userConfigPath(env);
+      let text;
+      try {
+        text = readFileSync(p, 'utf-8');
+      } catch {
+        return {};
+      }
+      try {
+        const data = JSON.parse(text);
+        return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+      } catch (error) {
+        throw new WalletError(`${p}: ${error.message}`);
+      }
+    }
+
+    export function writeUserFile(data, env = process.env) {
+      const p = userConfigPath(env);
+      mkdirSync(path.dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    }
+
     export function githubToken(env = process.env) {
       const given = (env.GH_TOKEN || env.GITHUB_TOKEN || '').trim();
       if (given) return given;
@@ -1467,6 +1504,8 @@ The wallets' side, and the rest:
         wallets: given.wallets || {
           userConfig: () => userConfig(vars),
           userConfigPath: () => userConfigPath(vars),
+          userFile: () => userFile(vars),
+          writeUserFile: (data) => writeUserFile(data, vars),
           walletEnv: () => vars.OPENSHEAF_WALLET || '',
           run: async (command, input) => {
             const r = spawnSync(command, { shell: true, input: input ?? undefined, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
@@ -1538,6 +1577,13 @@ again. `draft new|deposit` reads its files as `deposit` does.
     async seal(root, args, env) {
       const f = await openArchive(root, env);
       await seal(f, { ...args, label: args.draft });
+      await present(f);
+      return 0;
+    },
+
+    async label(root, args, env) {
+      const f = await openArchive(root, env);
+      await labelCommand(f, args);
       await present(f);
       return 0;
     },

@@ -1,7 +1,7 @@
 // Generated from literate/35-wallets.md by opensheaf-literate: edit the document, not this file.
 import { OWNER_NAME } from './names.js';
 import { readKey, keyFileText, addPasskey as addPasskeyLock, KeyError, PassphraseNeeded, KINDS, ROTATION,
-         ENVELOPE, PASSKEY_RP, wrapsOf, base64 } from './keys.js';
+         ENVELOPE, PASSKEY_RP, wrapsOf, base64, passkeysOf } from './keys.js';
 import { unbase64, utf8 } from './crypto.js';
 import { short } from './folder.js';
 
@@ -37,24 +37,83 @@ export function parseWallet(spec, env, { config = null, forbidden = [] } = {}) {
   if (spec.startsWith('github:')) {
     const repo = spec.slice('github:'.length);
     if (!REPO.test(repo)) throw new WalletError(`a GitHub wallet is github:OWNER/REPO: ${spec}`);
-    return new GitHubWallet(repo, env.wallets.github, forbidden);
+    return new GitHubWallet(repo, env.wallets?.github, forbidden);
   }
   if (spec === 'command') return new CommandWallet(config || env.wallets.userConfig(), env.wallets);
   throw new WalletError(`a security level is offline, github:OWNER/REPO or command: ${spec}`);
 }
 
-export function configuredWallet(config, env, { forbidden = [] } = {}) {
-  config = config && typeof config === 'object' && !Array.isArray(config) ? config : {};
-  if (config.wallet === 'command' || COMMANDS.some((c) => c in config)) {
-    throw new WalletError('osheaf.json configures a command wallet ("keys"), whose commands would run on this ' +
-      'machine: they are read only from your own configuration. Move "keys" to ' +
-      `${env.wallets.userConfigPath()} (or to ${WALLET}), and leave osheaf.json without it`);
+export const CONFIG_FILE = 'osheaf.json';
+
+function isMap(x) {
+  return x !== null && typeof x === 'object' && !Array.isArray(x);
+}
+
+function named(e) {
+  if (!isMap(e)) return [];
+  const out = Array.isArray(e.wallets) ? e.wallets.filter((w) => typeof w === 'string') : [];
+  return e.wallet ? [...out, String(e.wallet)] : out;
+}
+
+export function hints(config, owner = null) {
+  config = isMap(config) ? config : {};
+  const out = [];
+  for (const w of [...(owner ? named(config[owner]) : []), ...named(config)]) if (!out.includes(w)) out.push(w);
+  return out;
+}
+
+export function userWallets(env) {
+  const data = env.wallets.userFile ? env.wallets.userFile() : { keys: env.wallets.userConfig() };
+  const out = isMap(data) && Array.isArray(data.wallets)
+    ? data.wallets.filter((w) => typeof w === 'string' && w.trim()).map((w) => w.trim()) : [];
+  const old = isMap(data) && isMap(data.keys) ? data.keys.wallet : null;
+  return old && !out.includes(String(old)) ? [...out, String(old)] : out;
+}
+
+export function checkArchiveConfig(config, env) {
+  config = isMap(config) ? config : {};
+  const entries = [config, ...Object.entries(config).filter(([k, v]) => OWNER_NAME.test(k) && isMap(v)).map(([, v]) => v)];
+  for (const e of entries) {
+    if (named(e).includes('command') || COMMANDS.some((c) => c in e)) {
+      throw new WalletError('osheaf.json configures a command wallet ("keys"), whose commands would run on ' +
+        'this machine: they are read only from your own configuration. Move "keys" to ' +
+        `${env.wallets.userConfigPath()} (or to ${WALLET}), and leave osheaf.json without it`);
+    }
   }
+}
+
+export function candidateWallets(config, env, owner = null) {
+  checkArchiveConfig(config, env);
   const given = (env.wallets.walletEnv() || '').trim();
-  if (given) return parseWallet(given, env, { forbidden });
-  const user = env.wallets.userConfig();
-  if (user.wallet) return parseWallet(String(user.wallet), env, { config: user, forbidden });
-  return parseWallet(config.wallet, env, { forbidden });
+  if (given) return [[given, WALLET]];
+  const out = hints(config, owner).map((w) => [w, CONFIG_FILE]);
+  const seen = new Set(out.map(([w]) => w));
+  for (const w of userWallets(env)) if (!seen.has(w)) out.push([w, env.wallets.userConfigPath()]);
+  return out;
+}
+
+export async function configuredWallet(config, env, { forbidden = [], owner = null } = {}) {
+  const named = candidateWallets(config, env, owner);
+  const wallets = [];
+  for (const [spec] of named) {
+    let w;
+    try {
+      w = parseWallet(spec, env, { forbidden });
+    } catch (error) {
+      if (named.length === 1 || !(error instanceof WalletError)) throw error;
+      continue;
+    }
+    if (w) wallets.push(w);
+  }
+  if (wallets.length <= 1 || !owner) return wallets[0] || null;
+  for (const w of wallets) {
+    try {
+      if ((await w.entries(owner)).length) return w;
+    } catch (error) {
+      if (!(error instanceof WalletError)) throw error;
+    }
+  }
+  return wallets[0];
 }
 
 const GITHUB_REMOTE = /github\.com[:/]+([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?(?:\s|$)/g;
@@ -200,6 +259,11 @@ export const CONFIG_HELP = `Your own configuration: ~/.config/opensheaf/config.j
           "write":  "...",                          receives the key file on its standard input
           "list":   "...",                          optional: prints "<owner> <k>" per key
           "forget": "..."}}                         optional: removes a key
+
+{"wallets": ["github:OWNER/REPO", "command", ...]}  the key wallets you read, in order: the
+                                                    keys of an owner are looked for in those
+                                                    osheaf.json hints for it, then in these
+                                                    (osheaf key wallets --add|--remove)
 
 The commands run in the shell; {owner} is the owner name, {k} the 16 characters
 that name the key, {kind} current or rotation. read prints the key file as it was
@@ -362,6 +426,26 @@ export function locks(text) {
     if (!out.includes(method)) out.push(method);
   }
   return out;
+}
+
+export async function ownersHeld(wallet, owner = null) {
+  const by = new Map();
+  for (const [o, kid] of await wallet.entries(owner)) {
+    const text = await readAny(wallet, o, kid);
+    const held = locks(text);
+    const b = by.get(o) || { n: 0, phrase: false, creds: new Set(), bare: 0 };
+    b.n += 1;
+    b.phrase ||= held.includes('passphrase');
+    for (const p of passkeysOf(text)) b.creds.add(p.cred);
+    if (!held.length) b.bare += 1;
+    by.set(o, b);
+  }
+  return [...by].map(([o, b]) => {
+    const words = [...(b.phrase ? ['passphrase'] : []),
+                   ...(b.creds.size ? [`${b.creds.size} passkey${b.creds.size !== 1 ? 's' : ''}`] : []),
+                   ...(b.bare ? [`${b.bare} without a lock`] : [])];
+    return [o, b.n, words.join(', ') || 'no lock'];
+  });
 }
 
 export async function listing(wallet, owner = null) {

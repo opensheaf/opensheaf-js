@@ -35,7 +35,8 @@ was made from.
     import { Key, readKey, passkeysOf, passkeySalt, passkeyKek, Passkey, wrapsOf, PASSKEY_RP, KeyError, PassphraseNeeded,
              CURRENT, ROTATION, newKey, readRotationKey, rotationKeyText, rotationFileName, rotationKeySheet,
              sheetCheck } from '../core/keys.js';
-    import { describeEntry, putKey, addPasskey, readAny, WalletError } from '../core/wallets.js';
+    import { describeEntry, putKey, addPasskey, readAny, WalletError, hints, ownersHeld } from '../core/wallets.js';
+    import { keyWallet } from '../core/owner.js';
     import { sameBytes, unbase64 } from '../core/crypto.js';
     import { oneCommit } from '../core/github.js';
     import { carryOut } from '../core/requests.js';
@@ -54,7 +55,7 @@ was made from.
     export { popupUrl, popupRequest, openPopupAnswer, sameCode, confirmationCode, POPUP, POPUP_ENROLL, POPUP_MESSAGES,
              UNLOCK_ORIGIN, UnlockFailed } from '../core/passkey.js';
     export { Key, readKey, KeyError, PASSKEY_RP, CURRENT, ROTATION, newKey, sheetCheck } from '../core/keys.js';
-    export { GitHubWallet, WalletError } from '../core/wallets.js';
+    export { GitHubWallet, WalletError, hints as walletHints, ownersHeld } from '../core/wallets.js';
     export { OwnerError } from '../core/keylogs.js';
     export { ArchiveFolder, Stop } from '../core/folder.js';
     export { verifyFolder } from '../core/check.js';
@@ -64,6 +65,8 @@ was made from.
     <<the keys that sign>>
 
     <<setting up a key wallet>>
+
+    <<the wallets of an owner>>
 
     <<a new current key, made in the page>>
 
@@ -200,6 +203,71 @@ same way.
       }
       const rk = await readKey(text, passphrase);
       return { owner: rk.owner, kind: rk.kind, key: await sealedKey(rk.key) };
+    }
+
+The wallets of an owner
+-----------------------
+
+Wallets and owners are many to many (chapter [35](35-wallets.md)): a
+wallet may hold the keys of several owners, several people may share one
+owner's keys in it, each with a passkey of their own, and an owner's keys
+may be in several wallets. A page chooses a wallet, then the owners in it.
+Three functions serve it:
+
+- `walletCandidates(settings, owner, given)`: the wallets in which the
+  keys of `owner` are looked for, in order: those the archive's
+  `osheaf.json` hints for it (`keys`, GitHub wallets only, the owner's
+  own then those for every owner), then `given`, the person's own list
+  (kept by the page), each once, as `osheaf` orders them;
+- `ownersHeld(wallet)` (chapter [35](35-wallets.md)): the owners whose
+  keys a wallet holds, `[owner, number of keys, locks in words]`;
+- `holdingWallet(wallets, owner)`: the first of `wallets` (`GitHubWallet`
+  objects) that holds keys of `owner`, one that cannot be read passed
+  over, or null.
+
+`directRecordWallet` records a wallet as a hint for an owner in the
+archive's `osheaf.json`, as `osheaf key wallet --owner OWNER --add
+WALLET` does, in one commit; when the archive hints it already, nothing
+is committed (`recorded` false).
+
+    // in the wallets of an owner:
+    export function walletCandidates(settings, owner, given = []) {
+      const out = [];
+      for (const w of [...hints(settings?.keys, owner), ...given]) {
+        if (typeof w === 'string' && /^github:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(w) && !out.includes(w)) out.push(w);
+      }
+      return out;
+    }
+
+    export async function holdingWallet(wallets, owner) {
+      for (const w of wallets) {
+        try {
+          if ((await w.entries(owner)).length) return w;
+        } catch (error) {
+          if (!(error instanceof WalletError)) throw error;
+        }
+      }
+      return null;
+    }
+
+    export async function directRecordWallet({ repo, github, env, owner, wallet, mirror = null, cache = new Map(),
+                                               origin = 'the OpenSheaf manager', attempts = 3 }) {
+      const said = [];
+      const quiet = { ...env, out: (l) => said.push(l), err: (l) => said.push(l) };
+      const done = await oneCommit(repo, github, async (storage) => {
+        said.length = 0;
+        const f = await ArchiveFolder.open(storage, quiet);
+        try {
+          await keyWallet(f, { owner, add: wallet }, quiet);
+        } catch (error) {
+          if (error instanceof Stop) throw new OwnerError(error.message);
+          throw error;
+        }
+        const recorded = said.some((l) => l.startsWith('Done: '));
+        return { message: recorded ? `Key wallet ${wallet} hinted for ${short(owner)} in osheaf.json (${origin})\n` : null,
+                 recorded };
+      }, { mirror, cache, attempts });
+      return { recorded: Boolean(done.recorded), commit: done.commit || null, said };
     }
 
 Setting up a key wallet

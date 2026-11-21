@@ -128,6 +128,14 @@ export class ArchiveFolder {
     return { name: this.archive.depositor.name, address: this.archive.depositor.address };
   }
 
+  async writeConfig(cfg) {
+    await this.storage.write(CONFIG_NAME, jsonBytes(cfg));
+    this.archive = Object.fromEntries(Object.entries(cfg).filter(([k]) => k !== 'texmacs' && k !== 'index'));
+    this.archive.profiles ??= [];
+    this.archive.contact ??= this.archive.baseUrl;
+    this.index = cfg.index || {};
+  }
+
   async dirOf(id) {
     return joinPath('ocfl', ...(await pathOf(id, this.layout)));
   }

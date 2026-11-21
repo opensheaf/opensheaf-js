@@ -61,7 +61,12 @@ Phases 1 to 6 (version 0.1.0):
   current keys of this device, key wallets (a private GitHub repository,
   through GitHub's API, or commands of a password manager), the clipboard,
   and passkeys (Touch ID) through `https://unlock.opensheaf.org/`;
+  `osheaf key wallet [--owner O] [--add|--remove W]` and `osheaf key
+  wallets [--add|--remove W]`: wallets and owners many to many, the hints
+  of `osheaf.json` for each owner and the person's own wallets;
   `osheaf help-config`;
+- `osheaf label LINE LABEL`, `label --owner OWNER LABEL`, `label LINE
+  --unset`: labels changed, the old addresses of pages leading to the new;
 - `osheaf resolve URI [--at URL] [--json]`: what a `sheaf:` URI names, in
   any archive, checked; `osheaf mirror URI --at URL [--label]` and
   `mirror --all`: copies of lines written elsewhere, with their owners'
@@ -96,7 +101,10 @@ Phases 1 to 6 (version 0.1.0):
   in the page, its owner made there as `osheaf init --new-owner --key DID`
   makes it and the archive as the template's setup makes it, the key of
   the workflows sealed as the repository secret `OPENSHEAF_SIGNING_KEY`
-  (libsodium's sealed box); `deno task bundle`
+  (libsodium's sealed box), the key wallet recorded as a hint for the
+  owner; the wallets of an owner and the owners of a wallet
+  (`walletCandidates`, `ownersHeld`, `holdingWallet`), and a wallet
+  recorded as a hint in one commit (`directRecordWallet`); `deno task bundle`
   makes of it the one file the Manager loads, `dist/opensheaf-manager.js`.
 
 Every command that changes an archive writes its website again. The files

@@ -26,7 +26,8 @@ import { browserEnvironment, schemasOf, directWrite, keyFromText, walletLocks, o
          prefetched, checkWallet, walletEntries, passphraseConfirmed, checkPassphrase, keyToPush, pushKey,
          enrollPlan, openWithPassphrase, enrollPasskey, rotationKeysFromTexts, rotationKeysFromWallet, walletRotationKeys,
          newKeys, rotationFiles, checksConfirmed, keepRotationKeys, directRotate, ownerKeyLog, keyLogFolder, signingCopy,
-         directSetup, seedLine, sealedBox, openSealedBox, storeSecret, newOwnerKeys, ownerLabelProblem } from '../web/manager.js';
+         directSetup, seedLine, sealedBox, openSealedBox, storeSecret, newOwnerKeys, ownerLabelProblem, directRecordWallet,
+         walletCandidates } from '../web/manager.js';
 import { writeKeyLog } from '../core/write.js';
 import { verifyFolder } from '../core/check.js';
 
@@ -467,7 +468,7 @@ test('an archive set up by the Manager with an owner made in the page is the one
     const owner = log.owner;
     const fields = { Name: 'A Reading List on Sheaves', Purpose: 'selection', Description: 'Papers to read first.',
                      Curator: 'Doe, Jane', Affiliation: 'Example University', Contact: 'https://example.org/~jane',
-                     'Base URL': 'https://jane.github.io/reading' };
+                     'Base URL': 'https://jane.github.io/reading', 'Key wallet': 'github:jane/opensheaf-keys' };
     // the template's script, with the key log as key-log/
     const a = path.join(s.root, 'a');
     const files = await templateFiles();
@@ -520,7 +521,8 @@ test('an archive set up by the Manager with an owner made in the page is the one
     assert.deepEqual(outside(B), outside(A));
     const cfg = JSON.parse(text(B.get('osheaf.json')));
     assert.deepEqual([cfg.owner, cfg.baseUrl, cfg.index.html.featured, cfg.keys], [owner, 'https://jane.github.io/reading/',
-                                                                                   'a-reading-list-on-sheaves', undefined]);
+                                                                                   'a-reading-list-on-sheaves',
+                                                                                   { [owner]: { wallets: ['github:jane/opensheaf-keys'] } }]);
     // verified by both
     const c = path.join(s.root, 'c');
     for (const [x, bytes] of B) {
@@ -535,7 +537,7 @@ test('an archive set up by the Manager with an owner made in the page is the one
     // the base URL of the page, when the form gives none; a second setup is refused
     const g2 = fakeGitHub();
     g2.create(REPO, Object.fromEntries(files));
-    const { 'Base URL': _, ...noBase } = fields;
+    const { 'Base URL': _, 'Key wallet': __, ...noBase } = fields;
     const taken = await directSetup({ repo: REPO, github: client(g2), fields: { ...noBase, Purpose: 'papers' },
                                       keyLog: await keyLogFolder(log), ownerLabel: 'main',
                                       defaultBase: async () => ({ url: 'https://example.org/reading/', rule: 'r' }),
@@ -568,6 +570,18 @@ test('an archive set up by the Manager with an owner made in the page is the one
     const ix = s.run([PY], ['index'], d);
     assert.equal(ix.status, 0, ix.stdout + ix.stderr);
     assert.equal(await readFile(path.join(d, 'opensheaf.json'), 'utf-8'), before);
+    // a wallet recorded afterwards as a hint for the owner, in one commit; once only
+    const env2 = browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork });
+    const hinted = await directRecordWallet({ repo: REPO, github: client(g2), env: env2, owner, wallet: 'github:jane/keys' });
+    assert.equal(hinted.recorded, true);
+    assert.ok(hinted.commit);
+    const s2 = JSON.parse(text(g2.files(REPO).get('osheaf.json')));
+    assert.deepEqual(s2.keys, { [owner]: { wallets: ['github:jane/keys'] } });
+    assert.deepEqual((await directRecordWallet({ repo: REPO, github: client(g2), env: env2, owner,
+                                                 wallet: 'github:jane/keys' })).recorded, false);
+    assert.deepEqual(walletCandidates(s2, owner, ['github:jane/other', 'github:jane/keys', 'command']),
+                     ['github:jane/keys', 'github:jane/other']);
+    assert.deepEqual(walletCandidates({ keys: { wallet: 'github:old/keys' } }, owner), ['github:old/keys']);
     const again = await directSetup({ repo: REPO, github: client(g2), fields, keyLog: await keyLogFolder(log),
                                       env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
                                       schemas });

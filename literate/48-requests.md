@@ -45,6 +45,7 @@ The module is `core/requests.js`.
     import { jsonText } from './write.js';
     import { parseData } from './inputs.js';
     import { init } from './init.js';
+    import { keyWallet } from './owner.js';
 
     <<the forms and their fields>>
 
@@ -854,9 +855,12 @@ the same way (the Manager's `load.js`) gives it to `carryOut` as
 folder of the owner object: a zip attached to the request, or the key log
 the page made (`keyLog`, `{ storage, dir }`), or the folder `key-log/` of
 the repository, which is removed once the key log is in the storage root.
-For a selection or a catalogue, its collection is created, with the
-archive's name for its title and a label made from it, and featured on
-the home page.
+A key wallet given (the field `Key wallet`) is recorded in `osheaf.json`
+as a hint for the owner, as `osheaf key wallet --owner OWNER --add
+WALLET` records it (chapter [37](37-owner-commands.md)), so that the
+archive says where the owner's keys are. For a selection or a catalogue,
+its collection is created, with the archive's name for its title and a
+label made from it, and featured on the home page.
 
     // in the operations:
     const KEY_LOG = 'key-log';
@@ -939,6 +943,8 @@ the home page.
         if (value) args[option] = value;
       }
       await initCommand(r, args);
+      const wallet = field(form, 'Key wallet');
+      if (wallet) await osheaf(r, (f) => keyWallet(f, { owner, add: wallet }, f.env), { presented: false });
       if ((await r.storage.kind(KEY_LOG)) === 'dir') await removeTree(r.storage, KEY_LOG);
       const purpose = field(form, 'Purpose').toLowerCase() || 'papers';
       let done;

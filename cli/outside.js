@@ -1,5 +1,5 @@
 // Generated from literate/40-cli.md by opensheaf-literate: edit the document, not this file.
-import { promises as fs, readFileSync } from 'node:fs';
+import { promises as fs, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
@@ -64,6 +64,28 @@ export function userConfig(env = process.env) {
   return found && typeof found === 'object' && !Array.isArray(found) ? found : {};
 }
 
+export function userFile(env = process.env) {
+  const p = userConfigPath(env);
+  let text;
+  try {
+    text = readFileSync(p, 'utf-8');
+  } catch {
+    return {};
+  }
+  try {
+    const data = JSON.parse(text);
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+  } catch (error) {
+    throw new WalletError(`${p}: ${error.message}`);
+  }
+}
+
+export function writeUserFile(data, env = process.env) {
+  const p = userConfigPath(env);
+  mkdirSync(path.dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+}
+
 export function githubToken(env = process.env) {
   const given = (env.GH_TOKEN || env.GITHUB_TOKEN || '').trim();
   if (given) return given;
@@ -78,6 +100,8 @@ export function outside(env, given = {}) {
     wallets: given.wallets || {
       userConfig: () => userConfig(vars),
       userConfigPath: () => userConfigPath(vars),
+      userFile: () => userFile(vars),
+      writeUserFile: (data) => writeUserFile(data, vars),
       walletEnv: () => vars.OPENSHEAF_WALLET || '',
       run: async (command, input) => {
         const r = spawnSync(command, { shell: true, input: input ?? undefined, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });

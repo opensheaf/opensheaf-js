@@ -15,7 +15,9 @@ import { tarGz } from './fixtures.js';
 import { DiskStorage } from '../cli/disk.js';
 import { GitHubWallet } from '../core/wallets.js';
 import { browserEnvironment, signers, checkWallet, walletEntries, passphraseConfirmed, checkPassphrase, keyToPush, pushKey,
-         enrollPlan, openWithPassphrase, enrollPasskey, walletLocks, openLocks } from '../web/manager.js';
+         enrollPlan, openWithPassphrase, enrollPasskey, walletLocks, openLocks, rotationKeysFromTexts,
+         rotationKeysFromWallet, walletRotationKeys, rotationFiles, keepRotationKeys, rotateAdding } from '../web/manager.js';
+import { exampleKey } from '../core/keys.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, '..', 'cli', 'osheaf.js');
@@ -809,6 +811,140 @@ test('key texts exported by either are imported by the other', { skip }, async (
       assert.match(ok(s[from](['owner', 'show', '--offline'], { cwd: arch, more: other }), 'show').stdout, /\(on this computer\)/);
     }
   } finally {
+    await s.done();
+  }
+});
+
+const PY_ROTATES = `import json, sys
+from pathlib import Path
+from opensheaf import core, keys, owners
+root, created, add, passphrase, files, seeds = sys.argv[1:7]
+core.configure(root)
+owner = core.ARCHIVE["owner"]
+log = core.key_log(owner)
+signers = [keys.read_rotation_key(Path(f).read_text(encoding="utf-8"), passphrase or None).key for f in files.split(",")]
+new = [keys.Key(bytes.fromhex(h)) for h in seeds.split(",")]
+prev = log.latest()
+log.rotate(signers, next_keys=new, next_threshold=min(prev.keys["nextThreshold"], len(new)), add=[add],
+           message="Keys changed", user=core.depositor(), created=created)
+owners.write_key_log(core.obj_dir(log.id), log)
+core.write_discovery()
+`;
+
+const PY_FILES = `import json, sys
+from opensheaf import keys
+owner, version, seed = sys.argv[1], int(sys.argv[2]), bytes.fromhex(sys.argv[3])
+key = keys.Key(seed)
+print(json.dumps({"name": keys.rotation_file_name(owner, key), "text": keys.rotation_key_text(key, owner, version),
+                  "sheet": keys.rotation_key_sheet(key, owner, version), "check": keys.sheet_check(seed)}))
+`;
+
+const hex = (bytes) => Buffer.from(bytes).toString('hex');
+
+test('a new current key made by the Manager: the version of opensheaf-py, byte for byte; rotation files across the two',
+     { skip }, async () => {
+  const s = await sandbox();
+  const more = { OPENSHEAF_PASSPHRASE: 'correct horse' };
+  const python = path.join(path.dirname(PY), 'python3');
+  try {
+    await papers(s);
+    const k = (n) => path.join(s.root, n);
+    ok(s.py(await initArgs('arch', k('k1'), { passphrase: true }), { more }), 'py init (locked rotation keys)');
+    const arch = k('arch');
+    ok(s.py(['deposit', 'paper', '../paper.tex', ...DEPOSIT, '--new'], { cwd: arch }), 'py deposit --new');
+    const env = browserEnvironment({ assets: { templates: {} } });
+    const plan = await signers(new DiskStorage(arch), env);
+    assert.deepEqual([plan.number, plan.next.length, plan.nextThreshold], [1, 3, 2]);
+    const k1 = await keyFiles(k('k1'));
+    const given = await Promise.all(k1.map(async (f) => ({ name: path.basename(f), text: await readFile(f, 'utf-8') })));
+    // the same version by both: the Manager's on one copy, opensheaf-py's on the other
+    const current = await exampleKey('the Manager current key');
+    const fresh = await Promise.all(['one', 'two', 'three'].map((x) => exampleKey(`the Manager rotation key ${x}`)));
+    const created = '2026-11-21T10:00:00Z';
+    await cp(arch, k('a'), { recursive: true });
+    await cp(arch, k('b'), { recursive: true });
+    ok(s.run([python], ['-c', PY_ROTATES, k('a'), created, current.did, 'correct horse', [k1[0], k1[2]].join(','),
+                        fresh.map((x) => hex(x.seed)).join(',')]), 'py rotate');
+    const sealed = await rotationKeysFromTexts([given[0], given[2]], plan, 'correct horse');
+    const v = await rotateAdding(new DiskStorage(k('b')), env, plan, sealed, { add: current.did, next: fresh.map((x) => x.digest),
+                                                                                 created });
+    assert.deepEqual([v.number, v.dids], [2, [...plan.dids, current.did]]);
+    const A = await filesOf(k('a')), B = await filesOf(k('b'));
+    assert.deepEqual([...B.keys()].sort(), [...A.keys()].sort());
+    for (const [p, bytes] of A) assert.deepEqual(B.get(p), bytes, p);
+    clean(s, k('b'));
+    // the files of the new rotation keys: those opensheaf-py writes
+    const owner = plan.owner;
+    const plain = await rotationFiles(await Promise.all(['one', 'two', 'three'].map((x) => exampleKey(`the Manager rotation key ${x}`))),
+                                      owner, 2, null);
+    for (const [n, f] of plain.entries()) {
+      const theirs = JSON.parse(ok(s.run([python], ['-c', PY_FILES, owner, '2', hex(fresh[n].seed)]), 'py files').stdout);
+      assert.deepEqual({ name: f.name, text: f.text, sheet: f.sheet, check: f.check }, theirs);
+    }
+    // the Manager's locked files sign the next version with opensheaf-py
+    const made = await Promise.all([1, 2, 3].map((n) => exampleKey(`the Manager new rotation key ${n}`)));
+    const locked = await rotationFiles(made, owner, 2, 'correct horse');
+    assert.ok(made.every((x) => x.seed.every((b) => b === 0)));
+    await mkdir(k('k2'));
+    for (const f of locked) await writeFile(path.join(k('k2'), f.name), f.text);
+    const added = await exampleKey('another current key');
+    const v2 = await rotateAdding(new DiskStorage(arch), env, plan,
+                                  await rotationKeysFromTexts([given[1], given[2]], plan, 'correct horse'),
+                                  { add: added.did, next: locked.map((f) => f.digest) });
+    assert.equal(v2.number, 2);
+    clean(s, arch);
+    const k2 = await keyFiles(k('k2'));
+    ok(s.py(['owner', 'rotate', '--rotation-key', k2[0], '--rotation-key', k2[2], '--export', k('k3'), '--no-passphrase', '--yes'],
+            { cwd: arch, more }), 'py owner rotate with the Manager\'s files');
+    clean(s, arch);
+    // and the Manager rotates with the files opensheaf-py exported in clear
+    const plan3 = await signers(new DiskStorage(arch), env);
+    assert.equal(plan3.number, 3);
+    const k3 = await Promise.all((await keyFiles(k('k3'))).map(async (f) => ({ name: path.basename(f), text: await readFile(f, 'utf-8') })));
+    await assert.rejects(rotationKeysFromTexts(given, plan3, 'correct horse'), /not a rotation key that v3 of the key log commits/);
+    const v4 = await rotateAdding(new DiskStorage(arch), env, plan3, await rotationKeysFromTexts(k3.slice(1), plan3),
+                                  { add: (await exampleKey('a fourth key')).did,
+                                    next: (await Promise.all([4, 5, 6].map((n) => exampleKey(`k${n}`)))).map((x) => x.digest) });
+    assert.equal(v4.number, 4);
+    clean(s, arch);
+  } finally {
+    await s.done();
+  }
+});
+
+test('a new current key made by the Manager with the rotation keys of the wallet; opensheaf-py goes on with them', { skip },
+     async () => {
+  const s = await sandbox();
+  const w = await wallets(s);
+  try {
+    const more = w.more;
+    const arch = path.join(s.root, 'arch');
+    ok(s.py(['init', arch, '--name', 'Papers', '--base-url', 'https://example.org/papers/', '--curator', 'Doe, Jane',
+             '--new-owner', '--keys', 'github:me/keys', '--yes'], { more }), 'py init --keys');
+    const gh = { api: more.OPENSHEAF_GITHUB_API, fetch: globalThis.fetch.bind(globalThis), token: async () => 'a-token' };
+    const env = browserEnvironment({ assets: { templates: {} } });
+    const plan = await signers(new DiskStorage(arch), env);
+    const wallet = new GitHubWallet('me/keys', gh, []);
+    await checkWallet(wallet);
+    const entries = await walletEntries(wallet, plan.owner);
+    assert.deepEqual(walletRotationKeys(entries, plan.next).sort(), [...plan.next].sort());
+    await assert.rejects(rotationKeysFromWallet(wallet, plan, 'wrong horse'), /wrong passphrase/);
+    const sealed = await rotationKeysFromWallet(wallet, plan, 'correct horse');
+    assert.equal(sealed.length, plan.nextThreshold);
+    const current = await exampleKey('the Manager current key');
+    const fresh = await Promise.all([1, 2, 3].map((n) => exampleKey(`the Manager wallet rotation key ${n}`)));
+    await keepRotationKeys(wallet, plan.owner, fresh, plan.number + 1, 'correct horse');
+    const v = await rotateAdding(new DiskStorage(arch), env, plan, sealed, { add: current.did, next: fresh.map((x) => x.digest) });
+    assert.equal(await pushKey(wallet, plan.owner, current, v.number, 'correct horse'), true);
+    clean(s, arch, more);
+    const listed = ok(s.py(['key', 'list'], { cwd: arch, more }), 'py key list').stdout;
+    assert.match(listed, new RegExp(`current +${current.did.slice(8, 16)}…${current.did.slice(-4)} +v2 +passphrase`));
+    const elsewhere = { ...more, XDG_CONFIG_HOME: path.join(s.root, 'xdg-elsewhere') };
+    assert.match(ok(s.py(['key', 'pull'], { cwd: arch, more: elsewhere }), 'py pull').stdout, /Pulled 2 current keys/);
+    ok(s.py(['owner', 'rotate', '--keys', 'github:me/keys'], { cwd: arch, more }), 'py rotate with the Manager\'s rotation keys');
+    clean(s, arch, more);
+  } finally {
+    w.stop();
     await s.done();
   }
 });

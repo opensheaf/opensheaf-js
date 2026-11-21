@@ -89,8 +89,11 @@ Phases 1 to 6 (version 0.1.0):
   requests of the archive template's forms carried out as its workflow
   carries them out, and the owner's current keys opened from its key
   wallet by a passkey, through a popup of `unlock.opensheaf.org`, kept in
-  the page unexportable; `deno task bundle` makes of it the one file the
-  Manager loads, `dist/opensheaf-manager.js`.
+  the page unexportable; the setup of a key wallet, with a current key
+  given as a file or made in the page and added to the key log by a
+  version signed by the rotation keys (given as files, or kept in the
+  wallet), as `osheaf owner rotate --add` makes it; `deno task bundle`
+  makes of it the one file the Manager loads, `dist/opensheaf-manager.js`.
 
 Every command that changes an archive writes its website again. The files
 written are those opensheaf-py writes, byte for byte (the times of

@@ -27,18 +27,26 @@ was made from.
     import { loadSchemas } from '../core/schema.js';
     import { fetchJsonWith } from '../core/keepers.js';
     import { Key, readKey, passkeysOf, passkeySalt, passkeyKek, Passkey, wrapsOf, PASSKEY_RP, KeyError, PassphraseNeeded,
-             CURRENT } from '../core/keys.js';
+             CURRENT, ROTATION, newKey, readRotationKey, rotationKeyText, rotationFileName, rotationKeySheet,
+             sheetCheck } from '../core/keys.js';
     import { describeEntry, putKey, addPasskey, readAny, WalletError } from '../core/wallets.js';
     import { sameBytes, unbase64 } from '../core/crypto.js';
     import { oneCommit } from '../core/github.js';
     import { carryOut } from '../core/requests.js';
+    import { rotate, loadKeyLog, OwnerError } from '../core/keylogs.js';
+    import { objectId } from '../core/names.js';
+    import { writeKeyLog } from '../core/write.js';
+    import { writeDiscovery } from '../core/discovery.js';
+    import { verifyFolder } from '../core/check.js';
+    import { short, plural, Stop } from '../core/folder.js';
 
     export { GitHub, GitHubStorage, GitHubError, CommitConflict, oneCommit, gitBlobSha, GITHUB_API } from '../core/github.js';
     export { carryOut, Problem, OPERATIONS, WORKFLOW_ONLY, NEW_PAPER, NEW_VERSION } from '../core/requests.js';
     export { popupUrl, popupRequest, openPopupAnswer, sameCode, confirmationCode, POPUP, POPUP_ENROLL, POPUP_MESSAGES,
              UNLOCK_ORIGIN, UnlockFailed } from '../core/passkey.js';
-    export { Key, readKey, KeyError, PASSKEY_RP } from '../core/keys.js';
+    export { Key, readKey, KeyError, PASSKEY_RP, CURRENT, ROTATION, newKey, sheetCheck } from '../core/keys.js';
     export { GitHubWallet, WalletError } from '../core/wallets.js';
+    export { OwnerError } from '../core/keylogs.js';
     export { ArchiveFolder, Stop } from '../core/folder.js';
 
     <<the environment of a page>>
@@ -47,14 +55,17 @@ was made from.
 
     <<setting up a key wallet>>
 
+    <<a new current key, made in the page>>
+
     <<a request written directly>>
 
 The environment of a page
 -------------------------
 
 The environment of the core (chapter [23](23-folder.md)) in a page: no
-terminal (what the commands say is collected by `carryOut`), no new keys,
-no passphrase, no folder to export to; the current keys that the page
+terminal (what the commands say is collected by `carryOut`), no new keys
+for the commands (the new current key of the setup of a wallet is made
+by its own functions, below), no passphrase, no folder to export to; the current keys that the page
 holds; other archives and keepers read with the page's `fetch`; and the
 default templates of the website from the bundle (an archive made from
 the template has its own). The schemas are those of the bundle.
@@ -94,6 +105,9 @@ The current keys of the owner of the archive that may sign now: those of
 the latest version of its key log, which a version needs `threshold` of;
 and, for each, the first version of the log that lists it, which a key
 file of a wallet records (`version`, as `osheaf key push` writes it).
+With them, what a new version of the key log needs (section 6.2): the
+number of the latest version, the digests of the rotation keys it commits
+(`next`), and how many of them sign the next one (`nextThreshold`).
 
     // in the keys that sign:
     export async function signers(storage, env) {
@@ -101,12 +115,13 @@ file of a wallet records (`version`, as `osheaf key push` writes it).
       const owner = f.archive.owner;
       const log = await f.keyLog(owner);
       const latest = log?.latest();
-      if (!latest) return { owner, dids: [], threshold: 0, versions: {} };
+      if (!latest) return { owner, dids: [], threshold: 0, versions: {}, number: null, next: [], nextThreshold: 0 };
       const versions = {};
       for (const did of latest.keys.keys) {
         versions[did] = log.side().find((v) => v.keys && (v.keys.keys || []).includes(did))?.number ?? null;
       }
-      return { owner, dids: [...latest.keys.keys], threshold: latest.keys.threshold, versions };
+      return { owner, dids: [...latest.keys.keys], threshold: latest.keys.threshold, versions, number: latest.number,
+               next: [...(latest.keys.next || [])], nextThreshold: latest.keys.nextThreshold ?? 0 };
     }
 
 The locks of those keys in a wallet: each entry of the owner that holds
@@ -195,7 +210,9 @@ page what they wrote:
    asked twice, or once when the wallet holds keys of the owner locked
    already, and then checked to open one of them, as
    `osheaf key push` asks it; a key that the wallet holds already is left
-   as it is. The seed is wiped once the file is written;
+   as it is. The seed is wiped once the file is written. Or, when the
+   key is not at hand, a new current key is made in the page and added
+   to the key log, signed by rotation keys (below);
 3. the passkey, as `osheaf key enroll`: every key of the owner locked
    with a passphrase is opened with it first; a new passkey is created by
    the popup of the unlock page in the mode `popup-enroll` (chapter
@@ -389,6 +406,234 @@ for.
       } finally {
         kek.fill(0);
       }
+    }
+
+A new current key, made in the page
+-----------------------------------
+
+An owner whose current key is not at hand (it is on another computer, or
+was lost) may make a new one in the page instead of giving a key file in
+step 2: the page makes the key, adds it to the current keys of the owner
+by a new version of the key log, as `osheaf owner rotate --add DID` does
+(section 6.2), commits that version to the archive, and puts the key in
+the wallet as `osheaf key push` puts it. The new version keeps the
+current keys and the threshold of the latest one, and commits new
+rotation keys, as many as the latest version commits, with the same
+`nextThreshold`; it is signed by `nextThreshold` of the rotation keys the
+latest version commits, which the person gives:
+
+- as the files `osheaf init --export` or `osheaf owner rotate --export`
+  wrote (`rotation-OWNER-K.txt`, locked with the passphrase or not; a
+  typed sheet of `--print` too). The new rotation keys are then given
+  back the same way: one file each, with the names and the text `osheaf`
+  writes, locked with the passphrase, and the sheets of `--print`; the
+  new version is committed only once the person has typed the check of
+  each file, as `osheaf owner rotate --export` asks;
+- or from the wallet, when it keeps the rotation keys (the security level
+  `--keys github:OWNER/REPO`): they are opened with the passphrase, and
+  the new ones are put there, locked with it, before the key log is
+  written, as `osheaf owner rotate --keys github:OWNER/REPO` does.
+
+The rotation keys pass through the page's memory, as they pass through
+`osheaf`'s on a computer; the maximum security level keeps them offline,
+used by `osheaf` alone. The seeds are wiped once used: the rotation keys
+that sign are kept as WebCrypto keys that cannot be exported, the new
+ones once their files are written (or once they are in the wallet), the
+new current key once it is in the wallet.
+
+The rotation keys the wallet keeps that the latest version commits: their
+digests.
+
+    // in a new current key, made in the page:
+    export function walletRotationKeys(entries, next) {
+      return entries.filter((e) => e.fields.kind === ROTATION && next.includes(e.fields.digest)).map((e) => e.fields.digest);
+    }
+
+A rotation key given, read and checked: of the owner, committed by the
+latest version (one used up, or of another version, is refused), and
+sealed. The keys given are each counted once, and must be as many as
+sign the next version.
+
+    // in a new current key, made in the page:
+    async function signing(rk, { owner, number, next }, where) {
+      if ((rk.owner !== null && rk.owner !== owner) || rk.kind !== ROTATION || !next.includes(rk.key.digest)) {
+        rk.key.seed?.fill(0);
+        throw new KeyError(rk.owner !== null && rk.owner !== owner ? `${where} is a rotation key of ${short(rk.owner)}, not of ${short(owner)}`
+          : rk.kind !== ROTATION ? `${where} is a ${rk.kind} key, not a rotation key`
+          : `${where}: ${rk.key.did} is not a rotation key that v${number} of the key log commits (used up already, or of another version)`);
+      }
+      return sealedKey(rk.key);
+    }
+
+    function enough(keys, { number, nextThreshold }, where) {
+      if (keys.length < nextThreshold) {
+        throw new KeyError(`${where} ${plural(keys.length, 'rotation key')} of v${number} of the key log, and ` +
+                           `${nextThreshold} sign the next version`);
+      }
+      return keys;
+    }
+
+    export async function rotationKeysFromTexts(files, plan, passphrase = null) {
+      const out = [];
+      for (const { name, text } of files) {
+        let rk;
+        try {
+          try {
+            rk = await readRotationKey(text);
+          } catch (error) {
+            if (!(error instanceof PassphraseNeeded)) throw error;
+            if (!passphrase) throw new KeyError('it is locked with a passphrase: give the passphrase');
+            rk = await readRotationKey(text, passphrase);
+          }
+        } catch (error) {
+          if (error instanceof KeyError) throw new KeyError(`${name}: ${error.message}`);
+          throw error;
+        }
+        if (out.some((k) => k.did === rk.key.did)) {
+          rk.key.seed?.fill(0);
+          continue;
+        }
+        out.push(await signing(rk, plan, name));
+      }
+      return enough(out, plan, 'given:');
+    }
+
+    export async function rotationKeysFromWallet(wallet, plan, passphrase) {
+      const out = [];
+      for (const digest of plan.next) {
+        const kid = digest.slice(0, 16);
+        const text = await wallet.read(plan.owner, kid, ROTATION);
+        if (!text) continue;
+        let rk;
+        try {
+          rk = await readKey(text, passphrase);
+        } catch (error) {
+          if (error instanceof KeyError) throw new WalletError(`${wallet.name} ${plan.owner}/${kid}: ${error.message}`);
+          throw error;
+        }
+        out.push(await signing(rk, plan, `${wallet.name} ${plan.owner}/${kid}`));
+        if (out.length === plan.nextThreshold) break;
+      }
+      return enough(out, plan, `the wallet ${wallet.name} holds`);
+    }
+
+The keys made: the current key, and the new rotation keys. For files,
+each is written as `osheaf owner rotate --export` writes it, for the
+version the key log will have, locked with the passphrase, and read back;
+with its name, its check, and its sheet. The seeds of the rotation keys
+are then wiped: the key log needs only their digests.
+
+    // in a new current key, made in the page:
+    export async function newKeys(plan) {
+      const rotation = [];
+      for (let k = 0; k < plan.next.length; k++) rotation.push(await newKey());
+      return { current: await newKey(), rotation };
+    }
+
+    export async function rotationFiles(keys, owner, version, passphrase, { cost = {} } = {}) {
+      const files = [];
+      for (const key of keys) {
+        const name = rotationFileName(owner, key);
+        const text = await rotationKeyText(key, owner, version, passphrase, cost);
+        if ((await readRotationKey(text, passphrase)).key.did !== key.did) throw new KeyError(`${name} does not read back`);
+        files.push({ name, did: key.did, digest: key.digest, text, check: await sheetCheck(key.seed),
+                     sheet: await rotationKeySheet(key, owner, version) });
+      }
+      for (const key of keys) key.seed.fill(0);
+      return files;
+    }
+
+    export function checksConfirmed(files, typed) {
+      return files.every((f, k) => String(typed[k] ?? '').trim().toUpperCase() === f.check);
+    }
+
+For the wallet, the new rotation keys are put there before the key log
+is written, as `osheaf owner rotate --keys` puts them; if one cannot be
+put, nothing is written to the key log.
+
+    // in a new current key, made in the page:
+    export async function keepRotationKeys(wallet, owner, keys, version, passphrase, { cost = {} } = {}) {
+      try {
+        for (const key of keys) await putKey(wallet, owner, key, ROTATION, version, passphrase, [], cost);
+      } catch (error) {
+        if (error instanceof WalletError || error instanceof KeyError) {
+          throw new WalletError(`${error.message}: nothing was written to the key log`);
+        }
+        throw error;
+      }
+      for (const key of keys) key.seed.fill(0);
+    }
+
+The new version of the key log, as `osheaf owner rotate --add DID` makes
+it: the latest version must be the one the keys were read for (if the
+key log changed meanwhile, nothing is written); the current key added,
+the rotation keys committed by their digests, the message `Keys changed`,
+the depositor of the archive and the time given; then the key log and the
+discovery document written. `created` is given by the tests, which make
+the same version with opensheaf-py.
+
+    // in a new current key, made in the page:
+    export const NEW_KEY_MESSAGE = 'Keys changed';
+
+    export async function rotateAdding(storage, env, plan, signers, { add, next, created = null }) {
+      const f = await ArchiveFolder.open(storage, env);
+      const owner = f.archive.owner;
+      const dir = await f.dirOf(objectId(owner, owner));
+      if (owner !== plan.owner || (await storage.kind(`${dir}/inventory.json`)) !== 'file') {
+        throw new OwnerError(`the key log of ${short(plan.owner)} is not in the storage root`);
+      }
+      const log = await loadKeyLog(storage, dir);
+      const prev = log.latest();
+      if (!prev) throw new OwnerError(`the owner ${short(owner)} has ended (section 6.3): its key log takes no new version`);
+      if (prev.number !== plan.number) {
+        throw new OwnerError(`the key log of ${short(owner)} changed meanwhile (v${prev.number}, not v${plan.number}): ` +
+                             'nothing was written; start again');
+      }
+      const v = await rotate(log, signers, { nextKeys: next, nextThreshold: Math.min(prev.keys.nextThreshold, next.length),
+                                             add: [add], message: NEW_KEY_MESSAGE, user: f.depositor(),
+                                             created: created || env.now() });
+      await writeKeyLog(storage, dir, log);
+      f.changed();
+      await writeDiscovery(f);
+      return { owner, number: v.number, dids: [...v.keys.keys], threshold: v.keys.threshold };
+    }
+
+Committed as a request is (below): on the head of the archive's branch,
+read through the same prefetch, verified before the commit (the content
+of papers trusted to match its inventories), one commit; if the branch
+moved meanwhile, the version is made again on the new head, refused if
+the key log moved. Gives the new version, with the commit.
+
+    // in a new current key, made in the page:
+    export async function directRotate({ repo, github, env, schemas, plan, signers, add, next, created = null,
+                                         mirror = null, cache = new Map(), origin = 'the OpenSheaf manager',
+                                         progress = () => {}, attempts = 3 }) {
+      created ||= env.now();
+      const done = await oneCommit(repo, github, async (storage) => {
+        progress('carrying out');
+        let v;
+        try {
+          v = await rotateAdding(storage, env, plan, signers, { add, next, created });
+        } catch (error) {
+          if (error instanceof Stop) throw new OwnerError(error.message);
+          throw error;
+        }
+        if (schemas) {
+          const report = await verifyFolder(storage, { schemas, digests: false, fetch: env.fetch, fetchJson: env.fetchJson });
+          if (report.counts().error) {
+            const errors = report.findings.filter((x) => x.level === 'error').map((x) => `${x.place}: ${x.message}`);
+            throw new OwnerError(`the archive would not verify: ${errors.slice(0, 5).join('; ')}`);
+          }
+        }
+        progress('committing');
+        const message = `Keys changed: v${v.number} of the key log of ${short(v.owner)}, a new current key ` +
+          `${short(add)} (${origin})\n\n` + v.dids.map((d) => `current key ${d}\n`).join('');
+        return { message, version: v };
+      }, { mirror, cache, attempts, prepare: async (storage) => {
+        progress('reading');
+        await storage.prefetch({ skip: (p, size) => !prefetched(p, size), concurrency: 12 });
+      } });
+      return { ...done.version, commit: done.commit };
     }
 
 A request written directly

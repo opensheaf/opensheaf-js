@@ -3,18 +3,26 @@ import { environment, ArchiveFolder } from '../core/folder.js';
 import { loadSchemas } from '../core/schema.js';
 import { fetchJsonWith } from '../core/keepers.js';
 import { Key, readKey, passkeysOf, passkeySalt, passkeyKek, Passkey, wrapsOf, PASSKEY_RP, KeyError, PassphraseNeeded,
-         CURRENT } from '../core/keys.js';
+         CURRENT, ROTATION, newKey, readRotationKey, rotationKeyText, rotationFileName, rotationKeySheet,
+         sheetCheck } from '../core/keys.js';
 import { describeEntry, putKey, addPasskey, readAny, WalletError } from '../core/wallets.js';
 import { sameBytes, unbase64 } from '../core/crypto.js';
 import { oneCommit } from '../core/github.js';
 import { carryOut } from '../core/requests.js';
+import { rotate, loadKeyLog, OwnerError } from '../core/keylogs.js';
+import { objectId } from '../core/names.js';
+import { writeKeyLog } from '../core/write.js';
+import { writeDiscovery } from '../core/discovery.js';
+import { verifyFolder } from '../core/check.js';
+import { short, plural, Stop } from '../core/folder.js';
 
 export { GitHub, GitHubStorage, GitHubError, CommitConflict, oneCommit, gitBlobSha, GITHUB_API } from '../core/github.js';
 export { carryOut, Problem, OPERATIONS, WORKFLOW_ONLY, NEW_PAPER, NEW_VERSION } from '../core/requests.js';
 export { popupUrl, popupRequest, openPopupAnswer, sameCode, confirmationCode, POPUP, POPUP_ENROLL, POPUP_MESSAGES,
          UNLOCK_ORIGIN, UnlockFailed } from '../core/passkey.js';
-export { Key, readKey, KeyError, PASSKEY_RP } from '../core/keys.js';
+export { Key, readKey, KeyError, PASSKEY_RP, CURRENT, ROTATION, newKey, sheetCheck } from '../core/keys.js';
 export { GitHubWallet, WalletError } from '../core/wallets.js';
+export { OwnerError } from '../core/keylogs.js';
 export { ArchiveFolder, Stop } from '../core/folder.js';
 
 export function browserEnvironment({ assets, keys = new Map(), fetch = globalThis.fetch?.bind(globalThis) } = {}) {
@@ -49,12 +57,13 @@ export async function signers(storage, env) {
   const owner = f.archive.owner;
   const log = await f.keyLog(owner);
   const latest = log?.latest();
-  if (!latest) return { owner, dids: [], threshold: 0, versions: {} };
+  if (!latest) return { owner, dids: [], threshold: 0, versions: {}, number: null, next: [], nextThreshold: 0 };
   const versions = {};
   for (const did of latest.keys.keys) {
     versions[did] = log.side().find((v) => v.keys && (v.keys.keys || []).includes(did))?.number ?? null;
   }
-  return { owner, dids: [...latest.keys.keys], threshold: latest.keys.threshold, versions };
+  return { owner, dids: [...latest.keys.keys], threshold: latest.keys.threshold, versions, number: latest.number,
+           next: [...(latest.keys.next || [])], nextThreshold: latest.keys.nextThreshold ?? 0 };
 }
 
 export async function walletLocks(wallet, owner, dids) {
@@ -247,6 +256,163 @@ export async function enrollPasskey(wallet, plan, passphrase, cred, prf, { cost 
   } finally {
     kek.fill(0);
   }
+}
+
+export function walletRotationKeys(entries, next) {
+  return entries.filter((e) => e.fields.kind === ROTATION && next.includes(e.fields.digest)).map((e) => e.fields.digest);
+}
+
+async function signing(rk, { owner, number, next }, where) {
+  if ((rk.owner !== null && rk.owner !== owner) || rk.kind !== ROTATION || !next.includes(rk.key.digest)) {
+    rk.key.seed?.fill(0);
+    throw new KeyError(rk.owner !== null && rk.owner !== owner ? `${where} is a rotation key of ${short(rk.owner)}, not of ${short(owner)}`
+      : rk.kind !== ROTATION ? `${where} is a ${rk.kind} key, not a rotation key`
+      : `${where}: ${rk.key.did} is not a rotation key that v${number} of the key log commits (used up already, or of another version)`);
+  }
+  return sealedKey(rk.key);
+}
+
+function enough(keys, { number, nextThreshold }, where) {
+  if (keys.length < nextThreshold) {
+    throw new KeyError(`${where} ${plural(keys.length, 'rotation key')} of v${number} of the key log, and ` +
+                       `${nextThreshold} sign the next version`);
+  }
+  return keys;
+}
+
+export async function rotationKeysFromTexts(files, plan, passphrase = null) {
+  const out = [];
+  for (const { name, text } of files) {
+    let rk;
+    try {
+      try {
+        rk = await readRotationKey(text);
+      } catch (error) {
+        if (!(error instanceof PassphraseNeeded)) throw error;
+        if (!passphrase) throw new KeyError('it is locked with a passphrase: give the passphrase');
+        rk = await readRotationKey(text, passphrase);
+      }
+    } catch (error) {
+      if (error instanceof KeyError) throw new KeyError(`${name}: ${error.message}`);
+      throw error;
+    }
+    if (out.some((k) => k.did === rk.key.did)) {
+      rk.key.seed?.fill(0);
+      continue;
+    }
+    out.push(await signing(rk, plan, name));
+  }
+  return enough(out, plan, 'given:');
+}
+
+export async function rotationKeysFromWallet(wallet, plan, passphrase) {
+  const out = [];
+  for (const digest of plan.next) {
+    const kid = digest.slice(0, 16);
+    const text = await wallet.read(plan.owner, kid, ROTATION);
+    if (!text) continue;
+    let rk;
+    try {
+      rk = await readKey(text, passphrase);
+    } catch (error) {
+      if (error instanceof KeyError) throw new WalletError(`${wallet.name} ${plan.owner}/${kid}: ${error.message}`);
+      throw error;
+    }
+    out.push(await signing(rk, plan, `${wallet.name} ${plan.owner}/${kid}`));
+    if (out.length === plan.nextThreshold) break;
+  }
+  return enough(out, plan, `the wallet ${wallet.name} holds`);
+}
+
+export async function newKeys(plan) {
+  const rotation = [];
+  for (let k = 0; k < plan.next.length; k++) rotation.push(await newKey());
+  return { current: await newKey(), rotation };
+}
+
+export async function rotationFiles(keys, owner, version, passphrase, { cost = {} } = {}) {
+  const files = [];
+  for (const key of keys) {
+    const name = rotationFileName(owner, key);
+    const text = await rotationKeyText(key, owner, version, passphrase, cost);
+    if ((await readRotationKey(text, passphrase)).key.did !== key.did) throw new KeyError(`${name} does not read back`);
+    files.push({ name, did: key.did, digest: key.digest, text, check: await sheetCheck(key.seed),
+                 sheet: await rotationKeySheet(key, owner, version) });
+  }
+  for (const key of keys) key.seed.fill(0);
+  return files;
+}
+
+export function checksConfirmed(files, typed) {
+  return files.every((f, k) => String(typed[k] ?? '').trim().toUpperCase() === f.check);
+}
+
+export async function keepRotationKeys(wallet, owner, keys, version, passphrase, { cost = {} } = {}) {
+  try {
+    for (const key of keys) await putKey(wallet, owner, key, ROTATION, version, passphrase, [], cost);
+  } catch (error) {
+    if (error instanceof WalletError || error instanceof KeyError) {
+      throw new WalletError(`${error.message}: nothing was written to the key log`);
+    }
+    throw error;
+  }
+  for (const key of keys) key.seed.fill(0);
+}
+
+export const NEW_KEY_MESSAGE = 'Keys changed';
+
+export async function rotateAdding(storage, env, plan, signers, { add, next, created = null }) {
+  const f = await ArchiveFolder.open(storage, env);
+  const owner = f.archive.owner;
+  const dir = await f.dirOf(objectId(owner, owner));
+  if (owner !== plan.owner || (await storage.kind(`${dir}/inventory.json`)) !== 'file') {
+    throw new OwnerError(`the key log of ${short(plan.owner)} is not in the storage root`);
+  }
+  const log = await loadKeyLog(storage, dir);
+  const prev = log.latest();
+  if (!prev) throw new OwnerError(`the owner ${short(owner)} has ended (section 6.3): its key log takes no new version`);
+  if (prev.number !== plan.number) {
+    throw new OwnerError(`the key log of ${short(owner)} changed meanwhile (v${prev.number}, not v${plan.number}): ` +
+                         'nothing was written; start again');
+  }
+  const v = await rotate(log, signers, { nextKeys: next, nextThreshold: Math.min(prev.keys.nextThreshold, next.length),
+                                         add: [add], message: NEW_KEY_MESSAGE, user: f.depositor(),
+                                         created: created || env.now() });
+  await writeKeyLog(storage, dir, log);
+  f.changed();
+  await writeDiscovery(f);
+  return { owner, number: v.number, dids: [...v.keys.keys], threshold: v.keys.threshold };
+}
+
+export async function directRotate({ repo, github, env, schemas, plan, signers, add, next, created = null,
+                                     mirror = null, cache = new Map(), origin = 'the OpenSheaf manager',
+                                     progress = () => {}, attempts = 3 }) {
+  created ||= env.now();
+  const done = await oneCommit(repo, github, async (storage) => {
+    progress('carrying out');
+    let v;
+    try {
+      v = await rotateAdding(storage, env, plan, signers, { add, next, created });
+    } catch (error) {
+      if (error instanceof Stop) throw new OwnerError(error.message);
+      throw error;
+    }
+    if (schemas) {
+      const report = await verifyFolder(storage, { schemas, digests: false, fetch: env.fetch, fetchJson: env.fetchJson });
+      if (report.counts().error) {
+        const errors = report.findings.filter((x) => x.level === 'error').map((x) => `${x.place}: ${x.message}`);
+        throw new OwnerError(`the archive would not verify: ${errors.slice(0, 5).join('; ')}`);
+      }
+    }
+    progress('committing');
+    const message = `Keys changed: v${v.number} of the key log of ${short(v.owner)}, a new current key ` +
+      `${short(add)} (${origin})\n\n` + v.dids.map((d) => `current key ${d}\n`).join('');
+    return { message, version: v };
+  }, { mirror, cache, attempts, prepare: async (storage) => {
+    progress('reading');
+    await storage.prefetch({ skip: (p, size) => !prefetched(p, size), concurrency: 12 });
+  } });
+  return { ...done.version, commit: done.commit };
 }
 
 export function prefetched(path, size = null) {

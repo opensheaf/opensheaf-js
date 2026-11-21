@@ -60,7 +60,8 @@ The tests of chapters [47](47-github-storage.md) and
     import { GitHubWallet } from '../core/wallets.js';
     import { browserEnvironment, schemasOf, directWrite, keyFromText, walletLocks, openLocks, signers,
              prefetched, checkWallet, walletEntries, passphraseConfirmed, checkPassphrase, keyToPush, pushKey,
-             enrollPlan, openWithPassphrase, enrollPasskey } from '../web/manager.js';
+             enrollPlan, openWithPassphrase, enrollPasskey, rotationKeysFromTexts, rotationKeysFromWallet, walletRotationKeys,
+             newKeys, rotationFiles, checksConfirmed, keepRotationKeys, directRotate } from '../web/manager.js';
 
     <<the double of GitHub, used>>
 
@@ -539,6 +540,7 @@ and the head of the repository hold the same files after each.
                         write: async (folder, name, t) => exported.set(`${folder}/${name}`, t) && `${folder}/${name}`,
                         read: async (p) => exported.get(p) },
       });
+      env.exported = exported;
       return env;
     }
 
@@ -1033,6 +1035,98 @@ put later.
       await enrollPasskey(w, plan2, 'correct horse', cred, Uint8Array.from(prf), { cost });
       const laterText = text(g.files('jane/opensheaf-keys').get(`${owner}/${later.id}.key.enc`));
       assert.equal((await readKey(laterText, null, { [cred]: await passkeyKek(prf) })).key.did, later.did);
+    });
+
+A new current key made in the page (chapter [49](49-manager.md)): the
+rotation keys the export of `init` wrote, locked with the passphrase,
+sign a version of the key log that adds the new key, committed to the
+double's repository as one commit and verified; the new rotation keys
+are given as files (their checks typed back), and sign the next version
+in turn, which puts its own new rotation keys in the wallet; those then
+sign a third, read from the wallet. Refused: too few rotation keys, a
+wrong passphrase or none, a rotation key used up, a key log that moved
+meanwhile.
+
+    // in tests of the Manager's core:
+    test('a new current key made in the page: the key log rotated with rotation keys from files, then from the wallet', async () => {
+      const env = requestEnvironment();
+      const m = new MemoryStorage();
+      const cost = { opslimit: 1, memlimit: 8192 };
+      await init(m, env, { name: 'Papers of Jane Doe', baseUrl: 'https://example.org/papers/', curator: 'Doe, Jane',
+                           newOwner: true, export: '/keys', yes: true, cost }, '/archive');
+      const g = fakeGitHub();
+      g.create(REPO, Object.fromEntries(m.files));
+      g.create('jane/opensheaf-keys', {}, { visibility: 'private' });
+      const w = new GitHubWallet('jane/opensheaf-keys', { api: g.api, fetch: g.fetch, token: async () => g.token }, [REPO]);
+      const benv = browserEnvironment({ assets: { templates: {} },
+                                        fetch: async (url) => { throw new TypeError(`no network in the tests: ${url}`); } });
+      const head = async () => signers(await GitHubStorage.open(REPO, client(g)), benv);
+      const plan = await head();
+      const owner = plan.owner;
+      assert.deepEqual([plan.number, plan.next.length, plan.nextThreshold, plan.threshold], [1, 3, 2, 1]);
+      const files = [...env.exported].map(([p, t]) => ({ name: p.split('/').pop(), text: t }));
+      assert.equal(files.length, 3);
+      await assert.rejects(rotationKeysFromTexts(files.slice(0, 1), plan, 'correct horse'),
+                           /given: 1 rotation key of v1 of the key log, and 2 sign the next version/);
+      await assert.rejects(rotationKeysFromTexts([files[0], files[0]], plan, 'correct horse'), /given: 1 rotation key/);
+      await assert.rejects(rotationKeysFromTexts(files, plan, 'wrong horse'), /^Error: rotation-.*\.txt: wrong passphrase/);
+      await assert.rejects(rotationKeysFromTexts(files, plan), /locked with a passphrase: give the passphrase/);
+      const sealed = await rotationKeysFromTexts([files[0], files[2]], plan, 'correct horse');
+      assert.deepEqual(sealed.map((k) => [k.seed, k.signing.extractable]), [[null, false], [null, false]]);
+      // the new keys: the rotation keys given as files, their seeds wiped
+      const made = await newKeys(plan);
+      assert.equal(made.rotation.length, 3);
+      const exported = await rotationFiles(made.rotation, owner, 2, 'correct horse', { cost });
+      assert.ok(made.rotation.every((k) => k.seed.every((b) => b === 0)));
+      for (const f of exported) {
+        assert.match(f.name, new RegExp(`^rotation-${owner.slice(0, 16)}-[a-z2-7]{16}\\.txt$`));
+        assert.match(f.text, new RegExp(`^opensheaf-rotation-key/0\\.2\nowner ${owner}\nversion v2\nkey ${f.did}\n`));
+        assert.match(f.sheet, /^OpenSheaf rotation key \(opensheaf-rotation-key\/0\.2\)\n/);
+        assert.match(f.check, /^[A-Z2-7]{4}$/);
+      }
+      assert.equal(checksConfirmed(exported, exported.map((f) => ` ${f.check.toLowerCase()} `)), true);
+      assert.equal(checksConfirmed(exported, exported.map((f) => f.check).slice(0, 2)), false);
+      const phases = [];
+      const done = await directRotate({ repo: REPO, github: client(g), env: benv, schemas, plan, signers: sealed,
+                                        add: made.current.did, next: exported.map((f) => f.digest), progress: (p) => phases.push(p) });
+      assert.deepEqual(phases, ['reading', 'carrying out', 'committing']);
+      assert.deepEqual([done.number, done.dids, done.threshold], [2, [...plan.dids, made.current.did], 1]);
+      assert.equal(g.head(REPO), done.commit.sha);
+      assert.match(g.objects.get(done.commit.sha).message,
+                   /^Keys changed: v2 of the key log of \S+, a new current key \S+ \(the OpenSheaf manager\)\n\ncurrent key did:key:/);
+      const plan2 = await head();
+      assert.deepEqual([plan2.number, plan2.dids, plan2.next], [2, done.dids, exported.map((f) => f.digest)]);
+      assert.deepEqual(plan2.versions[made.current.did], 2);
+      const before = g.head(REPO);
+      await assert.rejects(directRotate({ repo: REPO, github: client(g), env: benv, schemas, plan, signers: sealed,
+                                          add: made.current.did, next: exported.map((f) => f.digest) }), /changed meanwhile/);
+      assert.equal(g.head(REPO), before);
+      await assert.rejects(rotationKeysFromTexts(files, plan2, 'correct horse'), /not a rotation key that v2 of the key log commits/);
+      // the current key put in the wallet, as osheaf key push
+      assert.equal(await pushKey(w, owner, made.current, done.number, 'correct horse', { cost }), true);
+      made.current.seed.fill(0);
+      // the files given back sign the next version, whose rotation keys go to the wallet
+      const sealed2 = await rotationKeysFromTexts(exported, plan2, 'correct horse');
+      const made2 = await newKeys(plan2);
+      await keepRotationKeys(w, owner, made2.rotation, 3, 'correct horse', { cost });
+      assert.ok(made2.rotation.every((k) => k.seed.every((b) => b === 0)));
+      const done2 = await directRotate({ repo: REPO, github: client(g), env: benv, schemas, plan: plan2, signers: sealed2,
+                                         add: made2.current.did, next: made2.rotation.map((k) => k.digest) });
+      assert.equal(done2.number, 3);
+      // and those sign a third, read from the wallet
+      const plan3 = await head();
+      const entries = await walletEntries(w, owner);
+      assert.deepEqual(walletRotationKeys(entries, plan3.next).sort(), [...plan3.next].sort());
+      assert.deepEqual(walletRotationKeys(entries, plan2.next), []);
+      await assert.rejects(rotationKeysFromWallet(w, plan3, 'wrong horse'), /wrong passphrase/);
+      const sealed3 = await rotationKeysFromWallet(w, plan3, 'correct horse');
+      assert.equal(sealed3.length, 2);
+      await assert.rejects(rotationKeysFromWallet(w, plan2, 'correct horse'), /the wallet github:jane\/opensheaf-keys holds 0 rotation keys/);
+      const made3 = await newKeys(plan3);
+      await keepRotationKeys(w, owner, made3.rotation, 4, 'correct horse', { cost });
+      const done3 = await directRotate({ repo: REPO, github: client(g), env: benv, schemas, plan: plan3, signers: sealed3,
+                                         add: made3.current.did, next: made3.rotation.map((k) => k.digest) });
+      assert.deepEqual([done3.number, done3.dids.length], [4, 4]);
     });
 
 A request written directly: an archive made in memory is pushed to the

@@ -6,11 +6,12 @@
 > [!WARNING]
 > **Draft.** OpenSheaf 0.2 is a draft specification. Until version 1.0, any
 > revision may change the format in incompatible ways, and archives made now
-> may have to be rebuilt. opensheaf-js is at its fourth phase: it makes
+> may have to be rebuilt. opensheaf-js is at its fifth phase: it makes
 > archives and their websites, deposits papers, keeps their descriptions
 > and collections, keeps owners and their keys (wallets and passkeys
 > included), resolves, mirrors, branches and takes down lines, keeps
-> drafts, and verifies archives; for arXiv, Zenodo and TeXmacs, use
+> drafts, imports papers from arXiv, deposits them on Zenodo, and
+> verifies archives; for TeXmacs sources without their PDF, use
 > [opensheaf-py](https://github.com/opensheaf/opensheaf-py).
 
 The tools of [OpenSheaf](https://opensheaf.org) archives (the `osheaf`
@@ -31,7 +32,7 @@ and the phases.
 
 ## Status
 
-Phases 1 to 4 (version 0.1.0):
+Phases 1 to 5 (version 0.1.0):
 
 - `osheaf init DIR --new-owner --export KEYS`: an archive and a new owner
   (rotation keys exported, in clear with `--no-passphrase` or under a
@@ -69,7 +70,17 @@ Phases 1 to 4 (version 0.1.0):
 - `osheaf draft new|deposit|delete DRAFT` and `osheaf seal DRAFT --label
   LABEL`: drafts and the works sealed from them;
 - `osheaf takedown LABEL --reason TEXT [--by-law | --keeper]`: objects
-  taken down, with their tombstones, and lines that return.
+  taken down, with their tombstones, and lines that return;
+- `osheaf arxiv fetch DOWNLOADS --author ID | ARXIV-ID ... [--refresh]`
+  and `osheaf arxiv import DOWNLOADS [--update] [--agreement METHOD]
+  [--agreed-by NAME] [--dry-run] [--rebuild]`: papers downloaded from
+  arXiv, politely and resumably, then imported as one sealed line per
+  paper, every version signed;
+- `osheaf zenodo LABEL [--production] [--keep]`: a DOI for the current
+  document version, the version recording it built and signed before
+  Zenodo publishes it (on the sandbox, a copy of the line is used); the
+  token is `ZENODO_TOKEN` (`ZENODO_SANDBOX_TOKEN`), or, on macOS, the
+  keychain item `zenodo-token` (`zenodo-sandbox-token`).
 
 Every command that changes an archive writes its website again. The files
 written are those opensheaf-py writes, byte for byte (the times of
@@ -79,14 +90,18 @@ write for one archive are the same. Archives made by opensheaf-js pass
 rotation keys exported by one sign with the other; one owner is kept by
 both in turn, and one key wallet serves both; each mirrors, branches and
 takes down what the other made, with the same files and the same
-findings of both verifications. Other archives are read
+findings of both verifications; the same arXiv downloads give the
+same lines, either program adds new arXiv versions to the lines the
+other imported, and both send Zenodo the same requests and record the
+same deposits, each completing a deposit the other left after its
+publication. Other archives are read
 where `OPENSHEAF_LOCATIONS` (or `locations` in `osheaf.json`) says, as
-opensheaf-py reads them. TeXmacs sources without a PDF, the TeXmacs
-index, arXiv and Zenodo are in opensheaf-py, and come here in later
-phases; the differences known are listed in the plan
+opensheaf-py reads them. TeXmacs sources without a PDF and the TeXmacs
+index are in opensheaf-py; the differences known are listed in the plan
 ([phase 2](literate/00-plan.md#phase-2-results-and-notes),
 [phase 3](literate/00-plan.md#phase-3-results-and-notes),
-[phase 4](literate/00-plan.md#phase-4-results-and-notes)).
+[phase 4](literate/00-plan.md#phase-4-results-and-notes),
+[phase 5](literate/00-plan.md#phase-5-results-and-notes)).
 
 ## Running
 
@@ -135,6 +150,8 @@ refused elsewhere). `OPENSHEAF_SIGNING_KEY`, `OPENSHEAF_PASSPHRASE`,
 work as in opensheaf-py, and `~/.config/opensheaf/config.json` configures
 a key wallet (`osheaf help-config`). The GitHub wallet needs no `gh`: its
 token is `GH_TOKEN`, `GITHUB_TOKEN`, or that of `gh auth token`.
+`OPENSHEAF_ZENODO_API` points `osheaf zenodo` at another address of
+Zenodo's API (a test double); the tests never reach arXiv or Zenodo.
 
 ## Building and testing
 

@@ -49,6 +49,11 @@ never the user's:
     for this program, on the same files): the keys either puts there the
     other lists, pulls and signs with; and the texts of `key export` of
     either are imported by the other.
+11. arXiv and Zenodo, against one double of both (chapter
+    [75](75-tests-services.md)): the same downloads, the same imports,
+    each updating what the other imported; the same requests to Zenodo
+    and the same object versions; a deposit stopped after publication
+    and completed by the other program.
 
 opensheaf-py is found as `OSHEAF_PY`, or as `osheaf` on the `PATH`; the
 continuous integration installs it from its repository. Without it, the
@@ -58,7 +63,7 @@ tests are skipped, with the reason.
     import { test } from 'node:test';
     import assert from 'node:assert/strict';
     import { spawnSync, spawn } from 'node:child_process';
-    import { mkdtemp, readFile, writeFile, readdir, cp, rm, mkdir } from 'node:fs/promises';
+    import { mkdtemp, readFile, writeFile, readdir, cp, rm, mkdir, rename } from 'node:fs/promises';
     import { existsSync } from 'node:fs';
     import os from 'node:os';
     import path from 'node:path';
@@ -66,6 +71,8 @@ tests are skipped, with the reason.
     import { fileURLToPath } from 'node:url';
     import { readRotationKey } from '../core/keys.js';
     import { keyDigest } from '../core/names.js';
+    import zlib from 'node:zlib';
+    import { tarGz } from './fixtures.js';
 
     <<running the two implementations>>
 
@@ -132,6 +139,7 @@ not one in the temporary home) or Node.
       const jsCommand = isDeno ? [process.execPath, 'run', '-A', '--config', CONFIG, CLI] : [process.execPath, CLI];
       return {
         root,
+        run,
         js: (args, options) => run(jsCommand, args, options),
         py: (args, options) => run([PY], args, options),
         file: (name, text) => writeFile(path.join(root, name), text),

@@ -13,7 +13,8 @@ chapters and overwritten by the next tangle:
 
 - `core/*.js` (the core: web standards only)
 - `cli/*.js` (the command line)
-- `tests/*.test.js`
+- `tests/*.js` (the tests, their fixtures and the double of arXiv and
+  Zenodo)
 
 `literate tangle --list` gives the current list, with the chapter of each
 file. `literate tangle --where FILE:LINE` gives the line of the chapter a
@@ -31,7 +32,8 @@ To make a change:
 4. test: `deno test -A tests/` (`deno task test`). The parity tests need
    opensheaf-py's `osheaf` on the `PATH`, or `OSHEAF_PY=/path/to/osheaf`;
    without it they are skipped. Under Node: `npm ci && node --test
-   tests/core.test.js tests/identity.test.js tests/owners.test.js`.
+   tests/core.test.js tests/identity.test.js tests/owners.test.js
+   tests/services.test.js`.
 
 ## Rules
 
@@ -52,7 +54,9 @@ To make a change:
   `ordered_inventory`). A change of behaviour starts in opensheaf-py; the
   parity tests (chapter 72) must pass. Never write to a user's key store,
   keychain or wallet in tests: temporary folders, `OPENSHEAF_KEY_STORE=file`
-  and a temporary `XDG_CONFIG_HOME`.
+  and a temporary `XDG_CONFIG_HOME`. Never reach arXiv or Zenodo
+  (production or sandbox) in tests, nor read a real Zenodo token: doubles
+  on the loopback address, fake tokens, every API address the double's.
 - **The chapters 05 to 17 are the Explorer's** (opensheaf/explorer),
   copied with their prose. Keep them in step with the Explorer until it
   imports the core from here (phase 7 of chapter 00).

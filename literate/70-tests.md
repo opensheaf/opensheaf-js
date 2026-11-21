@@ -16,7 +16,10 @@ The tests are written with `node:test` and `node:assert`, which both
 - `tests/owners.test.js` (chapter [73](73-tests-owners.md)): the commands
   of owners and keys, wallets, passkeys and key stores, through the
   command line, with doubles of GitHub, the keychain, the clipboard and
-  the browser.
+  the browser;
+- `tests/services.test.js` (chapter [75](75-tests-services.md)): arXiv
+  and Zenodo, against doubles of both: the metadata, the e-prints, an
+  import, deposits, a deposit interrupted and completed.
 
 `deno task test` runs them all (`deno test -A tests/`).
 

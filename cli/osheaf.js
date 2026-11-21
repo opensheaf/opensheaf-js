@@ -26,6 +26,12 @@ import { resolveCommand, mirror } from '../core/mirror.js';
 import { branch, accept } from '../core/branch.js';
 import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
 import { takedown } from '../core/takedown.js';
+import { fetchPapers, authorPapers, politeGetter, importCommand } from '../core/arxiv.js';
+import { Zenodo, SERVICES, zenodoCommand } from '../core/zenodo.js';
+import { securityCommand } from './keystore.js';
+import os from 'node:os';
+import zlib from 'node:zlib';
+import { existsSync } from 'node:fs';
 
 export const VERSION = '0.1.0';
 
@@ -218,12 +224,26 @@ export const COMMANDS = {
     },
   },
   'help-config': { help: 'describe osheaf.json and your own configuration (key wallets)', positionals: [], options: {} },
+  zenodo: {
+    help: 'deposit the current document version on Zenodo (appendix A.1)', positionals: ['label!'],
+    options: { '--production': flag('production'), '--keep': flag('keep') },
+  },
+  arxiv: {
+    help: 'download from arXiv, import into the archive',
+    actions: {
+      fetch: { help: 'download papers from arXiv (no archive needed)', positionals: ['downloads!', 'ids*'],
+               options: { '--author': value('author'), '--refresh': flag('refresh') } },
+      import: { help: 'import the downloads, one signed line per paper', positionals: ['downloads!', 'ids*'],
+                options: { '--dry-run': flag('dryRun'), '--texmacs': value('texmacs', { repeat: true }),
+                           '--versions': value('versions'), '--update': flag('update'), '--identifiers': value('identifiers'),
+                           '--rebuild': flag('rebuild'), '--agreement': value('agreement'),
+                           '--agreed-by': value('agreedBy', { repeat: true }) } },
+    },
+  },
 };
 
-const LATER = ['zenodo', 'arxiv'];
-
 const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER', did: 'DID', draft: 'DRAFT',
-                   exposed: 'DID', place: 'URL|PATH' };
+                   exposed: 'DID', place: 'URL|PATH', downloads: 'DOWNLOADS', ids: 'ARXIV-ID' };
 
 function positional(p) {
   const m = /^([a-zA-Z]+)([!+*]?)$/.exec(p);
@@ -427,6 +447,23 @@ export function makeEnvironment(archiveRoot = null, given = {}) {
   env.signingKeyGiven ??= Boolean(process.env.OPENSHEAF_SIGNING_KEY);
   env.pullFromWallet ??= owners.pullFromWallet;
   env.asked ??= {};
+  env.environ ??= process.env;
+  env.arxivGet ??= politeGetter({ fetch: env.arxivFetch || globalThis.fetch?.bind(globalThis), wait: env.arxivWait ?? 3000 });
+  env.zenodoToken ??= async (service) => {
+    const token = (env.environ[service.env] || '').trim();
+    if (token) return token;
+    const platform = env.platform || process.platform;
+    if (platform === 'darwin' && (env.security || existsSync('/usr/bin/security'))) {
+      const r = await (env.security || securityCommand)(['find-generic-password', '-s', service.token, '-w']);
+      if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
+    }
+    return null;
+  };
+  env.deflateRaw ??= async (bytes) => new Uint8Array(zlib.deflateRawSync(bytes));
+  env.sandbox ??= async () => {
+    const where = await fs.mkdtemp(path.join(os.tmpdir(), 'opensheaf-zenodo-sandbox-'));
+    return { storage: new DiskStorage(where), where, remove: () => fs.rm(where, { recursive: true, force: true }) };
+  };
   if (!given.fetch) env.fetch = locatedFetch(() => env.locations || {});
   env.fetchJson ??= fetchJsonWith(env.fetch);
   env.template ??= defaultTemplate;
@@ -481,6 +518,12 @@ export function locatedFetch(configured, base = globalThis.fetch?.bind(globalThi
       return new Response('not found', { status: 404 });
     }
   };
+}
+
+export function pythonPath(given) {
+  const absolute = given.startsWith('/');
+  const parts = given.split('/').filter((p) => p !== '' && p !== '.');
+  return (absolute ? '/' : '') + parts.join('/') || (absolute ? '/' : '.');
 }
 
 async function readFile(given) {
@@ -775,6 +818,43 @@ const RUN = {
     await present(f);
     return 0;
   },
+
+  async arxiv(root, args, env) {
+    const dl = new DiskStorage(path.resolve(args.downloads));
+    if (args.action === 'fetch') {
+      const ids = [...args.ids, ...(args.author ? await authorPapers(env.arxivGet, args.author) : [])];
+      if (!ids.length) {
+        env.err(`${usageOf('arxiv', 'fetch')}\nosheaf arxiv fetch: error: give arXiv identifiers or --author`);
+        return 2;
+      }
+      await fetchPapers(dl, ids, { get: env.arxivGet, refresh: Boolean(args.refresh), out: env.out });
+      return 0;
+    }
+    const f = await openArchive(root, env);
+    const a = { ...args };
+    if (args.identifiers) {
+      try {
+        a.identifiers = JSON.parse(await fs.readFile(args.identifiers, 'utf-8'));
+      } catch {
+        throw new Stop(`no file ${args.identifiers}`);
+      }
+    }
+    await importCommand(f, dl, pythonPath(args.downloads), a);
+    await present(f);
+    return 0;
+  },
+
+  async zenodo(root, args, env) {
+    const f = await openArchive(root, env);
+    const production = Boolean(args.production);
+    const z = new Zenodo({ production, token: await env.zenodoToken(SERVICES[production]),
+                           fetch: env.zenodoFetch || globalThis.fetch?.bind(globalThis),
+                           api: env.environ.OPENSHEAF_ZENODO_API || null });
+    env.schemas ??= await loadSchemas(async (url) => JSON.parse(await fs.readFile(fileURLToPath(url), 'utf-8')));
+    await zenodoCommand(f, args, z);
+    if (production) await present(f);
+    return 0;
+  },
 };
 
 export const USAGE = `usage: osheaf [-h] [--version] [--root ROOT] COMMAND ...
@@ -793,8 +873,8 @@ The website (osheaf.json "index": {"html": ...}) is written again after every
 command that changes the archive. deposit, relicense, relate, describe and
 init also take their options from a YAML or JSON file: --from FILE.
 
-The other commands of opensheaf-py (zenodo, arxiv) come in later versions;
-until then, use opensheaf-py.
+TeXmacs sources without their PDF, and the TeXmacs index, are opensheaf-py's;
+with opensheaf-js, give the PDF.
 
 Warning: OpenSheaf 0.2 is a draft. Until version 1.0, a revision may change
 the format in incompatible ways, and archives may have to be rebuilt.`;
@@ -830,9 +910,7 @@ export async function main(argv, given = {}) {
     return 0;
   }
   if (!COMMANDS[cmd]) {
-    env.err(LATER.includes(cmd)
-      ? `osheaf ${cmd}: not in opensheaf-js ${VERSION} yet: use osheaf of opensheaf-py (https://opensheaf.org/opensheaf-py/)`
-      : `osheaf: error: argument command: invalid choice: '${cmd}'`);
+    env.err(`osheaf: error: argument command: invalid choice: '${cmd}'`);
     return 2;
   }
   if (args.help) {

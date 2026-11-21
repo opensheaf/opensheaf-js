@@ -18,11 +18,10 @@ It has the commands that make and keep an archive of one's own: `init`,
 [30](30-collections.md)), `index` and `verify`; those of owners and keys
 (chapter [37](37-owner-commands.md)); and those across archives,
 `resolve`, `mirror`, `branch`, `accept`, `draft`, `seal` and `takedown`
-(chapters [38](38-mirrors.md) to [42](42-takedown.md)). Every command that
-changes the archive writes the website again (chapter
-[31](31-website.md)). `zenodo` and `arxiv` answer that they are in
-opensheaf-py for now (chapter [00](00-plan.md) gives the order in which
-they come).
+(chapters [38](38-mirrors.md) to [42](42-takedown.md)); and those of the
+services, `arxiv fetch|import` and `zenodo` (chapters [43](43-arxiv.md)
+to [46](46-zenodo.md)). Every command that changes the archive writes the
+website again (chapter [31](31-website.md)).
 
 The three files are `cli/disk.js` (an archive folder on a disk),
 `cli/keystore.js` (the current keys of this device, the exported
@@ -473,6 +472,12 @@ arguments ends with the status 2, as argparse does.
     import { branch, accept } from '../core/branch.js';
     import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
     import { takedown } from '../core/takedown.js';
+    import { fetchPapers, authorPapers, politeGetter, importCommand } from '../core/arxiv.js';
+    import { Zenodo, SERVICES, zenodoCommand } from '../core/zenodo.js';
+    import { securityCommand } from './keystore.js';
+    import os from 'node:os';
+    import zlib from 'node:zlib';
+    import { existsSync } from 'node:fs';
 
     export const VERSION = '0.1.0';
 
@@ -625,9 +630,8 @@ The options are those of opensheaf-py, for the commands of this phase.
                              '--keeper': flag('keeper'), '--yes': flag('yes') },
                   exclusive: [['--by-law', '--keeper']] },
       <<the options of owners and keys>>
+      <<the options of the services>>
     };
-
-    const LATER = ['zenodo', 'arxiv'];
 
 A positional argument is optional (`label`), required (`label!`), one or
 more (`uri+`) or any number (`collection*`); an option may be required, as
@@ -635,7 +639,7 @@ in argparse, which names what is missing.
 
     // in the options of the commands:
     const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER', did: 'DID', draft: 'DRAFT',
-                       exposed: 'DID', place: 'URL|PATH' };
+                       exposed: 'DID', place: 'URL|PATH', downloads: 'DOWNLOADS', ids: 'ARXIV-ID' };
 
     function positional(p) {
       const m = /^([a-zA-Z]+)([!+*]?)$/.exec(p);
@@ -812,6 +816,7 @@ the status 1.
       env.keyStore ??= keyStore({ warn: (t) => env.warn(t), err: (t) => env.err(t) });
       env.passphrase ??= passphrases(process.env, (t) => env.warn(t));
       <<the environment of owners and keys>>
+      <<the environment of the services>>
       if (!given.fetch) env.fetch = locatedFetch(() => env.locations || {});
       env.fetchJson ??= fetchJsonWith(env.fetch);
       env.template ??= defaultTemplate;
@@ -1097,6 +1102,8 @@ next to the program (a binary made by `deno compile` carries them, with
       <<running the commands of owners and keys>>
 
       <<running the commands across archives>>
+
+      <<running the commands of the services>>
     };
 
 ### The entry point
@@ -1118,8 +1125,8 @@ next to the program (a binary made by `deno compile` carries them, with
     command that changes the archive. deposit, relicense, relate, describe and
     init also take their options from a YAML or JSON file: --from FILE.
 
-    The other commands of opensheaf-py (zenodo, arxiv) come in later versions;
-    until then, use opensheaf-py.
+    TeXmacs sources without their PDF, and the TeXmacs index, are opensheaf-py's;
+    with opensheaf-js, give the PDF.
 
     Warning: OpenSheaf 0.2 is a draft. Until version 1.0, a revision may change
     the format in incompatible ways, and archives may have to be rebuilt.`;
@@ -1155,9 +1162,7 @@ next to the program (a binary made by `deno compile` carries them, with
         return 0;
       }
       if (!COMMANDS[cmd]) {
-        env.err(LATER.includes(cmd)
-          ? `osheaf ${cmd}: not in opensheaf-js ${VERSION} yet: use osheaf of opensheaf-py (https://opensheaf.org/opensheaf-py/)`
-          : `osheaf: error: argument command: invalid choice: '${cmd}'`);
+        env.err(`osheaf: error: argument command: invalid choice: '${cmd}'`);
         return 2;
       }
       if (args.help) {
@@ -1543,3 +1548,121 @@ again. `draft new|deposit` reads its files as `deposit` does.
       await present(f);
       return 0;
     },
+
+The services: arXiv and Zenodo
+------------------------------
+
+The options of `arxiv fetch`, `arxiv import` and `zenodo` are
+opensheaf-py's (its `arxiv.py` and `zenodo.py`, which parse them there);
+`arxiv` has two actions, as here every command with actions has.
+
+    // in the options of the services:
+    zenodo: {
+      help: 'deposit the current document version on Zenodo (appendix A.1)', positionals: ['label!'],
+      options: { '--production': flag('production'), '--keep': flag('keep') },
+    },
+    arxiv: {
+      help: 'download from arXiv, import into the archive',
+      actions: {
+        fetch: { help: 'download papers from arXiv (no archive needed)', positionals: ['downloads!', 'ids*'],
+                 options: { '--author': value('author'), '--refresh': flag('refresh') } },
+        import: { help: 'import the downloads, one signed line per paper', positionals: ['downloads!', 'ids*'],
+                  options: { '--dry-run': flag('dryRun'), '--texmacs': value('texmacs', { repeat: true }),
+                             '--versions': value('versions'), '--update': flag('update'), '--identifiers': value('identifiers'),
+                             '--rebuild': flag('rebuild'), '--agreement': value('agreement'),
+                             '--agreed-by': value('agreedBy', { repeat: true }) } },
+      },
+    },
+
+What the services need from outside, each replaceable by the tests:
+
+- `arxivGet`, the getter of arXiv: by default the polite one of chapter
+  [43](43-arxiv.md), over `arxivFetch` (the platform's `fetch`) with
+  `arxivWait` milliseconds between requests (3000);
+- `zenodoToken(service)`: the token, from `ZENODO_TOKEN` or
+  `ZENODO_SANDBOX_TOKEN`, then, on macOS, from the keychain through
+  `security find-generic-password -s zenodo-token -w` (the runner
+  `security` of the environment, as for the keys), as opensheaf-py finds
+  it; the Python package `keyring`, which opensheaf-py tries between the
+  two, has no equivalent here (on macOS it keeps its tokens in that
+  keychain);
+- `zenodoFetch` and `OPENSHEAF_ZENODO_API`: the `fetch` of Zenodo's API
+  and another address of the API (a double of Zenodo); Zenodo is not
+  reached through the locations of other archives, which an archive's
+  configuration may set, since the token goes with every request;
+- `deflateRaw`: zlib's Deflate, for `sources.zip` (chapter
+  [46](46-zenodo.md)), from `node:zlib`;
+- `sandbox()`: a temporary folder, for the copy that a trial on Zenodo's
+  sandbox works on.
+
+    // in the environment of the services:
+    env.environ ??= process.env;
+    env.arxivGet ??= politeGetter({ fetch: env.arxivFetch || globalThis.fetch?.bind(globalThis), wait: env.arxivWait ?? 3000 });
+    env.zenodoToken ??= async (service) => {
+      const token = (env.environ[service.env] || '').trim();
+      if (token) return token;
+      const platform = env.platform || process.platform;
+      if (platform === 'darwin' && (env.security || existsSync('/usr/bin/security'))) {
+        const r = await (env.security || securityCommand)(['find-generic-password', '-s', service.token, '-w']);
+        if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
+      }
+      return null;
+    };
+    env.deflateRaw ??= async (bytes) => new Uint8Array(zlib.deflateRawSync(bytes));
+    env.sandbox ??= async () => {
+      const where = await fs.mkdtemp(path.join(os.tmpdir(), 'opensheaf-zenodo-sandbox-'));
+      return { storage: new DiskStorage(where), where, remove: () => fs.rm(where, { recursive: true, force: true }) };
+    };
+
+`arxiv fetch` needs no archive; `arxiv import` writes the website again
+after it, `zenodo` only after a deposit on Zenodo itself, the sandbox
+working on a copy. A folder is named in the messages as Python names a
+path (`str(Path(...))`), so that the two programs say the same.
+
+    // in running the commands of the services:
+    async arxiv(root, args, env) {
+      const dl = new DiskStorage(path.resolve(args.downloads));
+      if (args.action === 'fetch') {
+        const ids = [...args.ids, ...(args.author ? await authorPapers(env.arxivGet, args.author) : [])];
+        if (!ids.length) {
+          env.err(`${usageOf('arxiv', 'fetch')}\nosheaf arxiv fetch: error: give arXiv identifiers or --author`);
+          return 2;
+        }
+        await fetchPapers(dl, ids, { get: env.arxivGet, refresh: Boolean(args.refresh), out: env.out });
+        return 0;
+      }
+      const f = await openArchive(root, env);
+      const a = { ...args };
+      if (args.identifiers) {
+        try {
+          a.identifiers = JSON.parse(await fs.readFile(args.identifiers, 'utf-8'));
+        } catch {
+          throw new Stop(`no file ${args.identifiers}`);
+        }
+      }
+      await importCommand(f, dl, pythonPath(args.downloads), a);
+      await present(f);
+      return 0;
+    },
+
+    async zenodo(root, args, env) {
+      const f = await openArchive(root, env);
+      const production = Boolean(args.production);
+      const z = new Zenodo({ production, token: await env.zenodoToken(SERVICES[production]),
+                             fetch: env.zenodoFetch || globalThis.fetch?.bind(globalThis),
+                             api: env.environ.OPENSHEAF_ZENODO_API || null });
+      env.schemas ??= await loadSchemas(async (url) => JSON.parse(await fs.readFile(fileURLToPath(url), 'utf-8')));
+      await zenodoCommand(f, args, z);
+      if (production) await present(f);
+      return 0;
+    },
+
+A path as Python's `pathlib` writes it: no empty or `.` components, no
+trailing slash.
+
+    // in running a command:
+    export function pythonPath(given) {
+      const absolute = given.startsWith('/');
+      const parts = given.split('/').filter((p) => p !== '' && p !== '.');
+      return (absolute ? '/' : '') + parts.join('/') || (absolute ? '/' : '.');
+    }

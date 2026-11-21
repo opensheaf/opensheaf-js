@@ -407,9 +407,19 @@ before extending it, since nothing relies on it. Its identifier,
 The version is built in a staging folder `.staging-<random>` of the
 archive, then moved into place: a new object as a whole, a new version
 by its folder, its witness folder, and last the root inventory, replaced,
-so that an object never names a version it does not hold. A Zenodo
-deposit published and not yet added (appendix A.1, opensheaf-py's
-`osheaf zenodo`) must be completed by opensheaf-py first.
+so that an object never names a version it does not hold.
+
+A deposit with Zenodo (appendix A.1, chapter [46](46-zenodo.md)) needs
+the version built and signed before it is added: its files are uploaded,
+and only once Zenodo has published them is the version added to the
+storage root. With `stageIn`, a folder of the storage that does not exist
+yet, the function builds and signs the version there, and stops before
+the moves; `installVersion` makes them later, as opensheaf-py's
+`add_version(..., stage_in=...)` and `install_version` do. Meanwhile the
+line is locked: a Zenodo deposit that was published but not yet added
+leaves its state in `zenodo-staging/<path of the line>/state.json`, with
+the phase `published`, and no other version of the line is added until
+`osheaf zenodo` completes it, as appendix A.1 requires.
 
     // in the archive folder:
       async zenodoPending(id) {
@@ -421,11 +431,11 @@ deposit published and not yet added (appendix A.1, opensheaf-py's
         }
       }
 
-      async addVersion(id, files, obj, message, { acknowledged = false } = {}) {
+      async addVersion(id, files, obj, message, { acknowledged = false, stageIn = null } = {}) {
         const s = this.storage;
         const dir = await this.dirOf(id);
         let inv = await this.inventory(dir);
-        if (await this.zenodoPending(id)) {
+        if (stageIn === null && await this.zenodoPending(id)) {
           const name = this.labelOf(id) || id;
           exit(`${name}: a Zenodo deposit was published and its version is not added yet: osheaf zenodo ${name} ` +
                'completes it first (appendix A.1)');
@@ -442,7 +452,8 @@ deposit published and not yet added (appendix A.1, opensheaf-py's
           obj.previous = sidecarDigest(await s.read(joinPath(dir, inv.head, 'inventory.json.sha512')));
         }
         const ver = `v${Number(inv.head.slice(1)) + 1}`;
-        const stage = `.staging-${hex(randomBytes(6))}`;
+        if (stageIn !== null && await s.kind(stageIn)) exit(`${stageIn} exists`);
+        const stage = stageIn ?? `.staging-${hex(randomBytes(6))}`;
         try {
           const content = new Map(files);
           content.set(OBJ, jsonBytes(obj));
@@ -473,9 +484,9 @@ deposit published and not yet added (appendix A.1, opensheaf-py's
             await s.write(joinPath(stage, 'witnesses', await signatureFileName(key.did)),
                           await signatureFile(key, id, ver, digest, obj.owner, pin));
           }
-          await this.moveStaged(dir, stage, ver, draft);
+          if (stageIn === null) await this.moveStaged(dir, stage, ver, draft);
         } finally {
-          await removeTree(s, stage);
+          if (stageIn === null) await removeTree(s, stage);
           this.changed();
         }
         return inv;
@@ -501,6 +512,28 @@ deposit published and not yet added (appendix A.1, opensheaf-py's
             await s.rename(joinPath(stage, name), joinPath(dir, name));
           }
         }
+      }
+
+A version built in a staging folder is added only if the line has not
+moved meanwhile: its head must still be the version before. The staging
+folder holds the version folder, named by its number, and the witness
+folder; it is removed once they are moved.
+
+    // in the archive folder:
+      async installVersion(id, stage) {
+        const s = this.storage;
+        const ver = ((await s.list(stage)) || []).find((e) => e.kind === 'dir' && /^v[1-9][0-9]*$/.test(e.name))?.name;
+        if (!ver) exit(`${stage} holds no version`);
+        const inv = JSON.parse(new TextDecoder().decode(await s.read(joinPath(stage, ver, 'inventory.json'))));
+        const dir = await this.dirOf(id);
+        const before = await this.inventory(dir);
+        if ((before ? before.head : 'v0') !== `v${Number(ver.slice(1)) - 1}`) {
+          exit(`${id}: the line has moved since ${ver} was built in ${stage}: it cannot be added`);
+        }
+        await this.moveStaged(dir, stage, ver, id.startsWith('sheaf:draft:'));
+        await removeStage(s, stage);
+        this.changed();
+        return inv;
       }
 
 ### Sealing a new work
@@ -541,6 +574,26 @@ folder.
         await storage.remove(path);
       } else if (kind) {
         await storage.remove(path);
+      }
+    }
+
+The staging folder of a Zenodo deposit, under `zenodo-staging/`, is
+removed with what is left in it; the folders above it that it leaves
+empty go too, up to `zenodo-staging/` itself, so that an archive with no
+deposit under way has none (opensheaf-py's `remove_stage`).
+
+    // in the archive folder:
+    export async function removeStage(storage, path) {
+      if (!/^zenodo-staging\/./.test(path)) throw new Error(`not a staging folder of Zenodo: ${path}`);
+      const walk = async (p) => {
+        const kind = await storage.kind(p);
+        if (kind === 'dir') for (const entry of (await storage.list(p)) || []) await walk(joinPath(p, entry.name));
+        if (kind) await storage.remove(p);
+      };
+      await walk(path);
+      for (let p = path.slice(0, path.lastIndexOf('/')); p; p = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '') {
+        if ((await storage.kind(p)) !== 'dir' || ((await storage.list(p)) || []).length) break;
+        await storage.remove(p);
       }
     }
 

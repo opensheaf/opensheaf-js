@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, readdir, cp, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, readdir, cp, rm, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,8 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { readRotationKey } from '../core/keys.js';
 import { keyDigest } from '../core/names.js';
+import zlib from 'node:zlib';
+import { tarGz } from './fixtures.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, '..', 'cli', 'osheaf.js');
@@ -42,6 +44,7 @@ async function sandbox() {
   const jsCommand = isDeno ? [process.execPath, 'run', '-A', '--config', CONFIG, CLI] : [process.execPath, CLI];
   return {
     root,
+    run,
     js: (args, options) => run(jsCommand, args, options),
     py: (args, options) => run([PY], args, options),
     file: (name, text) => writeFile(path.join(root, name), text),
@@ -900,6 +903,292 @@ test('drafts, seals and takedowns, by both', { skip }, async () => {
     assert.ok(unchecked.some((f) => /signature-.*: unchecked/.test(f)), unchecked.join('\n'));
     verified(s, b);
   } finally {
+    await s.done();
+  }
+});
+
+import { main as jsMain } from '../cli/osheaf.js';
+
+const FAKE_TOKEN = 'fake-token-of-the-tests';
+const GUARD = `
+import os, sys, time, urllib.parse, urllib.request
+FAKE = os.environ["OSHEAF_FAKE_HOSTS"]
+assert FAKE.startswith("http://127.0.0.1:"), FAKE
+real = urllib.request.urlopen
+def guarded(req, *a, **k):
+    if isinstance(req, str):
+        req = urllib.request.Request(req)
+    u = urllib.parse.urlsplit(req.full_url)
+    if u.hostname != "127.0.0.1":
+        req.full_url = FAKE + u.netloc + u.path + ("?" + u.query if u.query else "")
+    if urllib.parse.urlsplit(req.full_url).hostname != "127.0.0.1":
+        raise SystemExit("a test reached for the network: " + req.full_url)
+    return real(req, *a, **k)
+urllib.request.urlopen = guarded
+time.sleep = lambda s: None
+from opensheaf.cli import main
+sys.exit(main(sys.argv[1:]))
+`;
+
+function pythonOf(command) {
+  const text = spawnSync('head', ['-c', '2000', command], { encoding: 'utf-8' }).stdout || '';
+  const m = /exec' '([^']+)'/.exec(text) || /^#!\s*(\S+)/.exec(text);
+  return process.env.OSHEAF_PY_PYTHON || (m ? m[1] : 'python3');
+}
+
+async function startServices(fixtures) {
+  await mkdir(fixtures, { recursive: true });
+  const isDeno = typeof globalThis.Deno !== 'undefined';
+  const script = path.join(HERE, 'fake-services.js');
+  const server = spawn(process.execPath, [...(isDeno ? ['run', '-A'] : []), script, fixtures],
+                       { stdio: ['ignore', 'pipe', 'inherit'] });
+  const port = await new Promise((resolve, reject) => {
+    let text = '';
+    server.stdout.on('data', (chunk) => {
+      text += chunk;
+      const m = /port (\d+)/.exec(text);
+      if (m) resolve(Number(m[1]));
+    });
+    server.on('error', reject);
+    server.on('exit', () => reject(new Error('the double of the services stopped')));
+  });
+  const url = `http://127.0.0.1:${port}/`;
+  return {
+    url,
+    stop: () => server.kill(),
+    calls: async (host = null) => (await (await fetch(url + '_calls')).json()).filter((c) => !host || c.host === host),
+    mismatch: async (host) => (await fetch(url + '_mismatch/' + host, { method: 'POST' })).text(),
+  };
+}
+
+function zenodoVars(server, production) {
+  assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+\/$/, 'the double of Zenodo is on this computer');
+  return { ZENODO_TOKEN: FAKE_TOKEN, ZENODO_SANDBOX_TOKEN: FAKE_TOKEN, OSHEAF_FAKE_HOSTS: server.url,
+           OPENSHEAF_ZENODO_API: `${server.url}${production ? '' : 'sandbox.'}zenodo.org/api` };
+}
+
+function withServer(s, server) {
+  const vars = (args) => zenodoVars(server, args.includes('--production'));
+  return {
+    py: (args, { cwd = s.root } = {}) => s.run([pythonOf(PY), '-c', GUARD], args, { cwd, more: vars(args) }),
+    js: (args, { cwd = s.root } = {}) => s.js(args, { cwd, more: vars(args) }),
+  };
+}
+
+function zenodoCalls(calls) {
+  for (const c of calls) assert.ok(!c.host.includes('zenodo') || c.body === undefined || c.method !== 'GET');
+  return calls.map(({ method, path: p, body }) => ({ method, path: p, body }));
+}
+
+function saidOf(r) {
+  return said(r).replace(/sandbox: working on a copy in \S+/g, 'sandbox: working on a copy in -');
+}
+
+async function arxivFixtures(s, aid = '2611.00001') {
+  const f = (p, text) => mkdir(path.dirname(path.join(s.root, 'fixtures', p)), { recursive: true })
+    .then(() => writeFile(path.join(s.root, 'fixtures', p), text));
+  const page = (n) => `<div class="metatable"><td class="tablecell comments mathjax">${n} pages, see ` +
+    `<a href="https://example.org/data">https://example.org/data</a> &amp; the published version</td>` +
+    `<div class="abs-license"><a href="http://creativecommons.org/licenses/by/4.0/" title="Rights">CC BY 4.0</a></div>`;
+  await f('arxiv.org/a/doe_j_1.atom2', `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">` +
+          `<entry><id>http://arxiv.org/abs/${aid}v2</id></entry></feed>`);
+  await f(`oaipmh.arxiv.org/oai/oai_arXiv.org_${aid}`, RECORD(aid, ['v1', 'v2']));
+  await f(`export.arxiv.org/pdf/${aid}v1`, '%PDF-1.4 one');
+  await f(`export.arxiv.org/pdf/${aid}v2`, '%PDF-1.4 two');
+  await f(`export.arxiv.org/e-print/${aid}v1`, tarGz([['paper/main.tex', MAIN_TEX], ['paper/fig.txt', 'a figure']]));
+  await f(`arxiv.org/abs/${aid}v1`, page(10));
+  await f(`arxiv.org/abs/${aid}v2`, page(11));
+}
+
+test('arXiv: the same downloads by both', { skip }, async () => {
+  const s = await sandbox();
+  const server = await startServices(path.join(s.root, 'fixtures'));
+  try {
+    await arxivFixtures(s);
+    const two = withServer(s, server);
+    const fetchJs = async (args) => {
+      const out = [], err = [];
+      const status = await jsMain(args, { out: (l) => out.push(l), err: (l) => err.push(l), arxivWait: 0,
+                                          arxivFetch: (url, init) => fetch(server.url + url.replace(/^https:\/\//, ''), init) });
+      return { status, stdout: out.join('\n') + '\n', stderr: err.join('\n') };
+    };
+    for (const round of [1, 2]) {
+      const before = (await server.calls()).length;
+      const p = ok(two.py(['arxiv', 'fetch', path.join(s.root, 'dl-py'), '--author', 'doe_j_1']), `py fetch ${round}`);
+      const middle = (await server.calls()).length;
+      const j = await fetchJs(['arxiv', 'fetch', path.join(s.root, 'dl-js'), '--author', 'doe_j_1']);
+      assert.equal(j.status, 0, j.stderr);
+      assert.equal(j.stdout, p.stdout);
+      const calls = await server.calls();
+      const asked = (list) => list.map((c) => `${c.method} ${c.host}${c.path}`);
+      assert.deepEqual(asked(calls.slice(middle)), asked(calls.slice(before, middle)));
+      assert.ok(middle - before >= (round === 1 ? 8 : 1), asked(calls.slice(before, middle)).join('\n'));
+      if (round === 1) assert.match(p.stdout, /v2\.src ERROR HTTP Error 404: Not Found/);
+    }
+    const A = await filesOf(path.join(s.root, 'dl-py')), B = await filesOf(path.join(s.root, 'dl-js'));
+    assert.deepEqual([...B.keys()].sort(), [...A.keys()].sort());
+    const untimed = (b) => b.toString('utf-8').replace(/"fetched": "[^"]*"/g, '"fetched": "-"');
+    for (const [p, bytes] of A) {
+      if (p === 'download.json') assert.equal(untimed(B.get(p)), untimed(bytes));
+      else assert.deepEqual(B.get(p), bytes, p);
+    }
+  } finally {
+    server.stop();
+    await s.done();
+  }
+});
+
+const MAIN_TEX = '\\documentclass{article}\n\\newcommand{\\R}{\\mathbb{R}}\n\\def\\eps{\\varepsilon}\n' +
+  '\\begin{document}Sheaves.\\end{document}\n';
+
+function RECORD(aid, versions, { title = 'Sheaves on $\\R^2$ and It\\^o\'s formula', doi = '10.1000/j.x.1' } = {}) {
+  const dates = ['Mon, 2 Nov 2026 10:00:00 GMT', 'Tue, 10 Nov 2026 11:30:00 GMT', 'Fri, 13 Nov 2026 09:00:00 GMT',
+                 'Sat, 14 Nov 2026 09:00:00 GMT'];
+  return `<?xml version="1.0"?>\n<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"><GetRecord><record><metadata>\n` +
+    `<arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/"><id>${aid}</id>\n` +
+    versions.map((v, k) => `<version version="${v}"><date>${dates[k]}</date><size>10kb</size><source_type>D</source_type></version>\n`).join('') +
+    `<title>${title}</title><authors>G\\"unter Doe (Paris, IHES), Jane van der Roe, and Richard Roe</authors>\n` +
+    `<categories>math.PR math-ph</categories><comments>old</comments>` +
+    `<license>http://creativecommons.org/licenses/by/4.0/</license>` +
+    (doi ? `<doi>${doi}</doi><journal-ref>J. Sheaves 1 (2027) 1--10</journal-ref>` : '') +
+    `<abstract>  We prove that $\\eps &lt; 1$ on $\\R^2$,\n  with \\emph{care} --- and $\\FF$.\n</abstract>` +
+    `</arXivRaw></metadata></record></GetRecord></OAI-PMH>\n`;
+}
+
+async function importFixtures(dl, versions) {
+  const f = (p, data) => mkdir(path.dirname(path.join(dl, p)), { recursive: true }).then(() => writeFile(path.join(dl, p), data));
+  const a = 'papers/2611.00001', b = 'papers/2512.00002';
+  const cc = 'http://creativecommons.org/licenses/by/4.0/', closed = 'http://arxiv.org/licenses/nonexclusive-distrib/1.0/';
+  await f(`${a}/record.xml`, RECORD('2611.00001', versions));
+  await f(`${a}/v1.pdf`, '%PDF-1.4 one');
+  await f(`${a}/v1-source.tar.gz`, tarGz([['paper/main.tex', MAIN_TEX], ['paper/fig.txt', 'a figure'], ['../evil', 'x']]));
+  await f(`${a}/v2.pdf`, '%PDF-1.4 two');
+  await f(`${a}/v2-source.gz`, gzipped('\\documentclass{article}\\begin{document}Two.\\end{document}'));
+  await f(`${a}/v3.pdf`, '%PDF-1.4 three');
+  await f(`${a}/v3-source.pdf`, '%PDF-1.4 three, as a source');
+  await f(`${a}/v4.pdf`, '%PDF-1.4 four');
+  await f(`${a}/v4-source.gz`, gzipped('plain text, not TeX'));
+  await f(`${b}/record.xml`, RECORD('2512.00002', ['v1'], { title: 'An older paper', doi: null })
+    .replace('2 Nov 2026', '2 Dec 2025'));
+  await f(`${b}/v1.pdf`, '%PDF-1.4 old');
+  const licences = {};
+  for (const v of ['v1', 'v2', 'v3', 'v4']) {
+    licences[`2611.00001${v}`] = { licence: v === 'v1' ? closed : cc, comments: v === 'v3' ? 'the published version, 12 pages' : null };
+  }
+  licences['2512.00002v1'] = { licence: closed, comments: 'notes' };
+  await f('version-licences.json', JSON.stringify(licences));
+  await f('identifiers.json', JSON.stringify({ '2611.00001': 'sheaves', '2512.00002': 'older' }));
+}
+
+function gzipped(text) {
+  return new Uint8Array(zlib.gzipSync(text));
+}
+
+test('arXiv: the same imports by both, and each updating what the other imported', { skip }, async () => {
+  const s = await sandbox();
+  try {
+    const base = await archiveBy(s, 'py', 'base');
+    const dl = path.join(s.root, 'dl');
+    await importFixtures(dl, ['v1', 'v2', 'v3']);
+    const args = ['arxiv', 'import', dl, '--agreement', 'deposited by an author', '--agreed-by', 'Doe, Jane'];
+    const { a, b } = await both(s, base, args);
+    await rename(a, path.join(s.root, 'by-py'));
+    await rename(b, path.join(s.root, 'by-js'));
+    const [pyArch, jsArch] = [path.join(s.root, 'by-py'), path.join(s.root, 'by-js')];
+    await sameNewWork(pyArch, jsArch, 'sheaves');
+    await sameNewWork(pyArch, jsArch, 'older');
+    for (const where of [pyArch, jsArch]) {
+      assert.deepEqual(verified(s, where).filter((f) => !f.startsWith('result')), []);
+    }
+    const line = await lineOf(jsArch, 'sheaves');
+    assert.equal(JSON.parse(await readFile(path.join(line.dir, 'inventory.json'), 'utf-8')).head, 'v3');
+    await importFixtures(dl, ['v1', 'v2', 'v3', 'v4']);
+    for (const where of [pyArch, jsArch]) {
+      const { a: pa, b: jb } = await both(s, where, ['arxiv', 'import', dl, '--update']);
+      await sameArchives(pa, jb);
+      assert.deepEqual(verified(s, jb).filter((f) => !f.startsWith('result')), []);
+    }
+    const other = path.join(s.root, 'other');
+    await importFixtures(other, ['v1']);
+    await writeFile(path.join(other, 'identifiers.json'), JSON.stringify({ '2611.00001': 'older' }));
+    await both(s, path.join(s.root, 'base'), ['arxiv', 'import', dl, '2611.00001', '--dry-run']);
+    await both(s, pyArch, ['arxiv', 'import', other], { status: 1 });
+  } finally {
+    await s.done();
+  }
+});
+
+test('Zenodo: the same deposits by both, the same requests', { skip }, async () => {
+  const s = await sandbox();
+  const servers = [await startServices(path.join(s.root, 'f1')), await startServices(path.join(s.root, 'f2'))];
+  try {
+    await papers(s);
+    await s.file('fig.txt', 'a figure');
+    const base = await archiveBy(s, 'js', 'base');
+    ok(s.js(['deposit', 'p', '../paper.tex', ...DEPOSIT, '--extra-source', '../fig.txt=figs/fig.txt', '--new'], { cwd: base }), 'deposit');
+    const [pyc, jsc] = [path.join(s.root, 'zpy'), path.join(s.root, 'zjs')];
+    await cp(base, pyc, { recursive: true });
+    await cp(base, jsc, { recursive: true });
+    const [py, js] = [withServer(s, servers[0]).py, withServer(s, servers[1]).js];
+    const step = async (args, status = 0) => {
+      const [c0, c1] = [(await servers[0].calls()).length, (await servers[1].calls()).length];
+      const p = py(args, { cwd: pyc }), j = js(args, { cwd: jsc });
+      assert.equal(p.status, status, `py ${args.join(' ')}:\n${p.stdout}\n${p.stderr}`);
+      assert.equal(j.status, status, `js ${args.join(' ')}:\n${j.stdout}\n${j.stderr}`);
+      assert.equal(saidOf(j), saidOf(p), args.join(' '));
+      const sent = zenodoCalls((await servers[0].calls()).slice(c0));
+      assert.deepEqual(zenodoCalls((await servers[1].calls()).slice(c1)), sent);
+      return { p, j, zipped: sent.some((c) => c.method === 'PUT' && c.path.endsWith('/sources.zip')) };
+    };
+    const trial = await step(['zenodo', 'p']);
+    assert.ok(trial.zipped);
+    assert.match(trial.p.stdout, /uploaded sources\.zip/);
+    await sameArchives(base, pyc);
+    await sameArchives(base, jsc);
+    assert.ok((await step(['zenodo', 'p', '--production'])).zipped);
+    await sameArchives(pyc, jsc);
+    assert.ok(!existsSync(path.join(jsc, 'zenodo-staging')));
+    for (const where of [pyc, jsc]) assert.deepEqual(verified(s, where).filter((f) => !f.startsWith('result')), []);
+    await step(['zenodo', 'p', '--production'], 1);
+    ok(s.py(['deposit', 'p', '../paper.tex', ...DEPOSIT, '--pdf', '../paper2.pdf', '--changes', 'Corrected.'], { cwd: pyc }), 'py v2');
+    ok(s.js(['deposit', 'p', '../paper.tex', ...DEPOSIT, '--pdf', '../paper2.pdf', '--changes', 'Corrected.'], { cwd: jsc }), 'js v2');
+    await step(['zenodo', 'p', '--production']);
+    await sameArchives(pyc, jsc);
+    const calls = await servers[1].calls('zenodo.org');
+    assert.ok(calls.some((c) => c.path.endsWith('/actions/newversion')));
+    for (const where of [pyc, jsc]) assert.deepEqual(verified(s, where).filter((f) => !f.startsWith('result')), []);
+  } finally {
+    for (const server of servers) server.stop();
+    await s.done();
+  }
+});
+
+test('Zenodo: a deposit stopped after publication, completed by the other program', { skip }, async () => {
+  const s = await sandbox();
+  const server = await startServices(path.join(s.root, 'f'));
+  try {
+    await papers(s);
+    const arch = await archiveBy(s, 'py', 'arch');
+    const two = withServer(s, server);
+    ok(s.py(['deposit', 'p', '--pdf', '../paper.pdf', '--no-source', 'lost', '--title', 'P', '--author', 'Doe, Jane', '--new'], { cwd: arch }), 'v1');
+    for (const [first, second] of [['py', 'js'], ['js', 'py']]) {
+      await server.mismatch('zenodo.org');
+      const stopped = two[first](['zenodo', 'p', '--production'], { cwd: arch });
+      assert.equal(stopped.status, 1, stopped.stdout + stopped.stderr);
+      assert.match(stopped.stderr, /Zenodo published DOI 10\.5281\/zenodo\.\d+9, not the reserved/);
+      const deposit = ['deposit', 'p', '--pdf', '../paper2.pdf', '--no-source', 'lost', '--title', 'P', '--author', 'Doe, Jane'];
+      const [rp, rj] = [s.py(deposit, { cwd: arch }), s.js(deposit, { cwd: arch })];
+      assert.equal(rp.status, 1);
+      assert.equal(said(rj), said(rp));
+      assert.match(rp.stderr, /completes it first \(appendix A\.1\)/);
+      const done = ok(two[second](['zenodo', 'p', '--production'], { cwd: arch }), `${second} completes`);
+      assert.match(done.stdout, /p: completing the object version of record \d+\np: v\d+ added, DOI 10\.5281\/zenodo\.\d+\n/);
+      assert.ok(!existsSync(path.join(arch, 'zenodo-staging')));
+      assert.deepEqual(verified(s, arch).filter((f) => !f.startsWith('result')), []);
+      ok(s[second](deposit, { cwd: arch }), 'the next version');
+    }
+  } finally {
+    server.stop();
     await s.done();
   }
 });

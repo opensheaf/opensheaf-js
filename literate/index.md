@@ -4,9 +4,9 @@ opensheaf-js, a literate program
 > [!WARNING]
 > **Draft.** OpenSheaf 0.2 is a draft specification: until version 1.0, a
 > revision may change the format in incompatible ways, and these tools
-> follow the latest draft. opensheaf-js is in its first phase: it makes
-> archives, deposits papers and verifies archives; the other commands of
-> `osheaf` are in [opensheaf-py](https://opensheaf.org/opensheaf-py/).
+> follow the latest draft. opensheaf-js is in its fifth phase: it has the
+> commands of `osheaf`, arXiv and Zenodo included; TeXmacs sources without
+> their PDF are typeset by [opensheaf-py](https://opensheaf.org/opensheaf-py/).
 
 This is the source of [opensheaf-js](https://github.com/opensheaf/opensheaf-js),
 the tools of [OpenSheaf](https://opensheaf.org) (the `osheaf` command) in
@@ -133,20 +133,34 @@ Across archives
 35. [Takedowns and tombstones](42-takedown.md): `takedown`, the return of
     a line.
 
+Services
+--------
+
+36. [Importing from arXiv: fetching](43-arxiv.md): the downloads folder,
+    arXiv asked politely.
+37. [Importing from arXiv: the metadata](44-arxiv-metadata.md): the
+    record, names, titles and abstracts from TeX, licences.
+38. [Importing from arXiv: the signed versions](45-arxiv-import.md):
+    e-prints unpacked, one sealed line per paper, `arxiv import`.
+39. [Zenodo: DOIs for document versions](46-zenodo.md): a version built
+    and signed before Zenodo publishes it, `sources.zip`, the sandbox.
+
 The command line
 ----------------
 
-36. [The command line](40-cli.md): a folder on a disk, the keys of this
+40. [The command line](40-cli.md): a folder on a disk, the keys of this
     device (files, the macOS keychain), the clipboard, the listener of
-    the passkey hand-off, the commands.
+    the passkey hand-off, the tokens of Zenodo, the commands.
 
 The tests
 ---------
 
-37. [The tests](70-tests.md): storages, files, key files, an archive in
+41. [The tests](70-tests.md): storages, files, key files, an archive in
     memory, owners, wallets and passkeys.
-38. [The tests of names, keys and signatures](71-tests-identity.md),
+42. [The tests of names, keys and signatures](71-tests-identity.md),
     against appendix C and the edge cases of Ed25519.
-39. [The tests of parity with opensheaf-py](72-tests-parity.md).
-40. [The tests across archives](74-tests-across.md): resolution, mirrors,
+43. [The tests of parity with opensheaf-py](72-tests-parity.md).
+44. [The tests across archives](74-tests-across.md): resolution, mirrors,
     branches, drafts and takedowns, by both programs.
+45. [The tests of the services](75-tests-services.md): arXiv and Zenodo,
+    against doubles, by both programs.

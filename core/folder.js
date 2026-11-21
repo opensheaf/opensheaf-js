@@ -258,11 +258,11 @@ export class ArchiveFolder {
     }
   }
 
-  async addVersion(id, files, obj, message, { acknowledged = false } = {}) {
+  async addVersion(id, files, obj, message, { acknowledged = false, stageIn = null } = {}) {
     const s = this.storage;
     const dir = await this.dirOf(id);
     let inv = await this.inventory(dir);
-    if (await this.zenodoPending(id)) {
+    if (stageIn === null && await this.zenodoPending(id)) {
       const name = this.labelOf(id) || id;
       exit(`${name}: a Zenodo deposit was published and its version is not added yet: osheaf zenodo ${name} ` +
            'completes it first (appendix A.1)');
@@ -279,7 +279,8 @@ export class ArchiveFolder {
       obj.previous = sidecarDigest(await s.read(joinPath(dir, inv.head, 'inventory.json.sha512')));
     }
     const ver = `v${Number(inv.head.slice(1)) + 1}`;
-    const stage = `.staging-${hex(randomBytes(6))}`;
+    if (stageIn !== null && await s.kind(stageIn)) exit(`${stageIn} exists`);
+    const stage = stageIn ?? `.staging-${hex(randomBytes(6))}`;
     try {
       const content = new Map(files);
       content.set(OBJ, jsonBytes(obj));
@@ -310,9 +311,9 @@ export class ArchiveFolder {
         await s.write(joinPath(stage, 'witnesses', await signatureFileName(key.did)),
                       await signatureFile(key, id, ver, digest, obj.owner, pin));
       }
-      await this.moveStaged(dir, stage, ver, draft);
+      if (stageIn === null) await this.moveStaged(dir, stage, ver, draft);
     } finally {
-      await removeTree(s, stage);
+      if (stageIn === null) await removeTree(s, stage);
       this.changed();
     }
     return inv;
@@ -338,6 +339,22 @@ export class ArchiveFolder {
         await s.rename(joinPath(stage, name), joinPath(dir, name));
       }
     }
+  }
+
+  async installVersion(id, stage) {
+    const s = this.storage;
+    const ver = ((await s.list(stage)) || []).find((e) => e.kind === 'dir' && /^v[1-9][0-9]*$/.test(e.name))?.name;
+    if (!ver) exit(`${stage} holds no version`);
+    const inv = JSON.parse(new TextDecoder().decode(await s.read(joinPath(stage, ver, 'inventory.json'))));
+    const dir = await this.dirOf(id);
+    const before = await this.inventory(dir);
+    if ((before ? before.head : 'v0') !== `v${Number(ver.slice(1)) - 1}`) {
+      exit(`${id}: the line has moved since ${ver} was built in ${stage}: it cannot be added`);
+    }
+    await this.moveStaged(dir, stage, ver, id.startsWith('sheaf:draft:'));
+    await removeStage(s, stage);
+    this.changed();
+    return inv;
   }
 
   async seal(kind, owner) {
@@ -366,6 +383,20 @@ export async function removeTree(storage, path) {
     await storage.remove(path);
   } else if (kind) {
     await storage.remove(path);
+  }
+}
+
+export async function removeStage(storage, path) {
+  if (!/^zenodo-staging\/./.test(path)) throw new Error(`not a staging folder of Zenodo: ${path}`);
+  const walk = async (p) => {
+    const kind = await storage.kind(p);
+    if (kind === 'dir') for (const entry of (await storage.list(p)) || []) await walk(joinPath(p, entry.name));
+    if (kind) await storage.remove(p);
+  };
+  await walk(path);
+  for (let p = path.slice(0, path.lastIndexOf('/')); p; p = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '') {
+    if ((await storage.kind(p)) !== 'dir' || ((await storage.list(p)) || []).length) break;
+    await storage.remove(p);
   }
 }
 

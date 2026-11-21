@@ -54,6 +54,7 @@ core/   web-standard ES modules: no Deno.*, no node: modules
   inputs
   keylogs, wallets, passkey, owner                owners, keys, wallets, passkeys
   mirror, branch, drafts, takedown                across archives
+  arxiv, zenodo                                   services (the command line gives the network)
 cli/    the command line: node: modules, which Deno has too
   disk       an archive folder on a disk
   keystore   current keys (files, the macOS keychain), exported keys, passphrases
@@ -149,8 +150,10 @@ Module map
 | [39](39-branches-kept.md) | `core/branch.js` | `branch`, `accept` | opensheaf-py 23 |
 | [41](41-drafts.md) | `core/drafts.js` | `draft`, `seal` | opensheaf-py 24 |
 | [42](42-takedown.md) | `core/takedown.js` | `takedown`, tombstones, the return of a line | opensheaf-py 25 |
+| [43](43-arxiv.md)–[45](45-arxiv-import.md) | `core/arxiv.js` | `arxiv fetch|import`: downloads, metadata, e-prints, signed lines | opensheaf-py 40, 41, 42 |
+| [46](46-zenodo.md) | `core/zenodo.js` | `zenodo`: a version staged and signed, uploads, publication, the sandbox | opensheaf-py 50 |
 | [40](40-cli.md) | `cli/*.js` | the command line | opensheaf-py 60 |
-| [70](70-tests.md)–[74](74-tests-across.md) | `tests/*.test.js` | the tests | |
+| [70](70-tests.md)–[75](75-tests-services.md) | `tests/*.test.js` | the tests | |
 
 The chapters 05 to 17 are the Explorer's, copied with their reasoning;
 where they speak of "the explorer", they speak of the reader of archives
@@ -187,9 +190,11 @@ The phases
    `draft`, `seal`, `takedown`; `verify --remote` with the parent lines
    of branches found through their discovery documents; the completeness
    checks of the storage root. See "Phase 4: results and notes" below.
-5. **Services**: `arxiv fetch|import` and `zenodo`, on the command line
-   only (their APIs do not allow requests from other origins, CORS, so a
-   browser cannot call them).
+5. **Services** (done): `arxiv fetch|import` and `zenodo`, on the command
+   line only (their APIs do not allow requests from other origins, CORS,
+   so a browser cannot call them); `addVersion` split into building a
+   version and installing it, with the lock of a Zenodo deposit. See
+   "Phase 5: results and notes" below.
 6. **The Manager**: a browser application that keeps an archive held on
    GitHub, with a storage over the Git Data API (one commit per command),
    the current keys in the browser (WebCrypto, non-extractable), the
@@ -415,6 +420,120 @@ Notes for phase 6 (the Manager, writing directly):
   their servers to send CORS headers (GitHub Pages does); `fetchObject`
   holds each file in memory once, which bounds what a page can copy.
 
+Phase 5: results and notes
+--------------------------
+
+What the tests show (chapters [72](72-tests-parity.md) and
+[75](75-tests-services.md)), both programs against one double of arXiv
+and Zenodo, a server on the loopback address (opensheaf-py behind a
+guard on `urllib` that sends every other address to the double and
+stops any request that would leave the computer; the tokens fake):
+
+- `arxiv fetch` of an author's papers writes the same downloads folder
+  (record, PDFs, e-prints named by their kind, `version-licences.json`,
+  `download.json` apart from the times), asks arXiv for the same
+  addresses, records a missing e-print with the same error, says the
+  same, and asks again for it alone at the next run;
+- `arxiv import` of two papers (an e-print that is a tar archive with a
+  folder and an unsafe path, a single TeX file, a PDF as source, no
+  e-print at all; macros of the preamble in the abstract, a DOI and a
+  journal reference, licences changed between versions, `--agreement`
+  and `--agreed-by`) gives the same lines, `object.json`,
+  `datacite.json`, sources and report, the names of the new works
+  aside, says the same, and both verifications agree; a fourth arXiv
+  version added with `--update` by either program to the lines either
+  imported gives the same files, byte for byte; `--dry-run` and the
+  refusals are alike;
+- `zenodo` on the sandbox (on a copy: the archive is unchanged), on
+  Zenodo, again (refused), and for a second document version (a new
+  version of the record) sends the same requests, with the same bodies
+  (the metadata of the record, the MD5 and size of every upload,
+  `sources.zip` included, byte for byte), says the same, and leaves the
+  same object versions, verified alike;
+- a deposit stopped after publication (Zenodo answers another DOI than
+  the one it reserved) keeps the line locked: both refuse a deposit
+  alike, and the other program completes the deposit; and the other way
+  round;
+- in this program alone, as in opensheaf-py's tests: a deposit
+  interrupted after publication, the key that signed it exposed
+  meanwhile, completed and signed again with a current key; the order in
+  which the token is looked for; the limits of the unpacking.
+
+Where the two differ:
+
+- **XML without a parser.** opensheaf-py reads the OAI record and the
+  Atom feed with ElementTree; browsers, Deno and Node share no parser of
+  XML, and the core reads the few elements it needs with regular
+  expressions (chapter [44](44-arxiv-metadata.md)), decoding the
+  entities of XML. A record that a parser would refuse may be read here.
+- **HTML entities.** The comments of a version are decoded with the
+  common named references of HTML and the numeric ones; Python's
+  `html.unescape` knows them all.
+- **The token of Zenodo.** It is read from the environment, then, on
+  macOS, from the keychain through `security`; opensheaf-py also asks
+  the package `keyring` between the two (on macOS, the same keychain).
+  `OPENSHEAF_ZENODO_API` replaces the address of Zenodo's API (a double
+  of it); opensheaf-py has no such variable, and its tests replace the
+  class that calls the API.
+- **TeXmacs sources of arXiv versions** (`arxiv import --texmacs`) are
+  refused, with a message pointing to opensheaf-py: their import
+  typesets the HTML version with TeXmacs.
+- **Failures.** What opensheaf-py raises as an exception (a checksum
+  that Zenodo reports otherwise, an error of the API, an e-print that is
+  not gzip) ends here with a message and the status 1, where Python
+  prints its traceback; the draft is discarded alike.
+- **`sources.zip`** is byte for byte opensheaf-py's when it is compressed
+  by zlib, which the command line takes from `node:zlib` (under Node and
+  Deno alike); in a browser, `CompressionStream` compresses otherwise,
+  and the archive, still valid, would not have the same digests.
+- **Tar archives** are read by a reader of this program (chapter
+  [45](45-arxiv-import.md)), which takes the members as `tarfile` does
+  (POSIX prefixes, GNU long names, pax paths), but a GNU sparse file as
+  a plain one, and names not in UTF-8 with replacement characters;
+  `tarfile` keeps their bytes.
+- **The schema of `object.json`** is always checked before a deposit;
+  opensheaf-py checks it when `jsonschema` is installed.
+
+Notes for phase 6 (the Manager), from this phase:
+
+- **A storage over GitHub's Git Data API.** The Manager writes through a
+  storage (chapter [20](20-storage.md)) whose writes are gathered in
+  memory and made one commit at the end of a command: blobs for the new
+  files, a tree built on the tree of the branch's head, a commit, and the
+  reference moved only if the head is still the one read (otherwise the
+  command is refused, and run again on the new head). The staging
+  folders (`.staging-*`, the versions built by `addVersion`) cost
+  nothing then, since a rename is a change of the tree; reading falls
+  back to the tree of the head (`git/trees?recursive=1`, then blobs by
+  digest), which also gives the `lister` of a complete verification. A
+  takedown removes paths from the tree. The token is the person's,
+  fine-grained, for that repository only; GitHub's REST API sends CORS
+  headers, its OAuth device flow does not, so a page asks for the token
+  or goes through an OAuth application with a server of its own.
+- **The passkey origin question.** Passkeys are bound to the relying
+  party `unlock.opensheaf.org` (chapter [36](36-passkeys.md)); a page of
+  another origin cannot use them (WebAuthn's related origins would let a
+  listed origin do so, but not every browser has them). So the Manager
+  must either live on `unlock.opensheaf.org` itself, where it calls
+  WebAuthn directly and opens the rotation keys in its own page, or hand
+  off to that page as the command line does: the Manager opens it in a
+  window, with an X25519 key of its own and a state, and the page sends
+  back the sealed secret, by `postMessage` to the opener's origin instead
+  of the loopback listener of the command line, with the same
+  confirmation code and the same associated data. The first is simpler
+  and keeps the secret in one page; the second keeps the Manager
+  wherever it is published (a project's own Pages). This needs a
+  decision before the Manager is written.
+- **The services are not the Manager's.** arXiv and Zenodo send no CORS
+  headers, so `arxiv fetch` and `zenodo` stay on the command line; `arxiv
+  import` needs no network, and could run in the Manager on downloads
+  committed to the repository, which would be large: it is better left
+  to the command line too.
+- Versions, mirrors, branches and Zenodo deposits are built in staging
+  folders of the storage; a Zenodo deposit leaves `zenodo-staging/` only
+  while it is incomplete, and the Manager, which does not deposit, needs
+  only to respect its lock, which `addVersion` reads.
+
 What stays in Python for now
 ----------------------------
 
@@ -422,8 +541,9 @@ What stays in Python for now
   opensheaf-py, which runs TeXmacs headless; the command line here will
   call TeXmacs as an external program in a later phase. Until then, a
   deposit gives the PDF.
-- Everything of phase 5, above: `osheaf` of opensheaf-py does it on the
-  same archives, and the command here says so when asked.
+- The TeXmacs sources of arXiv versions found in the authors' files
+  (`osheaf arxiv import --texmacs`), whose import typesets their HTML
+  version.
 - The TeXmacs index of an archive (`--index texmacs`).
 - YAML configurations (`osheaf.yaml`), which opensheaf-py reads; this
   program reads `osheaf.json` (it reads YAML for `--from FILE` only).

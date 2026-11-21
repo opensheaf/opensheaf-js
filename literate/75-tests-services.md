@@ -871,7 +871,11 @@ A paper with a source in a folder, which goes to Zenodo in
 program, each against a double of its own: on the sandbox, which leaves
 the archive as it was; on Zenodo, twice, the second time refused; and a
 second document version, a new version of the record. The two send the
-same requests, with the same bodies, and the copies are the same.
+same requests, with the same bodies, and the copies are the same. The
+second document version is deposited once, by opensheaf-py, and its copy
+given to both: deposited by each, it would be made in two different
+seconds, and the `previous` of the version recording its DOI, a digest
+of the inventory that records that time, would differ.
 
     // in tests/parity.test.js:
     test('Zenodo: the same deposits by both, the same requests', { skip }, async () => {
@@ -907,7 +911,8 @@ same requests, with the same bodies, and the copies are the same.
         for (const where of [pyc, jsc]) assert.deepEqual(verified(s, where).filter((f) => !f.startsWith('result')), []);
         await step(['zenodo', 'p', '--production'], 1);
         ok(s.py(['deposit', 'p', '../paper.tex', ...DEPOSIT, '--pdf', '../paper2.pdf', '--changes', 'Corrected.'], { cwd: pyc }), 'py v2');
-        ok(s.js(['deposit', 'p', '../paper.tex', ...DEPOSIT, '--pdf', '../paper2.pdf', '--changes', 'Corrected.'], { cwd: jsc }), 'js v2');
+        await rm(jsc, { recursive: true, force: true });
+        await cp(pyc, jsc, { recursive: true });
         await step(['zenodo', 'p', '--production']);
         await sameArchives(pyc, jsc);
         const calls = await servers[1].calls('zenodo.org');

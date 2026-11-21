@@ -1151,7 +1151,8 @@ test('Zenodo: the same deposits by both, the same requests', { skip }, async () 
     for (const where of [pyc, jsc]) assert.deepEqual(verified(s, where).filter((f) => !f.startsWith('result')), []);
     await step(['zenodo', 'p', '--production'], 1);
     ok(s.py(['deposit', 'p', '../paper.tex', ...DEPOSIT, '--pdf', '../paper2.pdf', '--changes', 'Corrected.'], { cwd: pyc }), 'py v2');
-    ok(s.js(['deposit', 'p', '../paper.tex', ...DEPOSIT, '--pdf', '../paper2.pdf', '--changes', 'Corrected.'], { cwd: jsc }), 'js v2');
+    await rm(jsc, { recursive: true, force: true });
+    await cp(pyc, jsc, { recursive: true });
     await step(['zenodo', 'p', '--production']);
     await sameArchives(pyc, jsc);
     const calls = await servers[1].calls('zenodo.org');

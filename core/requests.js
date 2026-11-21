@@ -12,6 +12,9 @@ import { jsonText } from './write.js';
 import { parseData } from './inputs.js';
 import { init } from './init.js';
 import { keyWallet } from './owner.js';
+import { makeBranch } from './branch.js';
+import { nameOf, objectId } from './names.js';
+import { OBJ, GENESIS } from './folder.js';
 
 export class Problem extends Error {}
 
@@ -467,6 +470,7 @@ async function depositOp(r, form, origin) {
   const fresh = what === NEW_PAPER;
   const label = labelField(form, 'Label', fresh ? 32 : 64);
   const cid = await collection(r, form, false);
+  await ownCollection(r, cid);
   const entry = (await labels(r)).get(label);
   if (fresh && entry) {
     throw new Problem(`\`${label}\` is already the label of a ${entry.kind || 'line'} of this archive: for a new ` +
@@ -525,11 +529,14 @@ async function depositOp(r, form, origin) {
   const issued = date(form, 'Date the paper first appeared');
   if (issued) a.issued = issued;
   a.message = `Deposit from ${origin}`;
+  if (fresh && r.owner) a.owner = r.owner;
+  const [target, branched] = fresh ? [label, ''] : await continued(r, entry, label, origin);
+  a.label = target;
   await osheaf(r, (f) => deposit(f, a));
-  const where = await place(r, form, cid, label);
+  const where = await place(r, form, cid, target);
   const kind = fresh ? 'new paper' : 'new version';
-  return [cid, `Deposit ${label}, ${kind}${where} (${origin})`, `Deposit: ${label}`,
-          `\`${label}\` was deposited (${kind})${where}`];
+  return [cid, `Deposit ${label}, ${kind}${branched}${where} (${origin})`, `Deposit: ${label}`,
+          `\`${label}\` was deposited (${kind})${branched}${where}`];
 }
 
 async function place(r, form, cid, label) {
@@ -558,7 +565,7 @@ async function place(r, form, cid, label) {
 
 async function noticeOp(r, form, origin) {
   const label = labelField(form, 'Label');
-  await knownDocument(r, label);
+  ownLine(r, await knownDocument(r, label), label, 'A notice');
   const about = field(form, 'Document version it is about', true);
   if (!/^\d+$/.test(about)) throw new Problem(`**Document version it is about** should be a number (1, 2, ...), not \`${about}\`.`);
   const text = field(form, 'Text of the notice', true);
@@ -571,7 +578,7 @@ async function noticeOp(r, form, origin) {
 
 async function withdrawOp(r, form, origin) {
   const label = labelField(form, 'Label');
-  await knownDocument(r, label);
+  ownLine(r, await knownDocument(r, label), label, 'A withdrawal');
   const reason = field(form, 'Reason for the withdrawal', true);
   await osheaf(r, (f) => withdraw(f, { label, reason, file: null, message: `Withdrawal from ${origin}` }));
   return ['', `Withdraw ${label} (${origin})`, `Withdrawal: ${label}`, `\`${label}\` was withdrawn (its files stay in the archive)`];
@@ -579,7 +586,7 @@ async function withdrawOp(r, form, origin) {
 
 async function relicenseOp(r, form, origin) {
   const label = labelField(form, 'Label');
-  await knownDocument(r, label);
+  ownLine(r, await knownDocument(r, label), label, 'A new licence');
   const rights = licence(form, 'New licence');
   if (!LICENCES.has(rights)) throw new Problem('Choose the new licence in the field **New licence**.');
   const method = field(form, 'How the authors agreed', true);
@@ -588,9 +595,10 @@ async function relicenseOp(r, form, origin) {
           `\`${label}\` was relicensed as ${rights}`];
 }
 
-async function makeCollection(r, label, title, kind, description, message) {
+async function makeCollection(r, label, title, kind, description, message, owner = null) {
   const data = { title };
   if (description) data.description = description;
+  if (owner) data.owner = owner;
   Object.assign(data, { type: kind, order: 'manual', members: [] });
   await save(r, label, data);
   await sync(r, label, message);
@@ -612,7 +620,10 @@ async function newCollectionOp(r, form, origin) {
   const title = field(form, 'Title of the collection', true);
   const kind = field(form, 'Kind').toLowerCase().startsWith('catalogue') ? 'catalogue' : 'selection';
   const parent = await collection(r, form, false);
-  await makeCollection(r, label, title, kind, field(form, 'Description'), `New collection ${label} (${origin})`);
+  await ownCollection(r, parent);
+  const s = await settings(r);
+  await makeCollection(r, label, title, kind, field(form, 'Description'), `New collection ${label} (${origin})`,
+                       r.owner && r.owner !== s.owner ? r.owner : null);
   if (field(form, 'Feature it on the home page').toLowerCase().startsWith('yes')) await feature(r, label);
   let where = '';
   if (parent) {
@@ -629,6 +640,7 @@ async function newCollectionOp(r, form, origin) {
 
 async function addOp(r, form, origin) {
   const cid = await collection(r, form, true);
+  await ownCollection(r, cid);
   const data = await load(r, cid);
   const [entry, key, text] = await memberRef(r, form, 'New member', 'Archive of the new member');
   const revisions = versions(form, 'Versions you vet (selection)');
@@ -654,6 +666,7 @@ async function addOp(r, form, origin) {
 
 async function vetOp(r, form, origin) {
   const cid = await collection(r, form, true);
+  await ownCollection(r, cid);
   const data = await load(r, cid);
   if (data.type !== 'selection') {
     throw new Problem(`Versions are vetted only in a selection; \`${cid}\` is a catalogue, which follows its members ` +
@@ -678,6 +691,7 @@ async function vetOp(r, form, origin) {
 
 async function removeOp(r, form, origin) {
   const cid = await collection(r, form, true);
+  await ownCollection(r, cid);
   const data = await load(r, cid);
   const [, key, text] = await memberRef(r, form, 'Member to remove', 'Archive of the member');
   const member = await find(r, data, key, text);
@@ -792,12 +806,88 @@ export const OPERATIONS = { setup: setupOp, deposit: depositOp, notice: noticeOp
                             remove: removeOp };
 export const WORKFLOW_ONLY = ['arxiv'];
 
+export async function ownLineOf(f, id, owner) {
+  const dir = await f.dirOf(id);
+  const inv = await f.inventory(dir);
+  if (!inv) return null;
+  const genesis = await f.readLogical(dir, inv, GENESIS);
+  const [, name, lineOwner] = id.split(':');
+  for (let k = 0; k < 16; k++) {
+    const other = objectId(await nameOf(genesis, k), owner);
+    if (other === id) continue;
+    const d = await f.dirOf(other);
+    const i = await f.inventory(d);
+    if (!i) continue;
+    const head = (await f.readObjectJson(d, i, OBJ)) || {};
+    if (!head.parent || (head.parent.owner === lineOwner && head.parent.name === name)) return other;
+  }
+  return null;
+}
+
+async function branchLabelFor(r, label, owner) {
+  const all = await labels(r);
+  const given = r.branchLabel;
+  if (given) {
+    if (!LABEL.test(given) || given.length > 64) {
+      throw new Problem(`\`${given}\` is not a valid label for the branch: at most 64 characters, lower-case ` +
+                        'letters and digits, words joined by `-`.');
+    }
+    if (all.has(given)) throw new Problem(`\`${given}\` is already a label of this archive: choose another for the branch.`);
+    return given;
+  }
+  const named = [...all].find(([, o]) => o.kind === 'owner' && o.name === owner);
+  const word = named ? named[0] : owner.slice(0, 8);
+  const stem = `${label.slice(0, 63 - word.length)}-${word}`.replace(/-+/g, '-').replace(/^-|-$/g, '');
+  let candidate = stem;
+  for (let n = 2; all.has(candidate); n++) candidate = `${stem.slice(0, 63 - String(n).length)}-${n}`;
+  return candidate;
+}
+
+async function continued(r, entry, label, origin) {
+  if (!r.owner || entry.owner === r.owner) return [label, ''];
+  const f = await r.folder();
+  const id = objectId(entry.name, entry.owner);
+  const own = await ownLineOf(f, id, r.owner);
+  if (own) {
+    const ownLabel = f.labelOf(own);
+    if (!ownLabel) {
+      throw new Problem(`The owner \`${r.owner.slice(0, 8)}\` has a line of this work, \`${own}\`, without a ` +
+                        'label in this archive: give it one (`osheaf label`), and deposit into it.');
+    }
+    return [ownLabel, `, in the line \`${ownLabel}\` of the owner \`${r.owner.slice(0, 8)}\``];
+  }
+  const branchLabel = await branchLabelFor(r, label, r.owner);
+  const at = r.branchFrom ? `/v${r.branchFrom}` : '';
+  await osheaf(r, (g) => makeBranch(g, `sheaf:${entry.name}:${entry.owner}${at}`, [],
+                                    { owner: r.owner, label: branchLabel, message: `Branch of ${label} from ${origin}` }));
+  return [branchLabel, `, in the new branch \`${branchLabel}\` of the owner \`${r.owner.slice(0, 8)}\``];
+}
+
+function ownLine(r, entry, label, what) {
+  if (r.owner && entry.owner !== r.owner) {
+    throw new Problem(`${what} is given only by the owner of the line: \`${label}\` is a line of the owner ` +
+                      `\`${entry.owner.slice(0, 8)}\`, not of \`${r.owner.slice(0, 8)}\`. Act as its owner, or give ` +
+                      'it on your own branch of the paper.');
+  }
+}
+
+async function ownCollection(r, cid) {
+  if (!r.owner || !cid) return;
+  const entry = (await labels(r)).get(cid);
+  if (entry && entry.owner !== r.owner) {
+    throw new Problem(`The collection \`${cid}\` is a line of the owner \`${entry.owner.slice(0, 8)}\`, not of ` +
+                      `\`${r.owner.slice(0, 8)}\`: only its owner changes its members. Act as its owner.`);
+  }
+}
+
 export async function carryOut(storage, env, operation, fields, files = {}, { origin = 'the OpenSheaf manager',
                                                                               schemas = null, digests = true,
-                                                                              keyLog = null, defaultBase = null } = {}) {
+                                                                              keyLog = null, defaultBase = null,
+                                                                              owner = null, branchFrom = null,
+                                                                              branchLabel = null } = {}) {
   const said = [];
   const r = {
-    storage, said, added: [], keyLog, defaultBase,
+    storage, said, added: [], keyLog, defaultBase, owner, branchFrom, branchLabel,
     env: { ...env, out: (line) => said.push(line), err: (line) => said.push(line) },
     async folder() {
       return ArchiveFolder.open(storage, this.env);
@@ -813,6 +903,12 @@ export async function carryOut(storage, env, operation, fields, files = {}, { or
     if (operation !== 'setup' && !(await exists(r, 'osheaf.json'))) {
       throw new Problem('The archive is not set up yet: set it up first (the workflow **Set up the archive** in ' +
                         "the Actions tab, or the manager's setup).");
+    }
+    if (owner && operation !== 'setup' && !(await r.folder()).archiveOwners().includes(owner)) {
+      throw new Problem(`\`${owner}\` is not an owner this archive hosts (\`owner\` and \`owners\` in \`osheaf.json\`).`);
+    }
+    if (branchFrom !== null && !(Number.isInteger(branchFrom) && branchFrom >= 1)) {
+      throw new Problem(`A branch is made from a document version, 1, 2, ..., not \`${branchFrom}\`.`);
     }
     let [cid, message, title, done] = await op(r, form, origin);
     const why = field(form, 'Why (optional)');

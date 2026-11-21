@@ -21,8 +21,8 @@ import { verifyFolder } from '../core/check.js';
 import { short, plural, Stop } from '../core/folder.js';
 
 export { GitHub, GitHubStorage, GitHubError, CommitConflict, oneCommit, gitBlobSha, GITHUB_API } from '../core/github.js';
-export { carryOut, Problem, OPERATIONS, WORKFLOW_ONLY, NEW_PAPER, NEW_VERSION } from '../core/requests.js';
-export { popupUrl, popupRequest, openPopupAnswer, sameCode, confirmationCode, POPUP, POPUP_ENROLL, POPUP_MESSAGES,
+export { carryOut, Problem, OPERATIONS, WORKFLOW_ONLY, NEW_PAPER, NEW_VERSION, ownLineOf } from '../core/requests.js';
+export { popupUrl, popupRequest, openPopupAnswer, openPopupAnswers, MAX_POPUP_OWNERS, sameCode, confirmationCode, POPUP, POPUP_ENROLL, POPUP_MESSAGES,
          UNLOCK_ORIGIN, UnlockFailed } from '../core/passkey.js';
 export { Key, readKey, KeyError, PASSKEY_RP, CURRENT, ROTATION, newKey, sheetCheck } from '../core/keys.js';
 export { GitHubWallet, WalletError, hints as walletHints, ownersHeld } from '../core/wallets.js';
@@ -57,9 +57,9 @@ export async function schemasOf(assets) {
   return loadSchemas(async (url) => assets.schemas[String(url).split('/').pop()]);
 }
 
-export async function signers(storage, env) {
+export async function signers(storage, env, owner = null) {
   const f = await ArchiveFolder.open(storage, env);
-  const owner = f.archive.owner;
+  owner ||= f.archive.owner;
   const log = await f.keyLog(owner);
   const latest = log?.latest();
   if (!latest) return { owner, dids: [], threshold: 0, versions: {}, number: null, next: [], nextThreshold: 0 };
@@ -211,15 +211,17 @@ const encrypted = (text) => text.split(/\r\n|\r|\n/).some((x) => {
   return x.startsWith('encryption ') && p[1] !== 'none';
 });
 
-export async function enrollPlan(wallet, owner, { newPasskey = false, entries = null } = {}) {
+export async function enrollPlan(wallet, owner, { newPasskey = false, entries = null, borrowed = [] } = {}) {
   entries = (entries || await walletEntries(wallet, owner)).filter((e) => encrypted(e.text));
   if (!entries.length) throw new WalletError(`the wallet ${wallet.name} holds no key of ${owner} locked with a passphrase`);
   const salt = await passkeySalt(owner);
   const ours = (text) => passkeysOf(text).filter((p) => sameBytes(p.salt, salt) && p.rp === PASSKEY_RP).map((p) => p.cred);
-  const known = [...new Set(entries.flatMap((e) => ours(e.text)))];
+  let known = [...new Set(entries.flatMap((e) => ours(e.text)))];
+  const borrow = !newPasskey && !known.length && borrowed.length > 0;
+  if (borrow) known = [...new Set(borrowed)];
   const fresh = Boolean(newPasskey) || !known.length;
-  const todo = fresh ? entries : entries.filter((e) => !passkeysOf(e.text).some((p) => known.includes(p.cred)));
-  return { owner, salt, entries, known, fresh, todo };
+  const todo = fresh || borrow ? entries : entries.filter((e) => !passkeysOf(e.text).some((p) => known.includes(p.cred)));
+  return { owner, salt, entries, known, fresh, todo, borrowed: borrow };
 }
 
 export async function openWithPassphrase(plan, passphrase, walletName) {
@@ -237,7 +239,7 @@ export async function enrollPasskey(wallet, plan, passphrase, cred, prf, { cost 
   if (plan.fresh && plan.known.includes(cred)) throw new WalletError('the page sent no new passkey: nothing was changed');
   const kek = await passkeyKek(prf);
   try {
-    if (!plan.fresh) {
+    if (!plan.fresh && !plan.borrowed) {
       let opens = false;
       for (const e of plan.entries) {
         if (!passkeysOf(e.text).some((p) => p.cred === cred)) continue;

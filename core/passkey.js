@@ -150,6 +150,7 @@ export function answerOf(result, creds = []) {
 }
 
 export const POPUP = 'popup', POPUP_ENROLL = 'popup-enroll';
+export const MAX_POPUP_OWNERS = 2;
 export const UNLOCK_ORIGIN = new URL(UNLOCK_PAGE).origin;
 export const POPUP_MESSAGES = { ready: 'opensheaf-unlock-ready', request: 'opensheaf-unlock-request',
                                 answer: 'opensheaf-unlock-answer', done: 'opensheaf-unlock-done' };
@@ -164,14 +165,22 @@ export function popupUrl(origin, mode = POPUP) {
 }
 
 export async function popupRequest(owner, creds, pair = null, state = null, mode = POPUP) {
-  if (!OWNER_NAME.test(owner || '')) throw new UnlockFailed(`not an owner name: ${owner}`);
+  const owners = Array.isArray(owner) ? [...owner] : [owner];
+  if (!owners.length || owners.length > MAX_POPUP_OWNERS || new Set(owners).size !== owners.length) {
+    throw new UnlockFailed(`a popup unlocks one owner, or two at once, not ${owners.length}`);
+  }
+  for (const o of owners) if (!OWNER_NAME.test(o || '')) throw new UnlockFailed(`not an owner name: ${o}`);
   if (!creds.length && popupMode(mode) === POPUP) {
     throw new UnlockFailed('no passkey is enrolled for the keys of this owner (osheaf key enroll)');
   }
+  if (owners.length > 1 && mode !== POPUP) throw new UnlockFailed('a passkey is created for one owner at a time');
   pair ||= await newKeyPair();
   state ||= randomState();
-  return { owner, mode, creds: [...creds], state, pair, code: await confirmationCode(state, pair.publicKey),
-           message: { type: POPUP_MESSAGES.request, state, pk: b64url(pair.publicKey), owner, cred: creds.join(',') } };
+  const pk = b64url(pair.publicKey), cred = creds.join(',');
+  const message = owners.length === 1 ? { type: POPUP_MESSAGES.request, state, pk, owner: owners[0], cred }
+    : { type: POPUP_MESSAGES.request, v: 2, state, pk, owners: owners.join(','), cred };
+  return { owner: owners[0], owners, mode, creds: [...creds], state, pair,
+           code: await confirmationCode(state, pair.publicKey), message };
 }
 
 export function sameCode(typed, code) {
@@ -202,4 +211,39 @@ export async function openPopupAnswer(request, data, typed) {
     return answerOf({ cred: data.cred, secret });
   }
   return answerOf({ cred: data.cred, secret }, request.creds);
+}
+
+export async function openPopupAnswers(request, data, typed) {
+  const owners = request.owners || [request.owner];
+  if (owners.length === 1) {
+    const [cred, secret] = await openPopupAnswer(request, data, typed);
+    return { cred, secrets: [[owners[0], secret]] };
+  }
+  if (!data || data.type !== POPUP_MESSAGES.answer || typeof data.state !== 'string' ||
+      !sameSecret(utf8(data.state), utf8(request.state))) {
+    throw new UnlockFailed('this is not the answer to this request');
+  }
+  if (typeof data.error === 'string') throw failure({ error: data.error });
+  if (data.v !== 2 || !Array.isArray(data.sealed) || data.sealed.length !== owners.length) {
+    throw new UnlockFailed('the page did not answer for every owner of the request (update the unlock page)');
+  }
+  if (!sameCode(typed, request.code)) {
+    throw new UnlockFailed('the code typed is not the code of this request: close the window of the passkey, and ' +
+                           'unlock again');
+  }
+  const secrets = [];
+  try {
+    fromB64url(data.cred);
+    for (let k = 0; k < owners.length; k++) {
+      const s = data.sealed[k] || {};
+      if (s.owner !== owners[k]) throw new Error('another owner');
+      const [epk, ct, tag] = [fromB64url(s.epk), fromB64url(s.ct), fromB64url(s.tag)];
+      secrets.push([owners[k], await unseal(request.pair, epk, ct, tag, request.state, POPUP, owners[k], data.cred)]);
+    }
+  } catch {
+    for (const [, s] of secrets) s.fill(0);
+    throw new UnlockFailed('the page sent a damaged answer');
+  }
+  for (const [, s] of secrets) answerOf({ cred: data.cred, secret: s }, request.creds);
+  return { cred: data.cred, secrets };
 }

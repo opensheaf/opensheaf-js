@@ -51,8 +51,8 @@ was made from.
     import { short, plural, Stop } from '../core/folder.js';
 
     export { GitHub, GitHubStorage, GitHubError, CommitConflict, oneCommit, gitBlobSha, GITHUB_API } from '../core/github.js';
-    export { carryOut, Problem, OPERATIONS, WORKFLOW_ONLY, NEW_PAPER, NEW_VERSION } from '../core/requests.js';
-    export { popupUrl, popupRequest, openPopupAnswer, sameCode, confirmationCode, POPUP, POPUP_ENROLL, POPUP_MESSAGES,
+    export { carryOut, Problem, OPERATIONS, WORKFLOW_ONLY, NEW_PAPER, NEW_VERSION, ownLineOf } from '../core/requests.js';
+    export { popupUrl, popupRequest, openPopupAnswer, openPopupAnswers, MAX_POPUP_OWNERS, sameCode, confirmationCode, POPUP, POPUP_ENROLL, POPUP_MESSAGES,
              UNLOCK_ORIGIN, UnlockFailed } from '../core/passkey.js';
     export { Key, readKey, KeyError, PASSKEY_RP, CURRENT, ROTATION, newKey, sheetCheck } from '../core/keys.js';
     export { GitHubWallet, WalletError, hints as walletHints, ownersHeld } from '../core/wallets.js';
@@ -118,8 +118,9 @@ the template has its own). The schemas are those of the bundle.
 The keys that sign
 ------------------
 
-The current keys of the owner of the archive that may sign now: those of
-the latest version of its key log, which a version needs `threshold` of;
+The current keys of an owner that may sign now (the archive's default
+owner, or another owner it hosts): those of the latest version of its key
+log, which a version needs `threshold` of;
 and, for each, the first version of the log that lists it, which a key
 file of a wallet records (`version`, as `osheaf key push` writes it).
 With them, what a new version of the key log needs (section 6.2): the
@@ -127,9 +128,9 @@ number of the latest version, the digests of the rotation keys it commits
 (`next`), and how many of them sign the next one (`nextThreshold`).
 
     // in the keys that sign:
-    export async function signers(storage, env) {
+    export async function signers(storage, env, owner = null) {
       const f = await ArchiveFolder.open(storage, env);
-      const owner = f.archive.owner;
+      owner ||= f.archive.owner;
       const log = await f.keyLog(owner);
       const latest = log?.latest();
       if (!latest) return { owner, dids: [], threshold: 0, versions: {}, number: null, next: [], nextThreshold: 0 };
@@ -424,7 +425,12 @@ there already; whether it was put.
 What enrolling does, before any passkey is asked: the keys locked with a
 passphrase; the passkeys of this owner (its PRF salt, the relying party
 of the unlock page) that open some of them; whether a new passkey is
-made; and the keys that get a wrap.
+made; and the keys that get a wrap. A person who keeps the keys of
+several owners in one wallet may use one passkey for all of them, so that
+one touch unlocks two owners at once (chapter [36](36-passkeys.md)): with
+`borrowed`, the passkeys that open the keys of another owner of the
+wallet, an owner none of whose passkeys is known yet is enrolled with one
+of those (its own salt, the same credential), not with a new one.
 
     // in setting up a key wallet:
     const encrypted = (text) => text.split(/\r\n|\r|\n/).some((x) => {
@@ -432,21 +438,25 @@ made; and the keys that get a wrap.
       return x.startsWith('encryption ') && p[1] !== 'none';
     });
 
-    export async function enrollPlan(wallet, owner, { newPasskey = false, entries = null } = {}) {
+    export async function enrollPlan(wallet, owner, { newPasskey = false, entries = null, borrowed = [] } = {}) {
       entries = (entries || await walletEntries(wallet, owner)).filter((e) => encrypted(e.text));
       if (!entries.length) throw new WalletError(`the wallet ${wallet.name} holds no key of ${owner} locked with a passphrase`);
       const salt = await passkeySalt(owner);
       const ours = (text) => passkeysOf(text).filter((p) => sameBytes(p.salt, salt) && p.rp === PASSKEY_RP).map((p) => p.cred);
-      const known = [...new Set(entries.flatMap((e) => ours(e.text)))];
+      let known = [...new Set(entries.flatMap((e) => ours(e.text)))];
+      const borrow = !newPasskey && !known.length && borrowed.length > 0;
+      if (borrow) known = [...new Set(borrowed)];
       const fresh = Boolean(newPasskey) || !known.length;
-      const todo = fresh ? entries : entries.filter((e) => !passkeysOf(e.text).some((p) => known.includes(p.cred)));
-      return { owner, salt, entries, known, fresh, todo };
+      const todo = fresh || borrow ? entries : entries.filter((e) => !passkeysOf(e.text).some((p) => known.includes(p.cred)));
+      return { owner, salt, entries, known, fresh, todo, borrowed: borrow };
     }
 
 Every key to change is opened with the passphrase first, so that a wrong
 passphrase changes nothing; then the passkey's secret is taken, and the
 wraps added. A passkey enrolled already must open a key it is enrolled
-for.
+for; a passkey borrowed from another owner opens none of this owner's
+keys yet, and its secret, for this owner's salt, is checked by nothing
+but the popup's answer (the credential is one of those asked for).
 
     // in setting up a key wallet:
     export async function openWithPassphrase(plan, passphrase, walletName) {
@@ -464,7 +474,7 @@ for.
       if (plan.fresh && plan.known.includes(cred)) throw new WalletError('the page sent no new passkey: nothing was changed');
       const kek = await passkeyKek(prf);
       try {
-        if (!plan.fresh) {
+        if (!plan.fresh && !plan.borrowed) {
           let opens = false;
           for (const e of plan.entries) {
             if (!passkeysOf(e.text).some((p) => p.cred === cred)) continue;

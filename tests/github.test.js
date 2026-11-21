@@ -19,7 +19,9 @@ import { exampleKey } from '../core/keys.js';
 import { loadSchemas } from '../core/schema.js';
 import { utf8 } from '../core/crypto.js';
 import { KeeperUnreachable } from '../core/keepers.js';
-import { keyPairOf, seal, popupRequest, openPopupAnswer, popupUrl, b64url, UnlockFailed } from '../core/passkey.js';
+import { keyPairOf, seal, popupRequest, openPopupAnswer, openPopupAnswers, popupUrl, b64url, UnlockFailed } from '../core/passkey.js';
+import { ArchiveFolder } from '../core/folder.js';
+import { ownerInitCommand } from '../core/owner.js';
 import { keyFileText, keyText, Passkey, passkeySalt, passkeyKek, readKey, passkeysOf } from '../core/keys.js';
 import { GitHubWallet } from '../core/wallets.js';
 import { browserEnvironment, schemasOf, directWrite, keyFromText, walletLocks, openLocks, signers,
@@ -644,6 +646,47 @@ test('the popup that creates a passkey: its own mode, a new credential', async (
   await assert.rejects(openPopupAnswer(excluding, answer, '329875'), /no new credential/);
 });
 
+const VECTOR2 = { owner: 'b'.repeat(51) + 'a', epk: 'c7LYt2qptTZgAyvI9di-46OuTjs6f9Sa3oH3NHo0qmg',
+                  ct: 'ib0GOq8sfUobf__9-Vwwot4zM6T82n9r9ZVdnlGLulo', tag: '_4P3d-XwSi0QXm8oB8raCpbh75XwRwI3xmIjap7vlYI' };
+
+test('the popup of the Manager for two owners at one touch (version 2)', async () => {
+  const mine = await keyPairOf(new Uint8Array(32).fill(7));
+  const pages = [await keyPairOf(new Uint8Array(32).fill(9)), await keyPairOf(new Uint8Array(32).fill(11))];
+  const owners = [VECTOR.owner, VECTOR2.owner];
+  const secrets = [new Uint8Array(32).map((_, i) => i), new Uint8Array(32).map((_, i) => 255 - i)];
+  const req = await popupRequest(owners, [VECTOR.cred], mine, VECTOR.state);
+  assert.equal(req.code, VECTOR.code);
+  assert.deepEqual(req.message, { type: 'opensheaf-unlock-request', v: 2, state: VECTOR.state, pk: VECTOR.pk,
+                                  owners: owners.join(','), cred: VECTOR.cred });
+  const sealed = [];
+  for (let k = 0; k < 2; k++) {
+    const [epk, ct, tag] = await seal(secrets[k], mine.publicKey, VECTOR.state, 'popup', owners[k], VECTOR.cred, pages[k]);
+    sealed.push({ owner: owners[k], epk: b64url(epk), ct: b64url(ct), tag: b64url(tag) });
+  }
+  assert.deepEqual(sealed, [{ owner: VECTOR.owner, epk: VECTOR.epk, ct: VECTOR.ct, tag: VECTOR.tag },
+                            { owner: VECTOR2.owner, epk: VECTOR2.epk, ct: VECTOR2.ct, tag: VECTOR2.tag }]);
+  const answer = { type: 'opensheaf-unlock-answer', v: 2, state: VECTOR.state, cred: VECTOR.cred, sealed };
+  assert.deepEqual(await openPopupAnswers(req, answer, '329 875'),
+                   { cred: VECTOR.cred, secrets: [[owners[0], secrets[0]], [owners[1], secrets[1]]] });
+  await assert.rejects(openPopupAnswers(req, answer, '329 876'), /the code typed is not the code/);
+  await assert.rejects(openPopupAnswers(req, { ...answer, sealed: [sealed[1], sealed[0]] }, '329875'), /damaged answer/);
+  const swapped = [{ ...sealed[0], owner: owners[1] }, { ...sealed[1], owner: owners[0] }];
+  await assert.rejects(openPopupAnswers({ ...req, owners: [owners[1], owners[0]] }, { ...answer, sealed: swapped }, '329875'),
+                       /damaged answer/);
+  const { v, ...first } = answer;
+  await assert.rejects(openPopupAnswers(req, first, '329875'), /did not answer for every owner/);
+  await assert.rejects(openPopupAnswers(req, { type: 'opensheaf-unlock-answer', state: VECTOR.state, error: 'no' }, '329875'),
+                       /the page says: no/);
+  await assert.rejects(popupRequest([...owners, 'c'.repeat(51) + 'a'], [VECTOR.cred]), /one owner, or two at once/);
+  await assert.rejects(popupRequest([owners[0], owners[0]], [VECTOR.cred]), /one owner, or two at once/);
+  await assert.rejects(popupRequest(owners, [VECTOR.cred], null, null, 'popup-enroll'), /one owner at a time/);
+  const one = await popupRequest([VECTOR.owner], [VECTOR.cred], mine, VECTOR.state);
+  assert.equal(one.message.v, undefined);
+  const single = { type: 'opensheaf-unlock-answer', state: VECTOR.state, epk: VECTOR.epk, ct: VECTOR.ct, tag: VECTOR.tag,
+                   cred: VECTOR.cred };
+  assert.deepEqual(await openPopupAnswers(one, single, '329875'), { cred: VECTOR.cred, secrets: [[VECTOR.owner, secrets[0]]] });
+});
+
 test('keys of a wallet opened by the secret of a passkey, kept unexportable', async () => {
   const env = requestEnvironment();
   const m = new MemoryStorage();
@@ -829,6 +872,106 @@ test('a new current key made in the page: the key log rotated with rotation keys
   const done3 = await directRotate({ repo: REPO, github: client(g), env: benv, schemas, plan: plan3, signers: sealed3,
                                      add: made3.current.did, next: made3.rotation.map((k) => k.digest) });
   assert.deepEqual([done3.number, done3.dids.length], [4, 4]);
+});
+
+test('the passkey of another owner of the wallet enrolled for an owner', async () => {
+  const env = requestEnvironment();
+  const m = new MemoryStorage();
+  const cost = { opslimit: 1, memlimit: 8192 };
+  await init(m, env, { name: 'Papers of Jane Doe', baseUrl: 'https://example.org/papers/', curator: 'Doe, Jane',
+                       newOwner: true, export: '/keys', yes: true, cost }, '/archive');
+  const { owner, dids } = await signers(m, browserEnvironment({ assets: { templates: {} } }));
+  const [key] = await env.keyStore.current(owner, dids);
+  const g = fakeGitHub();
+  g.create('jane/opensheaf-keys', {}, { visibility: 'private' });
+  const w = new GitHubWallet('jane/opensheaf-keys', { api: g.api, fetch: g.fetch, token: async () => g.token }, [REPO]);
+  await pushKey(w, owner, key, 1, 'correct horse', { cost });
+  const cred = 'Y3JlZGVudGlhbC1vZi10aGUtdGVzdHM', prf = new Uint8Array(32).fill(3);
+  assert.deepEqual([(await enrollPlan(w, owner)).fresh, (await enrollPlan(w, owner)).borrowed], [true, false]);
+  const fresh = await enrollPlan(w, owner, { borrowed: [cred], newPasskey: true });
+  assert.deepEqual([fresh.fresh, fresh.borrowed], [true, false]);
+  const plan = await enrollPlan(w, owner, { borrowed: [cred] });
+  assert.deepEqual([plan.fresh, plan.borrowed, plan.known, plan.todo.length], [false, true, [cred], 1]);
+  await openWithPassphrase(plan, 'correct horse', w.name);
+  assert.equal((await enrollPasskey(w, plan, 'correct horse', cred, prf, { cost })).length, 1);
+  const locks = await walletLocks(w, owner, dids);
+  assert.deepEqual(locks.map((l) => l.creds), [[cred]]);
+  assert.equal((await openLocks(locks, owner, cred, prf))[0].did, key.did);
+  const after = await enrollPlan(w, owner, { borrowed: ['b3RoZXItY3JlZGVudGlhbC1vZi10ZXN0cw'] });
+  assert.deepEqual([after.borrowed, after.known, after.todo.length], [false, [cred], 0]);
+});
+
+test('acting for another owner: a new version of its line goes into a branch', async () => {
+  const env = requestEnvironment();
+  const m = new MemoryStorage();
+  const cost = { opslimit: 1, memlimit: 8192 };
+  await init(m, env, { name: 'Papers of a group', baseUrl: 'https://example.org/papers/', curator: 'Doe, Jane',
+                       newOwner: true, export: '/keys', yes: true, cost }, '/archive');
+  const files = (n) => ({ 'PDF of this version': [{ name: 'paper.pdf', bytes: PDF(n) }], Sources: [{ name: 'paper.tex', bytes: TEX }] });
+  const paper = { 'This deposit': NEW_PAPER, Label: 'first', Title: 'A paper', Authors: 'Doe, Jane',
+                  Licence: 'CC BY 4.0 (cc-by-4.0)' };
+  const again = { 'This deposit': NEW_VERSION, Label: 'first', 'What changed (for a new version)': 'Corrections.' };
+  const objects = async () => JSON.parse(text(await m.read('opensheaf.json'))).objects;
+  const line = async (label) => (await objects()).find((o) => o.label === label);
+  assert.ok((await carryOut(m, env, 'deposit', paper, files(1), { schemas })).ok);
+  assert.ok((await carryOut(m, env, 'new_collection', { 'Label of the new collection': 'reading',
+                                                        'Title of the collection': 'Reading', Kind: 'Catalogue' }, {},
+                            { schemas })).ok);
+  await ownerInitCommand(await ArchiveFolder.open(m, env), { export: '/keys-b', yes: true, cost });
+  const cfg = JSON.parse(text(await m.read('osheaf.json')));
+  const [a, b] = [cfg.owner, cfg.owners[0]];
+  const label = `first-${b.slice(0, 8)}`;
+
+  const r1 = await carryOut(m, env, 'deposit', again, files(2), { schemas, owner: b });
+  assert.ok(r1.ok, r1.message);
+  assert.ok(r1.done.includes(`in the new branch \`${label}\``), r1.done);
+  assert.deepEqual([(await line(label)).owner, (await line(label)).head], [b, 'v2']);
+  assert.deepEqual([(await line('first')).owner, (await line('first')).head], [a, 'v1']);
+  const r2 = await carryOut(m, env, 'deposit', again, files(3), { schemas, owner: b });
+  assert.ok(r2.ok, r2.message);
+  assert.ok(r2.done.includes(`in the line \`${label}\``), r2.done);
+  assert.equal((await line(label)).head, 'v3');
+
+  const notice = (l) => ({ Label: l, 'Document version it is about': '1', 'Text of the notice': 'A typo.' });
+  const n1 = await carryOut(m, env, 'notice', notice('first'), {}, { schemas, owner: b });
+  assert.equal(n1.ok, false);
+  assert.match(n1.message, /given only by the owner of the line/);
+  assert.ok((await carryOut(m, env, 'notice', notice(label), {}, { schemas, owner: b })).ok);
+  const w = await carryOut(m, env, 'withdraw', { Label: 'first', 'Reason for the withdrawal': 'x' }, {}, { owner: b });
+  assert.match(w.message, /given only by the owner of the line/);
+
+  const r3 = await carryOut(m, env, 'deposit', { ...again, Label: label }, files(4), { schemas, owner: a });
+  assert.ok(r3.ok, r3.message);
+  assert.ok(r3.done.includes('in the line `first`'), r3.done);
+  assert.equal((await line('first')).head, 'v2');
+
+  const add = await carryOut(m, env, 'add', { 'In collection': 'reading', 'New member': label }, {}, { owner: b });
+  assert.match(add.message, /only its owner changes its members/);
+  const mine = await carryOut(m, env, 'new_collection', { 'Label of the new collection': 'mine',
+                                                          'Title of the collection': 'Mine', Kind: 'Selection' }, {},
+                              { schemas, owner: b });
+  assert.ok(mine.ok, mine.message);
+  assert.equal((await line('mine')).owner, b);
+  assert.match(text(await m.read('collections/mine.yaml')), new RegExp(`\nowner: ${b}\n`));
+  const fresh = await carryOut(m, env, 'deposit', { ...paper, Label: 'second' }, files(5), { schemas, owner: b });
+  assert.ok(fresh.ok, fresh.message);
+  assert.equal((await line('second')).owner, b);
+
+  await ownerInitCommand(await ArchiveFolder.open(m, env), { export: '/keys-c', yes: true, cost });
+  const c = JSON.parse(text(await m.read('osheaf.json'))).owners[1];
+  const taken = await carryOut(m, env, 'deposit', again, files(6), { schemas, owner: c, branchLabel: 'second' });
+  assert.match(taken.message, /already a label of this archive/);
+  const r4 = await carryOut(m, env, 'deposit', again, files(6), { schemas, owner: c, branchFrom: 1, branchLabel: 'first-kept' });
+  assert.ok(r4.ok, r4.message);
+  const kept = await line('first-kept');
+  assert.deepEqual([kept.owner, kept.head], [c, 'v2']);
+  const f = await ArchiveFolder.open(m, env);
+  const dir = await f.dirOf(kept.id);
+  const v1 = await f.readObjectJson(dir, await f.inventory(dir), 'object.json', 'v1');
+  assert.deepEqual([v1.parent.owner, v1.parent.documentVersion], [a, 1]);
+  const stranger = await carryOut(m, env, 'deposit', again, files(7), { owner: 'c'.repeat(51) + 'a' });
+  assert.match(stranger.message, /not an owner this archive hosts/);
+  assert.deepEqual((await verifyFolder(m, { schemas })).findings.filter((x) => x.level === 'error'), []);
 });
 
 test('a request written directly: one commit, signed in the page', async () => {

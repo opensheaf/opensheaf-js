@@ -1,7 +1,13 @@
 // Generated from literate/76-tests-github.md by opensheaf-literate: edit the document, not this file.
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 
 const enc = new TextEncoder();
+
+function boxKeys() {
+  const { publicKey, privateKey } = generateKeyPairSync('x25519');
+  const raw = (jwk, part) => new Uint8Array(Buffer.from(jwk[part], 'base64url'));
+  return { publicKey: raw(publicKey.export({ format: 'jwk' }), 'x'), secretKey: raw(privateKey.export({ format: 'jwk' }), 'd') };
+}
 
 function gitName(type, body) {
   return createHash('sha1').update(enc.encode(`${type} ${body.length}\0`)).update(body).digest('hex');
@@ -69,7 +75,8 @@ export function fakeGitHub({ token = 'fake-token-of-the-tests', api = 'https://a
   };
 
   g.create = (repo, files, { branch = 'main', visibility = 'public', push = true } = {}) => {
-    repos.set(repo, { branch, refs: new Map(), visibility, push });
+    repos.set(repo, { branch, refs: new Map(), visibility, push, secrets: new Map(), labels: new Map(), pages: null,
+                      allow: { secrets: true, issues: true, pages: true }, box: boxKeys() });
     const flat = new Map();
     for (const [p, v] of Object.entries(files)) {
       const [bytes, mode] = Array.isArray(v) ? v : [v, '100644'];
@@ -130,6 +137,7 @@ export function fakeGitHub({ token = 'fake-token-of-the-tests', api = 'https://a
     }
     let x;
     if ((x = /^contents(?:\/(.*))?$/.exec(rest))) return contents(m[1], r, decodeURIComponent(x[1] || ''), method, body);
+    if (/^(actions\/secrets|labels|pages)/.test(rest)) return settings(m[1], r, rest, method, body);
     if ((x = /^git\/ref\/heads\/(.+)$/.exec(rest)) && method === 'GET') {
       const sha = r.refs.get(decodeURIComponent(x[1]));
       return sha ? json(200, { ref: `refs/heads/${x[1]}`, object: { type: 'commit', sha } }) : json(404, { message: 'Not Found' });
@@ -227,6 +235,43 @@ export function fakeGitHub({ token = 'fake-token-of-the-tests', api = 'https://a
     }
     return json(405, { message: 'Method not allowed' });
   };
+
+  const refused = () => json(403, { message: 'Resource not accessible by integration' });
+
+  const settings = (repo, r, rest, method, body) => {
+    let x;
+    if (rest === 'actions/secrets/public-key' && method === 'GET') {
+      if (!r.allow.secrets) return refused();
+      return json(200, { key_id: `key-of-${repo}`, key: Buffer.from(r.box.publicKey).toString('base64') });
+    }
+    if ((x = /^actions\/secrets\/([A-Z0-9_]+)$/.exec(rest))) {
+      if (!r.allow.secrets) return refused();
+      if (method === 'GET') return r.secrets.has(x[1]) ? json(200, { name: x[1] }) : json(404, { message: 'Not Found' });
+      if (method !== 'PUT') return json(405, { message: 'Method not allowed' });
+      if (body.key_id !== `key-of-${repo}`) return json(422, { message: 'key_id does not match' });
+      const made = !r.secrets.has(x[1]);
+      r.secrets.set(x[1], new Uint8Array(Buffer.from(body.encrypted_value, 'base64')));
+      return new Response(null, { status: made ? 201 : 204 });
+    }
+    if (rest === 'labels' && method === 'POST') {
+      if (!r.allow.issues) return refused();
+      if (r.labels.has(body.name)) return json(422, { message: 'Validation Failed', errors: [{ code: 'already_exists' }] });
+      r.labels.set(body.name, body);
+      return json(201, body);
+    }
+    if (rest === 'pages') {
+      if (method === 'GET') return r.pages ? json(200, r.pages) : json(404, { message: 'Not Found' });
+      if (method !== 'POST') return json(405, { message: 'Method not allowed' });
+      if (!r.allow.pages) return refused();
+      if (r.pages) return json(409, { message: 'GitHub Pages is already enabled.' });
+      const [owner, name] = repo.split('/');
+      r.pages = { html_url: `https://${owner.toLowerCase()}.github.io/${name}/`, source: body.source };
+      return json(201, r.pages);
+    }
+    return json(404, { message: 'Not Found' });
+  };
+
+  g.secret = (repo, name) => repos.get(repo).secrets.get(name) || null;
 
   return g;
 }

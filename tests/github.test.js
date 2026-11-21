@@ -25,7 +25,10 @@ import { GitHubWallet } from '../core/wallets.js';
 import { browserEnvironment, schemasOf, directWrite, keyFromText, walletLocks, openLocks, signers,
          prefetched, checkWallet, walletEntries, passphraseConfirmed, checkPassphrase, keyToPush, pushKey,
          enrollPlan, openWithPassphrase, enrollPasskey, rotationKeysFromTexts, rotationKeysFromWallet, walletRotationKeys,
-         newKeys, rotationFiles, checksConfirmed, keepRotationKeys, directRotate } from '../web/manager.js';
+         newKeys, rotationFiles, checksConfirmed, keepRotationKeys, directRotate, ownerKeyLog, keyLogFolder, signingCopy,
+         directSetup, seedLine, sealedBox, openSealedBox, storeSecret, newOwnerKeys } from '../web/manager.js';
+import { writeKeyLog } from '../core/write.js';
+import { verifyFolder } from '../core/check.js';
 
 const REPO = 'jane/papers';
 
@@ -445,6 +448,113 @@ test('the requests carried out by the template\'s script and by this program giv
   }
 });
 
+const TEMPLATE = ISSUE ? path.resolve(path.dirname(ISSUE), '..', '..') : null;
+const noNetwork = async (url) => { throw new TypeError(`no network in the tests: ${url}`); };
+
+async function templateFiles() {
+  const all = await diskFiles(TEMPLATE);
+  return new Map([...all].filter(([p]) => !p.startsWith('.git/')));
+}
+
+test('an archive set up by the Manager with an owner made in the page is the one the template\'s setup makes', { skip: noScript },
+     async () => {
+  const s = await scriptSandbox();
+  try {
+    const keys = { current: await exampleKey('setup current key'), workflows: await exampleKey('setup workflows key'),
+                   rotation: await Promise.all([1, 2, 3].map((n) => exampleKey(`setup rotation key ${n}`))) };
+    const log = await ownerKeyLog(keys, { keeper: 'https://example.org/', created: '2026-11-21T09:00:00Z',
+                                          nonce: '00112233445566778899aabbccddeeff' });
+    const owner = log.owner;
+    const fields = { Name: 'A Reading List on Sheaves', Purpose: 'selection', Description: 'Papers to read first.',
+                     Curator: 'Doe, Jane', Affiliation: 'Example University', Contact: 'https://example.org/~jane',
+                     'Base URL': 'https://jane.github.io/reading' };
+    // the template's script, with the key log as key-log/
+    const a = path.join(s.root, 'a');
+    const files = await templateFiles();
+    for (const [p, bytes] of files) {
+      await mkdir(path.dirname(path.join(a, p)), { recursive: true });
+      await writeFile(path.join(a, p), bytes);
+    }
+    const { storage: mem } = await keyLogFolder(log);
+    await writeKeyLog(new DiskStorage(a), 'key-log', log);
+    const request = await writeRequest(path.join(s.root, 'req', 'setup'), 'setup', fields);
+    const p = spawnSync(PYTHON, [ISSUE, '--request', request], { cwd: a, encoding: 'utf-8',
+      env: { PATH: process.env.PATH, HOME: path.join(s.root, 'home'), XDG_CONFIG_HOME: path.join(s.root, 'xdg'),
+             OPENSHEAF_KEY_STORE: 'file', LANG: 'C.UTF-8', OSHEAF: PY, GITHUB_ACTIONS: '',
+             OPENSHEAF_SIGNING_KEY: seedLine(keys.current) } });
+    const pyResult = await readFile(path.join(a, 'result.md'), 'utf-8');
+    assert.equal(p.status, 0, p.stdout + p.stderr + pyResult);
+    const pyCommit = await readFile(path.join(a, 'commit.txt'), 'utf-8');
+    for (const name of ['result.md', 'commit.txt', 'title.txt']) await rm(path.join(a, name), { force: true });
+    // the Manager, with the key log in memory, on the double
+    const g = fakeGitHub();
+    g.create(REPO, Object.fromEntries(files));
+    const signing = new Map([[owner, [await signingCopy(keys.current)]]]);
+    const answer = await directSetup({ repo: REPO, github: client(g), fields, keyLog: await keyLogFolder(log),
+                                       env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
+                                       schemas, origin: 'request setup' });
+    assert.equal(answer.ok, true, answer.message);
+    assert.equal(answer.message, pyResult);
+    const masked = (t) => t.replace(/sheaf:[a-z2-7]{52}:/g, 'sheaf:NAME:');
+    assert.equal(masked(answer.commitMessage), masked(pyCommit));
+    assert.match(answer.commitMessage, /^Set up the archive: A Reading List on Sheaves \(request setup\)\n/);
+    const A = await treeOf(a), B = g.files(REPO);
+    assert.ok(![...A.keys(), ...B.keys()].some((x) => x.startsWith('key-log/')));
+    // the key log, byte for byte: the one written in memory
+    const own = `ocfl/${owner}/${owner}/`;
+    const logFiles = [...mem.files.keys()].map((x) => own + x).sort();
+    assert.deepEqual([...B.keys()].filter((x) => x.startsWith(own)).sort(), logFiles);
+    for (const x of logFiles) {
+      assert.deepEqual(B.get(x), A.get(x), x);
+      assert.deepEqual(B.get(x), await mem.read(x.slice(own.length)), x);
+    }
+    const disc = (m) => JSON.parse(text(m.get('opensheaf.json'))).objects;
+    const newNames = [];
+    for (const o of disc(A)) {
+      const other = disc(B).find((x) => x.label === o.label);
+      if (other && other.name !== o.name) newNames.push([o.name, `NAME-${o.label}`], [other.name, `NAME-${o.label}`]);
+    }
+    assert.deepEqual(disc(A).map((o) => o.label).filter(Boolean).sort(), ['a-reading-list-on-sheaves', 'main']);
+    sameFiles(A, B, newNames);
+    const outside = (m) => [...m.keys()].filter((x) => !/^(ocfl|names|sha512)\//.test(x)).sort();
+    assert.deepEqual(outside(B), outside(A));
+    const cfg = JSON.parse(text(B.get('osheaf.json')));
+    assert.deepEqual([cfg.owner, cfg.baseUrl, cfg.index.html.featured, cfg.keys], [owner, 'https://jane.github.io/reading/',
+                                                                                   'a-reading-list-on-sheaves', undefined]);
+    // verified by both
+    const c = path.join(s.root, 'c');
+    for (const [x, bytes] of B) {
+      await mkdir(path.dirname(path.join(c, x)), { recursive: true });
+      await writeFile(path.join(c, x), bytes);
+    }
+    const v = s.run([PY], ['verify', '--json'], c);
+    assert.equal(v.status, 0, v.stdout + v.stderr);
+    assert.deepEqual(JSON.parse(v.stdout).filter((f) => f.severity !== 'result'), []);
+    const report = await verifyFolder(new DiskStorage(c), { schemas });
+    assert.equal(report.counts().error + report.counts().warning, 0, JSON.stringify(report.findings));
+    // the base URL of the page, when the form gives none; a second setup is refused
+    const g2 = fakeGitHub();
+    g2.create(REPO, Object.fromEntries(files));
+    const { 'Base URL': _, ...noBase } = fields;
+    const second = await directSetup({ repo: REPO, github: client(g2), fields: { ...noBase, Purpose: 'papers' },
+                                       keyLog: await keyLogFolder(log),
+                                       defaultBase: async () => ({ url: 'https://example.org/reading/',
+                                                                   rule: 'the domain of the owner\'s GitHub Pages' }),
+                                       env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
+                                       schemas });
+    assert.equal(second.ok, true, second.message);
+    assert.match(second.message, /owned by `[a-z2-7]{52}`\. Its base URL is https:\/\/example\.org\/reading\/ \(the domain of the owner's GitHub Pages\)/);
+    assert.equal(JSON.parse(text(g2.files(REPO).get('osheaf.json'))).index.html.featured, undefined);
+    const again = await directSetup({ repo: REPO, github: client(g2), fields, keyLog: await keyLogFolder(log),
+                                      env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
+                                      schemas });
+    assert.deepEqual([again.ok, again.commit], [false, null]);
+    assert.match(again.message, /The archive is already set up\./);
+  } finally {
+    await s.done();
+  }
+});
+
 const VECTOR = { owner: 'a'.repeat(52), state: 'popup-state-of-the-tests', cred: 'Y3JlZGVudGlhbC1vZi10aGUtdGVzdHM',
                  pk: 'E75P6uryBMf9M1j8nAByGIHRdCeBKCJ-xnTzf3_pe20', epk: 'V9tLNZ8jrl4Ubk4lEgVnBHIlBjSMFQwUdT0Mkz0E1CE',
                  ct: '5G1AcynkQgGMF4zDTK5jAHzpINvJJpVIKW_a172XDTY', tag: 'x9nebDAtOsMhfeqtGvRgbjU2r828_nAI4qzFA4JSt6U',
@@ -730,4 +840,40 @@ test('a request written directly: one commit, signed in the page', async () => {
                                        'Document version it is about': '1', 'Text of the notice': 'Again.' } });
   assert.equal(unsigned.ok, false);
   assert.match(unsigned.message, /holds 0 of the current keys/);
+});
+
+test('the keys of a new owner made in the page, and the secret of the workflows', async () => {
+  const keys = await newOwnerKeys();
+  assert.deepEqual([keys.rotation.length, Boolean(keys.workflows)], [3, true]);
+  const log = await ownerKeyLog(keys);
+  const v1 = log.latest();
+  assert.deepEqual([v1.number, v1.keys.keys, v1.keys.threshold, v1.keys.next, v1.keys.nextThreshold],
+                   [1, [keys.current.did, keys.workflows.did], 1, keys.rotation.map((k) => k.digest), 2]);
+  const alone = await ownerKeyLog({ ...keys, workflows: null });
+  assert.deepEqual(alone.latest().keys.keys, [keys.current.did]);
+  await assert.rejects(ownerKeyLog(keys, { keeper: 'example.org' }), /a keeper is an ORCID iD/);
+  const copy = await signingCopy(keys.current);
+  assert.ok(keys.current.seed.some((b) => b !== 0));
+  assert.equal(copy.seed, null);
+  const message = new TextEncoder().encode('signed in the page');
+  assert.deepEqual(await copy.sign(message), await keys.current.sign(message));
+
+  const g = repository();
+  const line = seedLine(keys.workflows);
+  assert.equal((await keyFromText(line, { owner: log.owner })).key.did, keys.workflows.did);
+  g.repos.get(REPO).allow.secrets = false;
+  await assert.rejects(storeSecret(client(g), REPO, 'OPENSHEAF_SIGNING_KEY', line), (e) => e.status === 403);
+  assert.equal(g.secret(REPO, 'OPENSHEAF_SIGNING_KEY'), null);
+  g.repos.get(REPO).allow.secrets = true;
+  await storeSecret(client(g), REPO, 'OPENSHEAF_SIGNING_KEY', line);
+  const box = g.repos.get(REPO).box;
+  const opened = await openSealedBox(g.secret(REPO, 'OPENSHEAF_SIGNING_KEY'), box.publicKey, box.secretKey);
+  assert.equal(new TextDecoder().decode(opened), line);
+  const altered = Uint8Array.from(g.secret(REPO, 'OPENSHEAF_SIGNING_KEY'));
+  altered[40] ^= 1;
+  await assert.rejects(openSealedBox(altered, box.publicKey, box.secretKey), /does not open/);
+  assert.equal(g.calls.filter((c) => c.method === 'PUT').length, 1);
+  const sealed = await sealedBox(new Uint8Array([1, 2, 3]), g.repos.get(REPO).box.publicKey);
+  assert.equal(sealed.length, 32 + 16 + 3);
+  await assert.rejects(sealedBox(new Uint8Array([1]), new Uint8Array(31)), /not an X25519 public key/);
 });

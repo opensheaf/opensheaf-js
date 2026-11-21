@@ -57,6 +57,11 @@ never the user's:
     each updating what the other imported; the same requests to Zenodo
     and the same object versions; a deposit stopped after publication
     and completed by the other program.
+12. an owner made by the Manager for a new archive: its key log is the one
+    `osheaf init --new-owner --key DID` makes, byte for byte; its rotation
+    files are opensheaf-py's and sign with it; the archive the Manager
+    sets up passes both verifications; and the secret it seals for
+    GitHub's workflows opens with PyNaCl.
 
 opensheaf-py is found as `OSHEAF_PY`, or as `osheaf` on the `PATH`; the
 continuous integration installs it from its repository. Without it, the
@@ -80,7 +85,10 @@ tests are skipped, with the reason.
     import { GitHubWallet } from '../core/wallets.js';
     import { browserEnvironment, signers, checkWallet, walletEntries, passphraseConfirmed, checkPassphrase, keyToPush, pushKey,
              enrollPlan, openWithPassphrase, enrollPasskey, walletLocks, openLocks, rotationKeysFromTexts,
-             rotationKeysFromWallet, walletRotationKeys, rotationFiles, keepRotationKeys, rotateAdding } from '../web/manager.js';
+             rotationKeysFromWallet, walletRotationKeys, rotationFiles, keepRotationKeys, rotateAdding, ownerKeyLog, keyLogFolder,
+             signingCopy, sealedBox, seedLine } from '../web/manager.js';
+    import { carryOut } from '../core/requests.js';
+    import { loadSchemas } from '../core/schema.js';
     import { exampleKey } from '../core/keys.js';
 
     <<running the two implementations>>
@@ -108,6 +116,8 @@ tests are skipped, with the reason.
     <<parity: one wallet for both>>
 
     <<parity: a new current key made by the Manager>>
+
+    <<parity: an owner made by the Manager>>
 
 Running the two
 ---------------
@@ -1209,6 +1219,94 @@ current key, and rotates with the new rotation keys from the wallet.
         clean(s, arch, more);
       } finally {
         w.stop();
+        await s.done();
+      }
+    });
+
+An owner made by the Manager
+----------------------------
+
+The Manager makes the owner of a new archive in the page (chapter
+[49](49-manager.md)): the first version of its key log is the one
+`osheaf init --new-owner --key DID` of opensheaf-py makes for the same
+keys, the same keeper and the same time and nonce, byte for byte (its
+keys are made predictable here with `OSHEAF_TEST_KEYS`, which opensheaf-py
+takes in its tests only); the rotation keys the Manager gives as files
+are the ones opensheaf-py exports, and, locked with the passphrase, sign
+the next version of the key log of the archive the Manager set up with
+`osheaf owner rotate` of opensheaf-py; both verifiers find nothing wrong
+in that archive, before and after. The secret of the workflows, sealed
+by the Manager for GitHub, opens with PyNaCl's `SealedBox` (libsodium's
+`crypto_box_seal_open`), and gives the key's line.
+
+    // in parity: an owner made by the Manager:
+    const PY_SEALED = `import base64, sys
+    from nacl.public import PrivateKey, SealedBox
+    secret = PrivateKey(bytes.fromhex(sys.argv[1]))
+    if sys.argv[2] == "public":
+        print(base64.b64encode(bytes(secret.public_key)).decode())
+    else:
+        print(SealedBox(secret).decrypt(base64.b64decode(sys.argv[2])).decode())
+    `;
+
+    test('an owner made by the Manager: the key log of osheaf init --new-owner --key, byte for byte; its rotation files',
+         { skip }, async () => {
+      const s = await sandbox();
+      const python = path.join(path.dirname(PY), 'python3');
+      try {
+        const k = (n) => path.join(s.root, n);
+        const labels = ['manager owner current', ...[1, 2, 3].map((n) => `manager owner rotation ${n}`)];
+        const make = async () => ({ current: await exampleKey(labels[0]), workflows: await exampleKey('manager owner workflows'),
+                                    rotation: await Promise.all(labels.slice(1).map((l) => exampleKey(l))) });
+        const keys = await make();
+        ok(s.py(['init', 'py', '--name', 'Papers of Jane Doe', '--base-url', 'https://example.org/papers/', '--curator', 'Doe, Jane',
+                 '--new-owner', '--key', keys.workflows.did, '--keeper', 'https://example.org/', '--export', k('k1'),
+                 '--yes', '--no-passphrase'],
+                { more: { OSHEAF_TEST_KEYS: labels.join(','), PYTEST_CURRENT_TEST: 'parity' } }), 'py init --new-owner --key');
+        const owner = JSON.parse(await readFile(path.join(k('py'), 'osheaf.json'), 'utf-8')).owner;
+        const theirs = path.join(k('py'), 'ocfl', owner, owner);
+        const genesis = JSON.parse(await readFile(path.join(theirs, 'v1', 'content', 'genesis.json'), 'utf-8'));
+        const log = await ownerKeyLog(keys, { keeper: 'https://example.org/', created: genesis.created, nonce: genesis.nonce });
+        assert.equal(log.owner, owner);
+        const { storage } = await keyLogFolder(log);
+        const A = await filesOf(theirs);
+        assert.deepEqual([...storage.files.keys()].sort(), [...A.keys()].sort());
+        for (const [p, bytes] of A) assert.deepEqual(Buffer.from(await storage.read(p)), bytes, p);
+        // the rotation files in clear: those opensheaf-py exported
+        const plain = await rotationFiles((await make()).rotation, owner, 1, null);
+        const exported = await keyFiles(k('k1'));
+        assert.deepEqual(plain.map((f) => f.name).sort(), exported.map((f) => path.basename(f)));
+        for (const f of plain) assert.equal(f.text, await readFile(path.join(k('k1'), f.name), 'utf-8'));
+        // the archive set up by the Manager with that owner; its locked rotation files sign with opensheaf-py
+        const templates = Object.fromEntries(await Promise.all((await readdir(path.join(HERE, '..', 'templates'))).map(async (n) =>
+          [n, await readFile(path.join(HERE, '..', 'templates', n), 'utf-8')])));
+        const schemas = await loadSchemas(async (url) => JSON.parse(await readFile(fileURLToPath(url), 'utf-8')));
+        const env = browserEnvironment({ assets: { templates }, keys: new Map([[owner, [await signingCopy(keys.current)]]]),
+                                         fetch: async (url) => { throw new TypeError(`no network in the tests: ${url}`); } });
+        await mkdir(k('m'));
+        const answer = await carryOut(new DiskStorage(k('m')), env, 'setup',
+                                      { Name: 'Papers of Jane Doe', Curator: 'Doe, Jane', 'Base URL': 'https://example.org/papers/' },
+                                      {}, { keyLog: await keyLogFolder(log), schemas });
+        assert.equal(answer.ok, true, answer.message);
+        clean(s, k('m'));
+        const locked = await rotationFiles(keys.rotation, owner, 1, 'correct horse');
+        await mkdir(k('k2'));
+        for (const f of locked) await writeFile(path.join(k('k2'), f.name), f.text);
+        const files = await keyFiles(k('k2'));
+        ok(s.py(['owner', 'rotate', '--rotation-key', files[0], '--rotation-key', files[2], '--export', k('k3'),
+                 '--no-passphrase', '--yes'], { cwd: k('m'), more: { OPENSHEAF_PASSPHRASE: 'correct horse' } }),
+           'py owner rotate with the Manager\'s files');
+        const found = clean(s, k('m'));
+        assert.ok(found.some((f) => /key log of .*: latest version v2$/.test(f)), found.join('\n'));
+        // the secret of the workflows, sealed for GitHub, opened by PyNaCl
+        const recipient = Buffer.alloc(32, 7).toString('hex');
+        const pk = ok(s.run([python], ['-c', PY_SEALED, recipient, 'public']), 'py public key').stdout.trim();
+        const line = seedLine(keys.workflows);
+        const sealed = await sealedBox(new TextEncoder().encode(line), new Uint8Array(Buffer.from(pk, 'base64')));
+        assert.equal(sealed.length, 32 + 16 + line.length);
+        const opened = ok(s.run([python], ['-c', PY_SEALED, recipient, Buffer.from(sealed).toString('base64')]), 'py open').stdout.trim();
+        assert.equal(opened, line);
+      } finally {
         await s.done();
       }
     });

@@ -26,6 +26,11 @@ The tests of chapters [47](47-github-storage.md) and
   chapter [72](72-tests-parity.md) compare them. These run when
   opensheaf-py is installed and the script is found (`OSHEAF_ISSUE`, or
   the template's repository next to this one);
+- **the setup by the template's script and by the Manager**: an archive
+  made from the template's files, set up by the script with the owner's
+  key log as `key-log/` and by the Manager with the key log it made in
+  memory: the same files, answer and commit message, verified by both
+  programs;
 - **the Manager's core** (chapter [49](49-manager.md)): the popup's
   hand-off (a vector shared with the unlock page's tests, in both modes,
   the code, the answers refused), keys opened from a wallet by a passkey's
@@ -61,7 +66,10 @@ The tests of chapters [47](47-github-storage.md) and
     import { browserEnvironment, schemasOf, directWrite, keyFromText, walletLocks, openLocks, signers,
              prefetched, checkWallet, walletEntries, passphraseConfirmed, checkPassphrase, keyToPush, pushKey,
              enrollPlan, openWithPassphrase, enrollPasskey, rotationKeysFromTexts, rotationKeysFromWallet, walletRotationKeys,
-             newKeys, rotationFiles, checksConfirmed, keepRotationKeys, directRotate } from '../web/manager.js';
+             newKeys, rotationFiles, checksConfirmed, keepRotationKeys, directRotate, ownerKeyLog, keyLogFolder, signingCopy,
+             directSetup, seedLine, sealedBox, openSealedBox, storeSecret, newOwnerKeys } from '../web/manager.js';
+    import { writeKeyLog } from '../core/write.js';
+    import { verifyFolder } from '../core/check.js';
 
     <<the double of GitHub, used>>
 
@@ -83,9 +91,15 @@ by `/`), each its mode, its name, a zero byte and the 20 bytes of the
 object's name. Commits carry a fixed author and a time that counts up.
 
     // in tests/fake-github.js:
-    import { createHash } from 'node:crypto';
+    import { createHash, generateKeyPairSync } from 'node:crypto';
 
     const enc = new TextEncoder();
+
+    function boxKeys() {
+      const { publicKey, privateKey } = generateKeyPairSync('x25519');
+      const raw = (jwk, part) => new Uint8Array(Buffer.from(jwk[part], 'base64url'));
+      return { publicKey: raw(publicKey.export({ format: 'jwk' }), 'x'), secretKey: raw(privateKey.export({ format: 'jwk' }), 'd') };
+    }
 
     function gitName(type, body) {
       return createHash('sha1').update(enc.encode(`${type} ${body.length}\0`)).update(body).digest('hex');
@@ -169,7 +183,8 @@ would push); and its files at the head, or at a commit.
 
     // in tests/fake-github.js:
       g.create = (repo, files, { branch = 'main', visibility = 'public', push = true } = {}) => {
-        repos.set(repo, { branch, refs: new Map(), visibility, push });
+        repos.set(repo, { branch, refs: new Map(), visibility, push, secrets: new Map(), labels: new Map(), pages: null,
+                          allow: { secrets: true, issues: true, pages: true }, box: boxKeys() });
         const flat = new Map();
         for (const [p, v] of Object.entries(files)) {
           const [bytes, mode] = Array.isArray(v) ? v : [v, '100644'];
@@ -234,6 +249,7 @@ answers are GitHub's, as far as the storage reads them.
         }
         let x;
         if ((x = /^contents(?:\/(.*))?$/.exec(rest))) return contents(m[1], r, decodeURIComponent(x[1] || ''), method, body);
+        if (/^(actions\/secrets|labels|pages)/.test(rest)) return settings(m[1], r, rest, method, body);
         if ((x = /^git\/ref\/heads\/(.+)$/.exec(rest)) && method === 'GET') {
           const sha = r.refs.get(decodeURIComponent(x[1]));
           return sha ? json(200, { ref: `refs/heads/${x[1]}`, object: { type: 'commit', sha } }) : json(404, { message: 'Not Found' });
@@ -337,6 +353,52 @@ each write one commit on the branch.
         }
         return json(405, { message: 'Method not allowed' });
       };
+
+The settings a page may change, when the sign-in has the permission
+(`allow`, each switched off by a test; GitHub then answers 403): the
+repository's secrets for Actions (its public key, X25519, and the values
+sealed to it, which the test opens with `g.secret`), the labels of
+issues, and GitHub Pages. The key pair of a repository's secrets is made
+with Node's X25519 (the double imports no package); `g.secret` gives a
+value as it was sealed, which the tests open with its secret key.
+
+    // in tests/fake-github.js:
+      const refused = () => json(403, { message: 'Resource not accessible by integration' });
+
+      const settings = (repo, r, rest, method, body) => {
+        let x;
+        if (rest === 'actions/secrets/public-key' && method === 'GET') {
+          if (!r.allow.secrets) return refused();
+          return json(200, { key_id: `key-of-${repo}`, key: Buffer.from(r.box.publicKey).toString('base64') });
+        }
+        if ((x = /^actions\/secrets\/([A-Z0-9_]+)$/.exec(rest))) {
+          if (!r.allow.secrets) return refused();
+          if (method === 'GET') return r.secrets.has(x[1]) ? json(200, { name: x[1] }) : json(404, { message: 'Not Found' });
+          if (method !== 'PUT') return json(405, { message: 'Method not allowed' });
+          if (body.key_id !== `key-of-${repo}`) return json(422, { message: 'key_id does not match' });
+          const made = !r.secrets.has(x[1]);
+          r.secrets.set(x[1], new Uint8Array(Buffer.from(body.encrypted_value, 'base64')));
+          return new Response(null, { status: made ? 201 : 204 });
+        }
+        if (rest === 'labels' && method === 'POST') {
+          if (!r.allow.issues) return refused();
+          if (r.labels.has(body.name)) return json(422, { message: 'Validation Failed', errors: [{ code: 'already_exists' }] });
+          r.labels.set(body.name, body);
+          return json(201, body);
+        }
+        if (rest === 'pages') {
+          if (method === 'GET') return r.pages ? json(200, r.pages) : json(404, { message: 'Not Found' });
+          if (method !== 'POST') return json(405, { message: 'Method not allowed' });
+          if (!r.allow.pages) return refused();
+          if (r.pages) return json(409, { message: 'GitHub Pages is already enabled.' });
+          const [owner, name] = repo.split('/');
+          r.pages = { html_url: `https://${owner.toLowerCase()}.github.io/${name}/`, source: body.source };
+          return json(201, r.pages);
+        }
+        return json(404, { message: 'Not Found' });
+      };
+
+      g.secret = (repo, name) => repos.get(repo).secrets.get(name) || null;
 
       return g;
     }
@@ -847,6 +909,128 @@ out.
       }
     });
 
+The setup of an archive made from the template, with an owner made by
+the Manager (chapter [49](49-manager.md)): the template's script, with
+the owner's key log in the repository as `key-log/` (the key ceremony of
+the README), and this program through the Manager, with the key log
+made in memory, on a repository of the double made from the template's
+files, committed. The same files, byte for byte where nothing is random
+(the key log of the owner, every file of the setup but the new lines'
+genesis records, names and times), the same answer and commit message;
+`key-log/` gone in both; and the archive the Manager committed passes the
+verification of opensheaf-py and of this program. Both sign with the
+owner's current key (the script's `osheaf` takes it from
+`OPENSHEAF_SIGNING_KEY`, as in the workflows). The base URL, when the
+form leaves it empty, is the page's (`defaultBase`), with its rule.
+
+    // in tests of the same requests by the script and by this program:
+    const TEMPLATE = ISSUE ? path.resolve(path.dirname(ISSUE), '..', '..') : null;
+    const noNetwork = async (url) => { throw new TypeError(`no network in the tests: ${url}`); };
+
+    async function templateFiles() {
+      const all = await diskFiles(TEMPLATE);
+      return new Map([...all].filter(([p]) => !p.startsWith('.git/')));
+    }
+
+    test('an archive set up by the Manager with an owner made in the page is the one the template\'s setup makes', { skip: noScript },
+         async () => {
+      const s = await scriptSandbox();
+      try {
+        const keys = { current: await exampleKey('setup current key'), workflows: await exampleKey('setup workflows key'),
+                       rotation: await Promise.all([1, 2, 3].map((n) => exampleKey(`setup rotation key ${n}`))) };
+        const log = await ownerKeyLog(keys, { keeper: 'https://example.org/', created: '2026-11-21T09:00:00Z',
+                                              nonce: '00112233445566778899aabbccddeeff' });
+        const owner = log.owner;
+        const fields = { Name: 'A Reading List on Sheaves', Purpose: 'selection', Description: 'Papers to read first.',
+                         Curator: 'Doe, Jane', Affiliation: 'Example University', Contact: 'https://example.org/~jane',
+                         'Base URL': 'https://jane.github.io/reading' };
+        // the template's script, with the key log as key-log/
+        const a = path.join(s.root, 'a');
+        const files = await templateFiles();
+        for (const [p, bytes] of files) {
+          await mkdir(path.dirname(path.join(a, p)), { recursive: true });
+          await writeFile(path.join(a, p), bytes);
+        }
+        const { storage: mem } = await keyLogFolder(log);
+        await writeKeyLog(new DiskStorage(a), 'key-log', log);
+        const request = await writeRequest(path.join(s.root, 'req', 'setup'), 'setup', fields);
+        const p = spawnSync(PYTHON, [ISSUE, '--request', request], { cwd: a, encoding: 'utf-8',
+          env: { PATH: process.env.PATH, HOME: path.join(s.root, 'home'), XDG_CONFIG_HOME: path.join(s.root, 'xdg'),
+                 OPENSHEAF_KEY_STORE: 'file', LANG: 'C.UTF-8', OSHEAF: PY, GITHUB_ACTIONS: '',
+                 OPENSHEAF_SIGNING_KEY: seedLine(keys.current) } });
+        const pyResult = await readFile(path.join(a, 'result.md'), 'utf-8');
+        assert.equal(p.status, 0, p.stdout + p.stderr + pyResult);
+        const pyCommit = await readFile(path.join(a, 'commit.txt'), 'utf-8');
+        for (const name of ['result.md', 'commit.txt', 'title.txt']) await rm(path.join(a, name), { force: true });
+        // the Manager, with the key log in memory, on the double
+        const g = fakeGitHub();
+        g.create(REPO, Object.fromEntries(files));
+        const signing = new Map([[owner, [await signingCopy(keys.current)]]]);
+        const answer = await directSetup({ repo: REPO, github: client(g), fields, keyLog: await keyLogFolder(log),
+                                           env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
+                                           schemas, origin: 'request setup' });
+        assert.equal(answer.ok, true, answer.message);
+        assert.equal(answer.message, pyResult);
+        const masked = (t) => t.replace(/sheaf:[a-z2-7]{52}:/g, 'sheaf:NAME:');
+        assert.equal(masked(answer.commitMessage), masked(pyCommit));
+        assert.match(answer.commitMessage, /^Set up the archive: A Reading List on Sheaves \(request setup\)\n/);
+        const A = await treeOf(a), B = g.files(REPO);
+        assert.ok(![...A.keys(), ...B.keys()].some((x) => x.startsWith('key-log/')));
+        // the key log, byte for byte: the one written in memory
+        const own = `ocfl/${owner}/${owner}/`;
+        const logFiles = [...mem.files.keys()].map((x) => own + x).sort();
+        assert.deepEqual([...B.keys()].filter((x) => x.startsWith(own)).sort(), logFiles);
+        for (const x of logFiles) {
+          assert.deepEqual(B.get(x), A.get(x), x);
+          assert.deepEqual(B.get(x), await mem.read(x.slice(own.length)), x);
+        }
+        const disc = (m) => JSON.parse(text(m.get('opensheaf.json'))).objects;
+        const newNames = [];
+        for (const o of disc(A)) {
+          const other = disc(B).find((x) => x.label === o.label);
+          if (other && other.name !== o.name) newNames.push([o.name, `NAME-${o.label}`], [other.name, `NAME-${o.label}`]);
+        }
+        assert.deepEqual(disc(A).map((o) => o.label).filter(Boolean).sort(), ['a-reading-list-on-sheaves', 'main']);
+        sameFiles(A, B, newNames);
+        const outside = (m) => [...m.keys()].filter((x) => !/^(ocfl|names|sha512)\//.test(x)).sort();
+        assert.deepEqual(outside(B), outside(A));
+        const cfg = JSON.parse(text(B.get('osheaf.json')));
+        assert.deepEqual([cfg.owner, cfg.baseUrl, cfg.index.html.featured, cfg.keys], [owner, 'https://jane.github.io/reading/',
+                                                                                       'a-reading-list-on-sheaves', undefined]);
+        // verified by both
+        const c = path.join(s.root, 'c');
+        for (const [x, bytes] of B) {
+          await mkdir(path.dirname(path.join(c, x)), { recursive: true });
+          await writeFile(path.join(c, x), bytes);
+        }
+        const v = s.run([PY], ['verify', '--json'], c);
+        assert.equal(v.status, 0, v.stdout + v.stderr);
+        assert.deepEqual(JSON.parse(v.stdout).filter((f) => f.severity !== 'result'), []);
+        const report = await verifyFolder(new DiskStorage(c), { schemas });
+        assert.equal(report.counts().error + report.counts().warning, 0, JSON.stringify(report.findings));
+        // the base URL of the page, when the form gives none; a second setup is refused
+        const g2 = fakeGitHub();
+        g2.create(REPO, Object.fromEntries(files));
+        const { 'Base URL': _, ...noBase } = fields;
+        const second = await directSetup({ repo: REPO, github: client(g2), fields: { ...noBase, Purpose: 'papers' },
+                                           keyLog: await keyLogFolder(log),
+                                           defaultBase: async () => ({ url: 'https://example.org/reading/',
+                                                                       rule: 'the domain of the owner\'s GitHub Pages' }),
+                                           env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
+                                           schemas });
+        assert.equal(second.ok, true, second.message);
+        assert.match(second.message, /owned by `[a-z2-7]{52}`\. Its base URL is https:\/\/example\.org\/reading\/ \(the domain of the owner's GitHub Pages\)/);
+        assert.equal(JSON.parse(text(g2.files(REPO).get('osheaf.json'))).index.html.featured, undefined);
+        const again = await directSetup({ repo: REPO, github: client(g2), fields, keyLog: await keyLogFolder(log),
+                                          env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
+                                          schemas });
+        assert.deepEqual([again.ok, again.commit], [false, null]);
+        assert.match(again.message, /The archive is already set up\./);
+      } finally {
+        await s.done();
+      }
+    });
+
 The Manager's core
 ------------------
 
@@ -1182,4 +1366,51 @@ request refused commits nothing.
                                            'Document version it is about': '1', 'Text of the notice': 'Again.' } });
       assert.equal(unsigned.ok, false);
       assert.match(unsigned.message, /holds 0 of the current keys/);
+    });
+
+The keys of a new owner made in the page (chapter
+[49](49-manager.md)): three rotation keys, two of which sign the next
+version of the key log, and the current keys of the owner and of the
+workflows, both in the first version, either of which signs; or the
+owner's alone. A keeper that is neither an ORCID iD nor a domain is
+refused. The key of the workflows stored as the repository's secret,
+sealed to its public key, opens to the line `OPENSHEAF_SIGNING_KEY`
+holds; a sign-in without the permission is refused with GitHub's 403, and
+nothing is stored.
+
+    // in tests of the Manager's core:
+    test('the keys of a new owner made in the page, and the secret of the workflows', async () => {
+      const keys = await newOwnerKeys();
+      assert.deepEqual([keys.rotation.length, Boolean(keys.workflows)], [3, true]);
+      const log = await ownerKeyLog(keys);
+      const v1 = log.latest();
+      assert.deepEqual([v1.number, v1.keys.keys, v1.keys.threshold, v1.keys.next, v1.keys.nextThreshold],
+                       [1, [keys.current.did, keys.workflows.did], 1, keys.rotation.map((k) => k.digest), 2]);
+      const alone = await ownerKeyLog({ ...keys, workflows: null });
+      assert.deepEqual(alone.latest().keys.keys, [keys.current.did]);
+      await assert.rejects(ownerKeyLog(keys, { keeper: 'example.org' }), /a keeper is an ORCID iD/);
+      const copy = await signingCopy(keys.current);
+      assert.ok(keys.current.seed.some((b) => b !== 0));
+      assert.equal(copy.seed, null);
+      const message = new TextEncoder().encode('signed in the page');
+      assert.deepEqual(await copy.sign(message), await keys.current.sign(message));
+
+      const g = repository();
+      const line = seedLine(keys.workflows);
+      assert.equal((await keyFromText(line, { owner: log.owner })).key.did, keys.workflows.did);
+      g.repos.get(REPO).allow.secrets = false;
+      await assert.rejects(storeSecret(client(g), REPO, 'OPENSHEAF_SIGNING_KEY', line), (e) => e.status === 403);
+      assert.equal(g.secret(REPO, 'OPENSHEAF_SIGNING_KEY'), null);
+      g.repos.get(REPO).allow.secrets = true;
+      await storeSecret(client(g), REPO, 'OPENSHEAF_SIGNING_KEY', line);
+      const box = g.repos.get(REPO).box;
+      const opened = await openSealedBox(g.secret(REPO, 'OPENSHEAF_SIGNING_KEY'), box.publicKey, box.secretKey);
+      assert.equal(new TextDecoder().decode(opened), line);
+      const altered = Uint8Array.from(g.secret(REPO, 'OPENSHEAF_SIGNING_KEY'));
+      altered[40] ^= 1;
+      await assert.rejects(openSealedBox(altered, box.publicKey, box.secretKey), /does not open/);
+      assert.equal(g.calls.filter((c) => c.method === 'PUT').length, 1);
+      const sealed = await sealedBox(new Uint8Array([1, 2, 3]), g.repos.get(REPO).box.publicKey);
+      assert.equal(sealed.length, 32 + 16 + 3);
+      await assert.rejects(sealedBox(new Uint8Array([1]), new Uint8Array(31)), /not an X25519 public key/);
     });

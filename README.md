@@ -92,7 +92,11 @@ Phases 1 to 6 (version 0.1.0):
   the page unexportable; the setup of a key wallet, with a current key
   given as a file or made in the page and added to the key log by a
   version signed by the rotation keys (given as files, or kept in the
-  wallet), as `osheaf owner rotate --add` makes it; `deno task bundle`
+  wallet), as `osheaf owner rotate --add` makes it; a new archive set up
+  in the page, its owner made there as `osheaf init --new-owner --key DID`
+  makes it and the archive as the template's setup makes it, the key of
+  the workflows sealed as the repository secret `OPENSHEAF_SIGNING_KEY`
+  (libsodium's sealed box); `deno task bundle`
   makes of it the one file the Manager loads, `dist/opensheaf-manager.js`.
 
 Every command that changes an archive writes its website again. The files

@@ -24,10 +24,11 @@ the files.
 
 The operations carried out here are those of documents and collections:
 `deposit`, `notice`, `withdraw`, `relicense`, `new_collection`, `add`,
-`vet`, `remove`. Two stay with the archive's workflow: `setup`, which
-makes the archive (`osheaf init`, with an owner made on the author's
-computer), and `arxiv`, since arXiv sends no CORS headers and a browser
-cannot read it (chapter [00](00-plan.md)).
+`vet`, `remove`; and `setup`, which makes the archive (`osheaf init` with
+an owner that exists already, whose key log is given), for the Manager,
+which makes the owner in the page (chapter [49](49-manager.md)). One stays
+with the archive's workflow: `arxiv`, since arXiv sends no CORS headers
+and a browser cannot read it (chapter [00](00-plan.md)).
 
 The module is `core/requests.js`.
 
@@ -40,9 +41,10 @@ The module is `core/requests.js`.
     import { writeDiscovery } from './discovery.js';
     import { present, readableIndex, hasWebsite } from './website.js';
     import { verifyFolder } from './check.js';
-    import { readJson, readText, writeText } from './storage.js';
+    import { readJson, readText, writeText, joinPath, MemoryStorage } from './storage.js';
     import { jsonText } from './write.js';
     import { parseData } from './inputs.js';
+    import { init } from './init.js';
 
     <<the forms and their fields>>
 
@@ -842,9 +844,123 @@ collection changed is then synced by the end of the request.
               `${text} was removed from \`${cid}\``];
     }
 
-    export const OPERATIONS = { deposit: depositOp, notice: noticeOp, withdraw: withdrawOp, relicense: relicenseOp,
-                                new_collection: newCollectionOp, add: addOp, vet: vetOp, remove: removeOp };
-    export const WORKFLOW_ONLY = ['setup', 'arxiv'];
+The setup: `osheaf init` with the owner whose key log is given, as the
+script's `setup` runs it for the workflow "Set up the archive" and for a
+page's request. The base URL is the one given in the form (an address of
+a site: https, ending with `/`), or else the one GitHub Pages will serve
+the site at; the script asks GitHub's API for it, and a page that asks it
+the same way (the Manager's `load.js`) gives it to `carryOut` as
+`defaultBase`, a function that gives `{ url, rule }`. The key log is the
+folder of the owner object: a zip attached to the request, or the key log
+the page made (`keyLog`, `{ storage, dir }`), or the folder `key-log/` of
+the repository, which is removed once the key log is in the storage root.
+For a selection or a catalogue, its collection is created, with the
+archive's name for its title and a label made from it, and featured on
+the home page.
+
+    // in the operations:
+    const KEY_LOG = 'key-log';
+
+    function siteUrl(url) {
+      url = url.trim().replace(/^http:\/\//, 'https://');
+      return url.endsWith('/') ? url : url + '/';
+    }
+
+    async function keyLogFolder(r, form) {
+      const zips = attached(form, 'Key log of the owner');
+      if (zips.length) {
+        if (zips.length !== 1 || suffix(zips[0].name) !== '.zip') {
+          throw new Problem('Attach the key log of the owner as one zip of its folder.');
+        }
+        const { names, bytesOf } = await unpack(zips[0].bytes);
+        const storage = new MemoryStorage();
+        for (const n of names) await storage.write(n, bytesOf(n));
+        return { storage, dir: '', where: zips[0].name };
+      }
+      if (r.keyLog) return { where: 'the key log given', ...r.keyLog };
+      if ((await r.storage.kind(KEY_LOG)) === 'dir') return { storage: r.storage, dir: KEY_LOG, where: KEY_LOG };
+      throw new Problem(
+        "The archive needs its owner's key log, made on your computer by the key ceremony of the " +
+        'README (`osheaf init` with `--new-owner`, then a key for GitHub\'s workflows): add the ' +
+        'folder of the owner object (`ocfl/<owner>/<owner>/` of the archive where it was made) to ' +
+        'the repository as `key-log/`, or attach it as a zip. The repository secret ' +
+        '`OPENSHEAF_SIGNING_KEY` must hold the current key made for the workflows.');
+    }
+
+    async function removeTree(storage, dir) {
+      for (const e of (await storage.list(dir)) || []) {
+        const p = joinPath(dir, e.name);
+        if (e.kind === 'dir') await removeTree(storage, p);
+        else await storage.remove(p);
+      }
+    }
+
+    async function initCommand(r, args) {
+      const start = r.said.length;
+      try {
+        await init(r.storage, r.env, args, '.');
+      } catch (error) {
+        if (!(error instanceof Stop)) throw error;
+        throw new Problem('osheaf stopped with this message:\n\n```\n' + error.message.split('\n').slice(-15).join('\n') + '\n```');
+      }
+      for (const line of r.said.slice(start)) if (ADDED.test(line.trim())) r.added.push(line.trim());
+    }
+
+    async function setupOp(r, form, origin) {
+      if (await exists(r, 'osheaf.json')) throw new Problem('The archive is already set up.');
+      let base, rule;
+      const given = field(form, 'Base URL');
+      if (given) {
+        [base, rule] = [siteUrl(given), 'as given'];
+      } else if (r.defaultBase) {
+        ({ url: base, rule } = await r.defaultBase());
+      } else {
+        throw new Problem('Give the address where the site will be served in the field **Base URL**.');
+      }
+      const title = field(form, 'Name', true);
+      const folder = await keyLogFolder(r, form);
+      let owner;
+      try {
+        const inv = await readJson(folder.storage, joinPath(folder.dir, 'inventory.json'));
+        const [, o, again] = String(inv.id).split(':');
+        if (!o || o !== again || String(inv.id).split(':').length !== 3) throw new Error('not an owner');
+        owner = o;
+      } catch {
+        throw new Problem('The key log given is not the folder of an owner object: it should hold the ' +
+                          '`inventory.json` of `sheaf:<owner>:<owner>` (copy `ocfl/<owner>/<owner>/` of the ' +
+                          'archive where the owner was made).');
+      }
+      const named = field(form, 'Owner');
+      if (named && named !== owner) throw new Problem(`The key log given is that of the owner \`${owner}\`, not \`${named}\`.`);
+      const args = { owner, keyLog: folder.where, keyLogSource: folder, name: title, baseUrl: base,
+                     curator: field(form, 'Curator', true) };
+      for (const [label, option] of [['Affiliation', 'affiliation'], ['Contact', 'contact']]) {
+        const value = field(form, label);
+        if (value) args[option] = value;
+      }
+      await initCommand(r, args);
+      if ((await r.storage.kind(KEY_LOG)) === 'dir') await removeTree(r.storage, KEY_LOG);
+      const purpose = field(form, 'Purpose').toLowerCase() || 'papers';
+      let done;
+      if (purpose === 'selection' || purpose === 'catalogue') {
+        let label = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
+          .replace(/^-+|-+$/g, '') || 'collection';
+        if (label === (await settings(r)).mainCollection) label += '-collection';
+        await makeCollection(r, label, title, purpose, field(form, 'Description'), `The collection is set up (${origin})`);
+        await feature(r, label);
+        done = `the archive was set up, owned by \`${owner}\`, with the collection \`${label}\` featured on its home page`;
+      } else {
+        done = `the archive was set up, owned by \`${owner}\``;
+      }
+      done += `. Its base URL is ${base} (${rule}); if that is not where its site is served, change ` +
+        '`baseUrl` in `osheaf.json` and run `osheaf index`';
+      return ['', `Set up the archive: ${title} (${origin})`, `Setup: ${title}`, done];
+    }
+
+    export const OPERATIONS = { setup: setupOp, deposit: depositOp, notice: noticeOp, withdraw: withdrawOp,
+                                relicense: relicenseOp, new_collection: newCollectionOp, add: addOp, vet: vetOp,
+                                remove: removeOp };
+    export const WORKFLOW_ONLY = ['arxiv'];
 
 Carrying a request out
 ----------------------
@@ -858,7 +974,8 @@ verification reads every file of the archive with `digests` (as the
 script's `osheaf verify` does); without, it trusts the content files to
 match their inventories, which a storage over GitHub may (its blobs are
 named by their content), and reads only the inventories, descriptions,
-signatures and key logs.
+signatures and key logs. For the setup, `keyLog` and `defaultBase` are
+those of the setup above.
 
 The answer: `ok`, the message for the person (Markdown), and, when it is
 done, the commit message (the subject, then the object versions added),
@@ -868,10 +985,11 @@ the form.
 
     // in carrying a request out:
     export async function carryOut(storage, env, operation, fields, files = {}, { origin = 'the OpenSheaf manager',
-                                                                                  schemas = null, digests = true } = {}) {
+                                                                                  schemas = null, digests = true,
+                                                                                  keyLog = null, defaultBase = null } = {}) {
       const said = [];
       const r = {
-        storage, said, added: [],
+        storage, said, added: [], keyLog, defaultBase,
         env: { ...env, out: (line) => said.push(line), err: (line) => said.push(line) },
         async folder() {
           return ArchiveFolder.open(storage, this.env);
@@ -884,7 +1002,7 @@ the form.
         }
         const op = OPERATIONS[operation];
         if (!op) throw new Problem(`Unknown operation \`${operation}\`.`);
-        if (!(await exists(r, 'osheaf.json'))) {
+        if (operation !== 'setup' && !(await exists(r, 'osheaf.json'))) {
           throw new Problem('The archive is not set up yet: set it up first (the workflow **Set up the archive** in ' +
                             "the Actions tab, or the manager's setup).");
         }

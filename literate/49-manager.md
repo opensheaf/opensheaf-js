@@ -14,6 +14,12 @@ opened by the owner's passkey through the popup of chapter
 [36](36-passkeys.md); they are kept in the page's memory, as WebCrypto
 keys that cannot be exported, and forgotten when the page is closed.
 
+It also sets up a new archive, the owner included: the owner's keys and
+key log made in the page as `osheaf init --new-owner --key DID` makes
+them, the archive set up as the template's setup sets it up, and the key
+of the archive's workflows stored as a secret of the repository (below,
+"The owner, made in the page").
+
 This chapter is what the Manager imports: one module, `web/manager.js`,
 which gathers the parts of the core it uses and adds the few functions
 that are the Manager's own; and the script that makes of it, with the
@@ -34,8 +40,10 @@ was made from.
     import { oneCommit } from '../core/github.js';
     import { carryOut } from '../core/requests.js';
     import { rotate, loadKeyLog, OwnerError } from '../core/keylogs.js';
-    import { objectId } from '../core/names.js';
-    import { writeKeyLog } from '../core/write.js';
+    import { objectId, keeperValid } from '../core/names.js';
+    import { writeKeyLog, newOwner } from '../core/write.js';
+    import { MemoryStorage } from '../core/storage.js';
+    import { base64 } from '../core/keys.js';
     import { writeDiscovery } from '../core/discovery.js';
     import { verifyFolder } from '../core/check.js';
     import { short, plural, Stop } from '../core/folder.js';
@@ -48,6 +56,7 @@ was made from.
     export { GitHubWallet, WalletError } from '../core/wallets.js';
     export { OwnerError } from '../core/keylogs.js';
     export { ArchiveFolder, Stop } from '../core/folder.js';
+    export { verifyFolder } from '../core/check.js';
 
     <<the environment of a page>>
 
@@ -56,6 +65,10 @@ was made from.
     <<setting up a key wallet>>
 
     <<a new current key, made in the page>>
+
+    <<the owner, made in the page>>
+
+    <<a secret for the workflows>>
 
     <<a request written directly>>
 
@@ -636,6 +649,163 @@ the key log moved. Gives the new version, with the commit.
       return { ...done.version, commit: done.commit };
     }
 
+The owner, made in the page
+---------------------------
+
+A repository made from the archive template and not set up yet is set up
+from the Manager, the owner included, as the key ceremony of the
+template's README sets it up on a computer, with the same files: the
+owner made as `osheaf init --new-owner --key DID` makes it (`DID` the
+current key of the archive's workflows, as the README's ceremony makes it
+with `osheaf key new`), then the archive as the template's setup makes it
+with that owner (chapter [48](48-requests.md)). The page makes:
+
+- the owner's current key, which signs in the page and is put in the key
+  wallet, as `osheaf key push` puts it;
+- the current key of the archive's workflows, unless the person does not
+  want the workflows to sign (then the archive is kept from the page or
+  the command line only); it is stored as the repository secret
+  `OPENSHEAF_SIGNING_KEY` (below), and nowhere else;
+- the rotation keys, three, two of which sign the next version of the key
+  log, as `osheaf`'s default: written as the files of `osheaf init
+  --export`, locked with the passphrase, with their sheets, and confirmed
+  by their checks typed back before anything is committed; or kept in the
+  wallet, locked with the passphrase, a lower security level (`osheaf
+  init --keys github:OWNER/REPO`), put there before anything is
+  committed.
+
+The first version of the key log lists both current keys, the owner's
+first, with threshold 1, so that either signs; the rotation keys are
+committed by their digests. `created` and `nonce` are given by the tests,
+which make the same key log with opensheaf-py.
+
+    // in the owner, made in the page:
+    export const ROTATION_KEYS = 3;
+
+    export async function newOwnerKeys({ workflows = true, rotation = ROTATION_KEYS } = {}) {
+      const keys = { current: await newKey(), workflows: workflows ? await newKey() : null, rotation: [] };
+      for (let k = 0; k < rotation; k++) keys.rotation.push(await newKey());
+      return keys;
+    }
+
+    export async function ownerKeyLog(keys, { keeper = null, created = null, nonce = null } = {}) {
+      if (keeper && !keeperValid(keeper)) {
+        throw new OwnerError(`a keeper is an ORCID iD (with its check digit) or https://<domain>/: ${keeper}`);
+      }
+      return newOwner([keys.current, ...(keys.workflows ? [keys.workflows] : [])], keys.rotation,
+                      { threshold: 1, nextThreshold: Math.floor(keys.rotation.length / 2) + 1, keeper: keeper || null,
+                        created, nonce });
+    }
+
+The key log as the folder of its owner object, in memory: what the setup
+copies into the storage root, as the template's setup copies `key-log/`.
+
+    // in the owner, made in the page:
+    export async function keyLogFolder(log) {
+      const storage = new MemoryStorage();
+      await writeKeyLog(storage, '', log);
+      return { storage, dir: '', where: `the key log of ${short(log.owner)} made in the page` };
+    }
+
+The current key that signs in the page, kept unexportable, from a copy of
+the seed: the seed itself is kept until the key is in the wallet.
+
+    // in the owner, made in the page:
+    export async function signingCopy(key) {
+      return sealedKey(await Key.fromSeed(Uint8Array.from(key.seed)));
+    }
+
+The archive set up, committed as a request is (below), on the head of the
+archive's branch: the setup of chapter [48](48-requests.md) with this key
+log, `defaultBase` giving the base URL when the form leaves it empty.
+
+    // in the owner, made in the page:
+    export async function directSetup({ repo, github, fields, keyLog, defaultBase = null, env, schemas, mirror = null,
+                                        cache = new Map(), origin = 'the OpenSheaf manager', progress = () => {},
+                                        attempts = 3 }) {
+      return directWrite({ repo, github, operation: 'setup', fields, env, schemas, mirror, cache, origin, progress, attempts,
+                           options: { keyLog, defaultBase } });
+    }
+
+A secret for the workflows
+--------------------------
+
+The current key of the workflows is the line that `OPENSHEAF_SIGNING_KEY`
+holds, as the README's ceremony stores it: the seed, in base64. GitHub
+takes a repository secret sealed to the repository's public key (its
+X25519 key, `actions/secrets/public-key`), as libsodium's
+`crypto_box_seal` seals it: an ephemeral key pair; the nonce, the BLAKE2b
+digest of 24 bytes of the ephemeral public key and the recipient's; the
+message boxed (`crypto_box`, X25519, XSalsa20 and Poly1305) with the
+ephemeral secret key; and the ephemeral public key followed by the box.
+The ephemeral secret key is drawn with `crypto.getRandomValues` (tweetnacl
+finds no source of random bytes of its own in the bundle under Node).
+The tests open it with PyNaCl's `SealedBox`.
+
+    // in a secret for the workflows:
+    export function seedLine(key) {
+      return base64(key.seed);
+    }
+
+    export async function sealedBox(message, publicKey) {
+      const nacl = (await import('tweetnacl')).default;
+      const { createBLAKE2b } = await import('hash-wasm');
+      if (publicKey.length !== nacl.box.publicKeyLength) throw new KeyError('not an X25519 public key');
+      const drawn = crypto.getRandomValues(new Uint8Array(nacl.box.secretKeyLength));
+      const pair = nacl.box.keyPair.fromSecretKey(drawn);
+      drawn.fill(0);
+      const h = await createBLAKE2b(nacl.box.nonceLength * 8);
+      h.init();
+      h.update(pair.publicKey);
+      h.update(publicKey);
+      const nonce = h.digest('binary');
+      const boxed = nacl.box(message, nonce, publicKey, pair.secretKey);
+      pair.secretKey.fill(0);
+      const out = new Uint8Array(pair.publicKey.length + boxed.length);
+      out.set(pair.publicKey);
+      out.set(boxed, pair.publicKey.length);
+      return out;
+    }
+
+Opened again, as `crypto_box_seal_open` opens it, with the recipient's
+key pair: what the tests do with the double of GitHub's secrets.
+
+    // in a secret for the workflows:
+    export async function openSealedBox(sealed, publicKey, secretKey) {
+      const nacl = (await import('tweetnacl')).default;
+      const { createBLAKE2b } = await import('hash-wasm');
+      const epk = sealed.slice(0, nacl.box.publicKeyLength);
+      const h = await createBLAKE2b(nacl.box.nonceLength * 8);
+      h.init();
+      h.update(epk);
+      h.update(publicKey);
+      const opened = nacl.box.open(sealed.slice(epk.length), h.digest('binary'), epk, secretKey);
+      if (!opened) throw new KeyError('the sealed box does not open with this key');
+      return opened;
+    }
+
+The secret stored with GitHub's API (`PUT
+repos/OWNER/REPO/actions/secrets/NAME`, the value sealed, with the
+identifier of the key it is sealed to); the sign-in needs the repository
+permission *Secrets: read and write*. A refusal is a `GitHubError` with
+GitHub's status (403 when the permission is not granted). The value's
+bytes are wiped once sealed.
+
+    // in a secret for the workflows:
+    export const SIGNING_SECRET = 'OPENSHEAF_SIGNING_KEY';
+
+    export async function storeSecret(github, repo, name, value) {
+      const pk = await github.request('GET', `repos/${repo}/actions/secrets/public-key`);
+      const bytes = new TextEncoder().encode(value);
+      let sealed;
+      try {
+        sealed = await sealedBox(bytes, unbase64(pk.key));
+      } finally {
+        bytes.fill(0);
+      }
+      await github.request('PUT', `repos/${repo}/actions/secrets/${name}`, { encrypted_value: base64(sealed), key_id: pk.key_id });
+    }
+
 A request written directly
 --------------------------
 
@@ -666,10 +836,10 @@ request was refused, and nothing was committed).
 
     export async function directWrite({ repo, github, operation, fields, files = {}, env, schemas, assets = null,
                                         mirror = null, cache = new Map(), origin = 'the OpenSheaf manager',
-                                        progress = () => {}, attempts = 3 }) {
+                                        progress = () => {}, attempts = 3, options = {} }) {
       const done = await oneCommit(repo, github, async (storage) => {
         progress('carrying out');
-        const answer = await carryOut(storage, env, operation, fields, files, { origin, schemas, digests: false });
+        const answer = await carryOut(storage, env, operation, fields, files, { origin, schemas, digests: false, ...options });
         if (answer.ok) progress('committing');
         return { message: answer.ok ? answer.commitMessage : null, answer };
       }, { mirror, cache, attempts, prepare: async (storage) => {

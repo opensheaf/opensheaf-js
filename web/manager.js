@@ -10,8 +10,10 @@ import { sameBytes, unbase64 } from '../core/crypto.js';
 import { oneCommit } from '../core/github.js';
 import { carryOut } from '../core/requests.js';
 import { rotate, loadKeyLog, OwnerError } from '../core/keylogs.js';
-import { objectId } from '../core/names.js';
-import { writeKeyLog } from '../core/write.js';
+import { objectId, keeperValid } from '../core/names.js';
+import { writeKeyLog, newOwner } from '../core/write.js';
+import { MemoryStorage } from '../core/storage.js';
+import { base64 } from '../core/keys.js';
 import { writeDiscovery } from '../core/discovery.js';
 import { verifyFolder } from '../core/check.js';
 import { short, plural, Stop } from '../core/folder.js';
@@ -24,6 +26,7 @@ export { Key, readKey, KeyError, PASSKEY_RP, CURRENT, ROTATION, newKey, sheetChe
 export { GitHubWallet, WalletError } from '../core/wallets.js';
 export { OwnerError } from '../core/keylogs.js';
 export { ArchiveFolder, Stop } from '../core/folder.js';
+export { verifyFolder } from '../core/check.js';
 
 export function browserEnvironment({ assets, keys = new Map(), fetch = globalThis.fetch?.bind(globalThis) } = {}) {
   const refuse = (what) => async () => {
@@ -415,6 +418,91 @@ export async function directRotate({ repo, github, env, schemas, plan, signers, 
   return { ...done.version, commit: done.commit };
 }
 
+export const ROTATION_KEYS = 3;
+
+export async function newOwnerKeys({ workflows = true, rotation = ROTATION_KEYS } = {}) {
+  const keys = { current: await newKey(), workflows: workflows ? await newKey() : null, rotation: [] };
+  for (let k = 0; k < rotation; k++) keys.rotation.push(await newKey());
+  return keys;
+}
+
+export async function ownerKeyLog(keys, { keeper = null, created = null, nonce = null } = {}) {
+  if (keeper && !keeperValid(keeper)) {
+    throw new OwnerError(`a keeper is an ORCID iD (with its check digit) or https://<domain>/: ${keeper}`);
+  }
+  return newOwner([keys.current, ...(keys.workflows ? [keys.workflows] : [])], keys.rotation,
+                  { threshold: 1, nextThreshold: Math.floor(keys.rotation.length / 2) + 1, keeper: keeper || null,
+                    created, nonce });
+}
+
+export async function keyLogFolder(log) {
+  const storage = new MemoryStorage();
+  await writeKeyLog(storage, '', log);
+  return { storage, dir: '', where: `the key log of ${short(log.owner)} made in the page` };
+}
+
+export async function signingCopy(key) {
+  return sealedKey(await Key.fromSeed(Uint8Array.from(key.seed)));
+}
+
+export async function directSetup({ repo, github, fields, keyLog, defaultBase = null, env, schemas, mirror = null,
+                                    cache = new Map(), origin = 'the OpenSheaf manager', progress = () => {},
+                                    attempts = 3 }) {
+  return directWrite({ repo, github, operation: 'setup', fields, env, schemas, mirror, cache, origin, progress, attempts,
+                       options: { keyLog, defaultBase } });
+}
+
+export function seedLine(key) {
+  return base64(key.seed);
+}
+
+export async function sealedBox(message, publicKey) {
+  const nacl = (await import('tweetnacl')).default;
+  const { createBLAKE2b } = await import('hash-wasm');
+  if (publicKey.length !== nacl.box.publicKeyLength) throw new KeyError('not an X25519 public key');
+  const drawn = crypto.getRandomValues(new Uint8Array(nacl.box.secretKeyLength));
+  const pair = nacl.box.keyPair.fromSecretKey(drawn);
+  drawn.fill(0);
+  const h = await createBLAKE2b(nacl.box.nonceLength * 8);
+  h.init();
+  h.update(pair.publicKey);
+  h.update(publicKey);
+  const nonce = h.digest('binary');
+  const boxed = nacl.box(message, nonce, publicKey, pair.secretKey);
+  pair.secretKey.fill(0);
+  const out = new Uint8Array(pair.publicKey.length + boxed.length);
+  out.set(pair.publicKey);
+  out.set(boxed, pair.publicKey.length);
+  return out;
+}
+
+export async function openSealedBox(sealed, publicKey, secretKey) {
+  const nacl = (await import('tweetnacl')).default;
+  const { createBLAKE2b } = await import('hash-wasm');
+  const epk = sealed.slice(0, nacl.box.publicKeyLength);
+  const h = await createBLAKE2b(nacl.box.nonceLength * 8);
+  h.init();
+  h.update(epk);
+  h.update(publicKey);
+  const opened = nacl.box.open(sealed.slice(epk.length), h.digest('binary'), epk, secretKey);
+  if (!opened) throw new KeyError('the sealed box does not open with this key');
+  return opened;
+}
+
+export const SIGNING_SECRET = 'OPENSHEAF_SIGNING_KEY';
+
+export async function storeSecret(github, repo, name, value) {
+  const pk = await github.request('GET', `repos/${repo}/actions/secrets/public-key`);
+  const bytes = new TextEncoder().encode(value);
+  let sealed;
+  try {
+    sealed = await sealedBox(bytes, unbase64(pk.key));
+  } finally {
+    bytes.fill(0);
+  }
+  await github.request('PUT', `repos/${repo}/actions/secrets/${name}`, { encrypted_value: base64(sealed), key_id: pk.key_id });
+}
+
 export function prefetched(path, size = null) {
   return (size !== null && size < 4096) || path === 'osheaf.json' || path === 'opensheaf.json' || path.startsWith('collections/') ||
     path.startsWith('templates/') || (path.startsWith('ocfl/') && /\.(json|sha512)$/.test(path)) ||
@@ -423,10 +511,10 @@ export function prefetched(path, size = null) {
 
 export async function directWrite({ repo, github, operation, fields, files = {}, env, schemas, assets = null,
                                     mirror = null, cache = new Map(), origin = 'the OpenSheaf manager',
-                                    progress = () => {}, attempts = 3 }) {
+                                    progress = () => {}, attempts = 3, options = {} }) {
   const done = await oneCommit(repo, github, async (storage) => {
     progress('carrying out');
-    const answer = await carryOut(storage, env, operation, fields, files, { origin, schemas, digests: false });
+    const answer = await carryOut(storage, env, operation, fields, files, { origin, schemas, digests: false, ...options });
     if (answer.ok) progress('committing');
     return { message: answer.ok ? answer.commitMessage : null, answer };
   }, { mirror, cache, attempts, prepare: async (storage) => {

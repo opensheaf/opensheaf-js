@@ -54,7 +54,8 @@ To make a change:
   and the outside world through the environment of chapter 23. The only
   packages are `hash-wasm`, `tweetnacl` and `yaml` (pinned in `deno.json`
   and `package.json`), imported by bare name and only where a key file is
-  encrypted or decrypted, MD5 computed, or a YAML file read.
+  encrypted or decrypted, MD5 computed, a YAML file read, or a secret
+  sealed for GitHub's Actions (`web/manager.js`).
 - **The command line** (`cli/`) uses `node:` modules, which Deno has too,
   so that one source runs under both. No `Deno.*` there either.
 - **Parity with opensheaf-py.** opensheaf-py is the reference: same

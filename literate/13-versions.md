@@ -219,8 +219,7 @@ an empty list rather than failing.
     export const IDENTITY = ['datacite.json', 'object.json', 'genesis.json'];
 
     export function isEvidence(p) {
-      return p === 'parent.inventory.json' || p === 'parent.object.json' ||
-        p.startsWith('parent.signatures/') || p.startsWith('parent.chain/');
+      return p.startsWith('parent/');
     }
 
     export function ownFiles(inv, ver, obj) {
@@ -277,7 +276,12 @@ parent version, and the numbering continues from there.
       const add = (ver, message) => errors.push({ ver, message });
       const versions = versionsOf(inv);
       const seen = new Map(), filesOfDoc = new Map(), missingOf = new Map();
-      let highest = 0, hadHistory = false, notices = [];
+      let highest = 0, hadHistory = false, notices = [], prevVer = null;
+      const currentBefore = (at) => {
+        if (!at) return null;
+        const n = objOf(currentVersion(inv, objOf, at))?.documentVersion;
+        return Number.isInteger(n) ? n : null;
+      };
       for (const ver of versions) {
         const obj = objOf(ver);
         if (!obj || obj.kind !== 'document') return errors;
@@ -288,6 +292,7 @@ parent version, and the numbering continues from there.
         <<check the number and the files of a document version>>
         <<check the history recorded in an object version>>
         <<check that an object version keeps the earlier notices>>
+        prevVer = ver;
       }
       return errors;
     }
@@ -295,12 +300,12 @@ parent version, and the numbering continues from there.
 A document version seen before must have the same own files and change
 note, except while its sources are missing: then files may be added,
 never changed or removed. A document version not seen before must have
-the next number, and must hold something new: an object version holding
-the same own files (the same paths, with the same digests) and the same
-change note as an earlier document version "keeps its number" (section
-4.2), so a new number given to it is reported, naming the first document
-version it repeats. Only this exact repetition is checked; opensheaf-py
-makes the same check, with the same message.
+the next number, and must hold something new: its own files (compared by
+path and digest, so that a rename is a change) or its change note differ
+from those of the current version as of the object version before
+(section 4.2). Files of an earlier version that is not the current one,
+deposited again, are a revert, a new document version. opensheaf-py makes
+the same check, with the same message.
 
     // in check the number and the files of a document version:
     if (seen.has(n)) {
@@ -316,11 +321,9 @@ makes the same check, with the same message.
       filesOfDoc.set(n, own);
     } else {
       if (n !== highest + 1) add(ver, `document version ${n} breaks the numbering (expected ${highest + 1})`);
-      for (const [m, files] of filesOfDoc) {
-        if (same(own, files) && change === seen.get(m)) {
-          add(ver, `document version ${n} holds the same files and change note as document version ${m}, whose number it keeps`);
-          break;
-        }
+      const m = currentBefore(prevVer);
+      if (seen.has(m) && same(own, filesOfDoc.get(m)) && change === seen.get(m)) {
+        add(ver, `document version ${n} holds the same files and change note as the current version ${m}: it is no new document version (section 4.2)`);
       }
       highest = Math.max(highest, Number.isInteger(n) ? n : 0);
       seen.set(n, change);

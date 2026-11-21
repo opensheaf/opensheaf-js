@@ -363,7 +363,7 @@ copies of one archive, the other archives served over HTTP:
   same selections (the pins of the accepted copy aside, whose
   inventories record their times); a branch point moves alike, and the
   same branch point is refused alike; a branch of that branch, made in an
-  archive of opensheaf-py, carries the same `parent.chain/`; both
+  archive of opensheaf-py, carries the same `parent/parent/`; both
   verifications, also with `--remote`, find the branch points confirmed
   and the parent's line where `parent.url` says;
 - `draft new|deposit` (with `--replace`), `seal` and `draft delete` give

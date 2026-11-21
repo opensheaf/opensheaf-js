@@ -116,11 +116,11 @@ it, from the fields of its file, the message rebuilt (section 7.2).
     // in the examples of appendix C:
     const SIGNATURES = [
       { object: OWNER_ID, version: 'v2', inventorySha512: KL2, key: R1, keyLog: `sheaf:${A}/v1?sha512=${KL1}`,
-        signature: 'MyYYLDn6FPmfVz478eKdcQF2FOkRTL8/ZV9qV35/PuC5u09ZYwDVxunX3S4Z1jWHICWsxgA+/L3MW49O0Z7vCA==', file: 'oxthfb6b4q3sqath' },
+        signature: '1SHM2Xc8RX7/lE8fJq4cbJ/iNV5+v3jji4ObMcjjJZdDKjxsV+j3SKMn8g2kGnf6QCe0FOfPenFkXcjWYGauAQ==', file: 'oxthfb6b4q3sqath' },
       { object: PAPER_ID, version: 'v2', inventorySha512: D2, key: K3, keyLog: `sheaf:${A}/v2?sha512=${KL2}`,
-        signature: '0j2Xy5fRv+1ajlCCkmCXAOZj1U8CUeiYA1jP08kJevQH27QnXHLZ7TeF+WwxzYB+ad2OepksXgSCzP1KoCEYCg==', file: '4hz7zgsiazl6hx7i' },
+        signature: 'Gf9KOxH/6Bg4HzaXGt/HHP+iwdDkSpc/3laukJ5YDSxT6Vy7YDJslpFB3zsi1H/L6QsIaf+mNFhsLCYYqipyBA==', file: '4hz7zgsiazl6hx7i' },
       { object: OWNER_ID, version: 'v3', inventorySha512: KL3, key: R4, keyLog: `sheaf:${A}/v2?sha512=${KL2}`,
-        signature: 'lAQKAGCR6HxrUX+mv5DbqOFehbfo1zlLtYVPrNmyG+Wq5p0RuWEC+PyL7c0amQ+lRc0EKgJpfY5eRAt9oGU8Dw==', file: 'j77iavvdclktxkwm' },
+        signature: '1zEI4EoFG/ZJlZ+e2Y0iswNCCi4oceb8k/gTR8KV+qKM8FAcJocW/eCfJ2zLYhjRlguS1lpoVwGnxBX8lMGKCg==', file: 'j77iavvdclktxkwm' },
     ];
 
     function signatureFile(s, change = {}) {
@@ -357,7 +357,7 @@ three; the explorer decides with its own verifier (chapter
         assert.equal(await fileName(s.key), `signature-${s.file}.json`);
       }
       assert.equal(new TextDecoder().decode(message(PAPER_ID, 'v2', D2, `sheaf:${A}/v2?sha512=${KL2}`)),
-        `opensheaf-signature/0.2\nobject ${PAPER_ID}\nversion v2\ninventory ${D2}\nkeylog sheaf:${A}/v2?sha512=${KL2}\n`);
+        `opensheaf-signature/0.2\nobject ${PAPER_ID}\nversion v2\ninventorySha512 ${D2}\nkeyLog sheaf:${A}/v2?sha512=${KL2}\n`);
     });
 
 Key logs
@@ -478,7 +478,7 @@ alike, but the file is malformed, and so invalid (section 7.3).
         [INVALID, 'its signer is not the owner of the line']);
       assert.deepEqual(await status(signatureFile(s, { inventorySha512: KL1 })), [INVALID, 'the signature does not verify']);
       assert.throws(() => readSignatureFile(signatureFile(s, { extra: 1 })), /exactly the fields/);
-      const loose = s.signature.slice(0, 85) + 'h==';
+      const loose = s.signature.slice(0, 85) + String.fromCharCode(s.signature.charCodeAt(85) + 1) + '==';
       assert.notEqual(loose, s.signature);
       assert.deepEqual(unbase64(loose), unbase64(s.signature));
       assert.deepEqual(await status(signatureFile(s, { signature: loose }), file, { lookup: () => v2 }),

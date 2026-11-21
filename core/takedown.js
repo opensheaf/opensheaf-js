@@ -47,8 +47,8 @@ export async function neededOwners(f) {
     if (name === owner) continue;
     need(owner, id);
     for (const ver of Object.keys(inv.versions)) {
-      for (let prefix = ''; ; prefix += 'parent.chain/') {
-        const bytes = await f.readLogical(dir, inv, prefix + 'parent.object.json', ver);
+      for (let prefix = ''; ; prefix += 'parent/') {
+        const bytes = await f.readLogical(dir, inv, prefix + 'parent/object.json', ver);
         if (!bytes) break;
         let pobj;
         try {

@@ -47,7 +47,7 @@ which a server cannot do.
 
     // in core/signatures.js:
     export function message(objectId, version, inventory, keyLog) {
-      return utf8(`${SIGNATURE_FORMAT}\nobject ${objectId}\nversion ${version}\ninventory ${inventory}\nkeylog ${keyLog}\n`);
+      return utf8(`${SIGNATURE_FORMAT}\nobject ${objectId}\nversion ${version}\ninventorySha512 ${inventory}\nkeyLog ${keyLog}\n`);
     }
 
     export async function fileName(did) {

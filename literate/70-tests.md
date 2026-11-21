@@ -316,6 +316,46 @@ that does not sign, a content file changed behind the archive's back.
       await assert.rejects(deposit(f, paper('unsigned')), (e) => e instanceof Stop && /holds 0 of the current keys/.test(e.message));
     });
 
+A deposit of the own files and change note of the current version is
+refused, writing nothing; a return to the files of an earlier version is
+a revert, a new document version (section 4.2). An object version that
+repeats the current version under a new number, written behind the
+deposit's back, is reported by the verification; a renamed file is
+something new, and is not.
+
+    // in tests of an archive in memory:
+    test('a deposit of the current files is refused; a revert is a new version (section 4.2)', async () => {
+      const { storage, f } = await newArchive();
+      const pdf = (text) => ({ name: 'p.pdf', bytes: utf8(`%PDF-1.4 ${text}`) });
+      await deposit(f, paper('p', { pdf: pdf('one') }));
+      await assert.rejects(deposit(f, paper('p', { new: false, pdf: pdf('one') })),
+                           /p: these are the files and the change note of the current version, document version 1: nothing new to deposit \(section 4\.2\)/);
+      await deposit(f, paper('p', { new: false, pdf: pdf('two') }));
+      await deposit(f, paper('p', { new: false, pdf: pdf('one') }));
+      let h = await head(f, 'p');
+      assert.equal(h.inv.head, 'v3');
+      assert.equal(h.json.documentVersion, 3);
+      await collect(f);
+      await readableIndex(f);
+      assert.deepEqual(await errorsOf(storage), []);
+      const id = f.labels.get('p');
+      const repeat = async (n, rename = null) => {
+        h = await head(f, 'p');
+        const files = new Map();
+        for (const p of Object.values(h.inv.versions[h.inv.head].state).flat()) {
+          if (p !== 'object.json') files.set(p === rename ? 'renamed.tex' : p, await f.readLogical(h.dir, h.inv, p));
+        }
+        const obj = { ...h.json, documentVersion: n };
+        if (rename) obj.mainSource = 'renamed.tex';
+        await f.addVersion(id, files, obj, `document version ${n}`);
+      };
+      await repeat(4);
+      await repeat(5, 'paper.tex');
+      assert.deepEqual((await errorsOf(storage)).filter((e) => e.includes('section 4.2')),
+                       ['p: v4 document version 4 holds the same files and change note as the current version 3: ' +
+                        'it is no new document version (section 4.2)']);
+    });
+
     test('a file changed behind the archive', async () => {
       const { storage, f } = await newArchive();
       await deposit(f, paper('changed'));

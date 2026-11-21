@@ -17,11 +17,12 @@ osheaf accept URI [--at URL]... --selection LABEL [--label LABEL] [--with-origin
 The first version of a branch holds exactly the files of the parent
 version, the genesis record included, except the parent's `datacite.json`,
 `object.json` and own evidence; its own `datacite.json` and
-`object.json`; and the *evidence* of the branch point (section 9.2):
-`parent.inventory.json`, `parent.object.json`, `parent.signatures/` (the
-parent owner's good signature files of the parent version, with the files
-kept beside them), and `parent.chain/` when the parent is itself a
-branch. The key logs the evidence needs are kept beside the branch in the
+`object.json`; and the *evidence* of the branch point (section 9.2),
+in the folder `parent/`: `parent/inventory.json`, `parent/object.json`,
+`parent/signatures/` (the parent owner's good signature files of the
+parent version, with the files kept beside them), and `parent/parent/`
+when the parent is itself a branch (the parent version's own folder
+`parent/`, byte for byte). The key logs the evidence needs are kept beside the branch in the
 storage root (section 6.5). A branch is named by `parent.name`, or after
 a clash by the smallest greater algorithm number that gives a line free
 for its owner (section 5.3); when the line it would take is the owner's
@@ -79,8 +80,8 @@ evidence; others are left out.
       const pobj = JSON.parse(new TextDecoder().decode(read.get(OBJ)));
       const files = new Map();
       for (const [p, bytes] of read) if (p !== 'datacite.json' && p !== OBJ && !isEvidence(p)) files.set(p, bytes);
-      files.set('parent.inventory.json', await a.inventoryBytes(c.id, ver));
-      files.set('parent.object.json', read.get(OBJ));
+      files.set('parent/inventory.json', await a.inventoryBytes(c.id, ver));
+      files.set('parent/object.json', read.get(OBJ));
       const names = (await a.listWitnesses(c.id, ver)) ?? await lineWitnessNames(c.line.log)();
       const witnesses = new Map();
       for (const name of names) {
@@ -92,9 +93,9 @@ evidence; others are left out.
                                                    lookup: log ? (n, d) => log.lookup(n, d) : () => null }))
         .filter((j) => j.status === GOOD).map((j) => j.file);
       for (const [name, bytes] of witnesses) {
-        if (good.includes(name) || good.some((g) => name.startsWith(g + '.'))) files.set(`parent.signatures/${name}`, bytes);
+        if (good.includes(name) || good.some((g) => name.startsWith(g + '.'))) files.set(`parent/signatures/${name}`, bytes);
       }
-      for (const p of Object.keys(state).filter(isEvidence).sort()) files.set(`parent.chain/${p}`, read.get(p));
+      for (const p of Object.keys(state).filter(isEvidence).sort()) files.set(`parent/${p}`, read.get(p));
       const parent = { owner: pobj.owner, name: pobj.name, objectVersion: ver, documentVersion: pobj.documentVersion,
                        inventorySha512: c.digest(k) };
       return { files, parent };
@@ -106,8 +107,8 @@ one at every level of the chain.
     // in branch: the evidence of a branch point:
     export function chainOwners(files) {
       const out = [];
-      for (let prefix = ''; files.has(prefix + 'parent.object.json'); prefix += 'parent.chain/') {
-        out.push(JSON.parse(new TextDecoder().decode(files.get(prefix + 'parent.object.json'))).owner);
+      for (let prefix = ''; files.has(prefix + 'parent/object.json'); prefix += 'parent/') {
+        out.push(JSON.parse(new TextDecoder().decode(files.get(prefix + 'parent/object.json'))).owner);
       }
       return out;
     }
@@ -241,7 +242,7 @@ parent's, and an `IsIdenticalTo` relation to the parent version: its DOI,
 or else `parent.url` (section 9.7).
 
     // in branch: the files and records of the new version:
-    const pobj = JSON.parse(new TextDecoder().decode(files.get('parent.object.json')));
+    const pobj = JSON.parse(new TextDecoder().decode(files.get('parent/object.json')));
     let pdc = null;
     try {
       pdc = await c.archive.json(c.id, c.line.inv, `v${k}`, 'datacite.json');

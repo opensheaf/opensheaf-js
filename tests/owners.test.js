@@ -200,7 +200,7 @@ test('an owner offline: rotate, expose, sign again, end', async () => {
     const ended = await box.ok([...a.r, 'owner', 'end', '--rotation-key', k3[0], '--rotation-key', k3[1]]);
     assert.match(ended.out, /has ended, at v4 of its key log\./);
     const after = await box.run([...a.r, 'deposit', 'paper', '--pdf', path.join(box.root, 'paper.pdf'), '--no-source', 'x',
-                                 '--title', 'T', '--author', 'Doe, J']);
+                                 '--title', 'T', '--author', 'Doe, J', '--changes', 'A version after the end.']);
     assert.equal(after.status, 1);
     assert.match(after.err, /has ended \(section 6\.3\): nothing is signed for it/);
     assert.deepEqual(await errorsOf(box, a), []);

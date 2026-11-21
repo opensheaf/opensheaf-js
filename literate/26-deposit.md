@@ -19,7 +19,8 @@ The command line reads the files and gives them as bytes; the module,
     // in core/deposit.js:
     import { LABEL } from './names.js';
     import { same } from './schema.js';
-    import { dateOf, isEvidence } from './versions.js';
+    import { dateOf, isEvidence, ownFiles, currentVersion } from './versions.js';
+    import { sha512 } from './http.js';
     import { jsonBytes } from './write.js';
     import { writeDiscovery } from './discovery.js';
     import { OBJ, OBJ_FORMAT, GENESIS, SPEC, exit } from './folder.js';
@@ -392,6 +393,9 @@ is a branch (section 9.2), the notices, and the history.
       const next = inv ? `v${Number(inv.head.slice(1)) + 1}` : 'v1';
       await carryForward(f, prevObj, obj, dir, inv, next, a.after ?? null);
       for (const [lp, bytes] of await carriedFiles(f, dir, inv)) if (!files.has(lp)) files.set(lp, bytes);
+      if (inv) {
+        <<refuse a deposit that holds the files of the current version>>
+      }
       files.set('datacite.json', jsonBytes(datacite));
       const done = await f.addVersion(id, files, obj, a.message || `Deposit: document version ${docVersion}`,
                                       { acknowledged: Boolean(a.iKnow) });
@@ -399,4 +403,28 @@ is a branch (section 9.2), the notices, and the history.
       await writeDiscovery(f);
       f.env.out(`${label}: ${done.head} (document version ${docVersion}) ${id}`);
       return { id, head: done.head, documentVersion: docVersion };
+    }
+
+A deposit whose own files and change note are those of the current
+version, compared by logical path and digest, is no new document version
+(section 4.2), and is refused before anything is written: changing only
+the description is the work of the description-only versions. Files of an
+earlier version that is not the current one are a revert, a new document
+version like any other, whose change note (`--changes`) should say so.
+The files of the deposit are given the form of a version of an inventory
+(digests and their paths), so that `ownFiles` (chapter 13) leaves out of
+both sides alike the descriptions, the identity files, the evidence and
+the files of notices, of a withdrawal and of the licence.
+
+    // in refuse a deposit that holds the files of the current version:
+    const objs = new Map();
+    for (const v of Object.keys(inv.versions)) objs.set(v, await f.readObjectJson(dir, inv, OBJ, v));
+    const cur = currentVersion(inv, (v) => objs.get(v) ?? null);
+    const state = Object.create(null);
+    for (const [lp, bytes] of files) (state[await sha512(bytes)] ??= []).push(lp);
+    const curObj = objs.get(cur);
+    if (same(ownFiles({ versions: { new: { state } } }, 'new', obj), ownFiles(inv, cur, curObj)) &&
+        (obj.changes?.text ?? null) === (curObj?.changes?.text ?? null)) {
+      exit(`${label}: these are the files and the change note of the current version, ` +
+           `document version ${curObj.documentVersion}: nothing new to deposit (section 4.2)`);
     }

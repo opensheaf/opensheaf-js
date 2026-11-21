@@ -927,7 +927,9 @@ of the inventory that records that time, would differ.
 A deposit stopped after its publication (Zenodo answers another DOI than
 the one it reserved) leaves the line locked, and each program refuses a
 deposit alike; the other program completes the deposit, and the archive
-verifies; and the other way round.
+verifies; and the other way round. Each round's deposit has its own change
+note, since a deposit repeating the current version is refused first
+(section 4.2).
 
     // in tests/parity.test.js:
     test('Zenodo: a deposit stopped after publication, completed by the other program', { skip }, async () => {
@@ -943,7 +945,8 @@ verifies; and the other way round.
           const stopped = two[first](['zenodo', 'p', '--production'], { cwd: arch });
           assert.equal(stopped.status, 1, stopped.stdout + stopped.stderr);
           assert.match(stopped.stderr, /Zenodo published DOI 10\.5281\/zenodo\.\d+9, not the reserved/);
-          const deposit = ['deposit', 'p', '--pdf', '../paper2.pdf', '--no-source', 'lost', '--title', 'P', '--author', 'Doe, Jane'];
+          const deposit = ['deposit', 'p', '--pdf', '../paper2.pdf', '--no-source', 'lost', '--title', 'P', '--author', 'Doe, Jane',
+                           '--changes', `Deposited after ${first}.`];
           const [rp, rj] = [s.py(deposit, { cwd: arch }), s.js(deposit, { cwd: arch })];
           assert.equal(rp.status, 1);
           assert.equal(said(rj), said(rp));

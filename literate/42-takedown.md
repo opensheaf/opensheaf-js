@@ -106,7 +106,7 @@ The key logs needed
 
 The owner of every line held needs its key log, and a branch needs the key
 log of the owner of each parent whose signatures its evidence holds, at
-every level of `parent.chain/`, in any version (section 6.5).
+every level of `parent/parent/`, in any version (section 6.5).
 
     // in takedown: the key logs the objects of the archive need:
     export async function neededOwners(f) {
@@ -121,8 +121,8 @@ every level of `parent.chain/`, in any version (section 6.5).
         if (name === owner) continue;
         need(owner, id);
         for (const ver of Object.keys(inv.versions)) {
-          for (let prefix = ''; ; prefix += 'parent.chain/') {
-            const bytes = await f.readLogical(dir, inv, prefix + 'parent.object.json', ver);
+          for (let prefix = ''; ; prefix += 'parent/') {
+            const bytes = await f.readLogical(dir, inv, prefix + 'parent/object.json', ver);
             if (!bytes) break;
             let pobj;
             try {

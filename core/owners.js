@@ -11,7 +11,7 @@ export const KEYS_FORMAT = 'opensheaf-keys/0.2';
 export const INVENTORY_TYPE = 'https://ocfl.io/1.1/spec/#inventory';
 const OBJ = 'object.json', KEYS = 'keys.json', FORKED = 'forked/';
 export const RESERVED = ['object.json', 'datacite.json', 'genesis.json', 'members.json', 'keys.json', 'forked',
-                         'parent.inventory.json', 'parent.object.json', 'parent.signatures', 'parent.chain'];
+                         'parent'];
 
 export class Version {
   static async make(number, files, inventory, sidecar = null, witnesses = new Map()) {

@@ -41,7 +41,7 @@ The module is `core/owners.js`.
     export const INVENTORY_TYPE = 'https://ocfl.io/1.1/spec/#inventory';
     const OBJ = 'object.json', KEYS = 'keys.json', FORKED = 'forked/';
     export const RESERVED = ['object.json', 'datacite.json', 'genesis.json', 'members.json', 'keys.json', 'forked',
-                             'parent.inventory.json', 'parent.object.json', 'parent.signatures', 'parent.chain'];
+                             'parent'];
 
 Versions
 --------

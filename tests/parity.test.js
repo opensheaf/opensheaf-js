@@ -121,10 +121,15 @@ test('an archive made by opensheaf-py passes the verification of opensheaf-js, w
     assert.deepEqual(ours, theirs);
     assert.deepEqual(ours.filter((f) => !f.startsWith('result: ')), []);
     ok(s.js(['deposit', 'paper', '../paper.tex', ...DEPOSIT], { cwd: arch }), 'js deposit on a py archive');
-    const again = findings(s.py(['verify', '--json'], { cwd: arch }));
-    assert.deepEqual(again.filter((f) => !f.startsWith('result: ')),
-                     ['error: paper: v3 document version 3 holds the same files and change note as document version 1, whose number it keeps']);
+    const again = findings(ok(s.py(['verify', '--json'], { cwd: arch }), 'py verify'));
+    assert.deepEqual(again.filter((f) => !f.startsWith('result: ')), []);
     assert.deepEqual(findings(s.js(['verify', '--json'], { cwd: arch })), again);
+    const repeat = ['deposit', 'paper', '../paper.tex', ...DEPOSIT];
+    const [p, j] = [s.py(repeat, { cwd: arch }), s.js(repeat, { cwd: arch })];
+    assert.equal(p.status, 1);
+    assert.equal(j.status, 1);
+    assert.match(p.stderr, /paper: these are the files and the change note of the current version, document version 3: nothing new to deposit \(section 4\.2\)/);
+    assert.equal(j.stderr.trim(), p.stderr.trim());
   } finally {
     await s.done();
   }
@@ -1556,7 +1561,8 @@ test('Zenodo: a deposit stopped after publication, completed by the other progra
       const stopped = two[first](['zenodo', 'p', '--production'], { cwd: arch });
       assert.equal(stopped.status, 1, stopped.stdout + stopped.stderr);
       assert.match(stopped.stderr, /Zenodo published DOI 10\.5281\/zenodo\.\d+9, not the reserved/);
-      const deposit = ['deposit', 'p', '--pdf', '../paper2.pdf', '--no-source', 'lost', '--title', 'P', '--author', 'Doe, Jane'];
+      const deposit = ['deposit', 'p', '--pdf', '../paper2.pdf', '--no-source', 'lost', '--title', 'P', '--author', 'Doe, Jane',
+                       '--changes', `Deposited after ${first}.`];
       const [rp, rj] = [s.py(deposit, { cwd: arch }), s.js(deposit, { cwd: arch })];
       assert.equal(rp.status, 1);
       assert.equal(said(rj), said(rp));

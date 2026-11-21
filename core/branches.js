@@ -45,22 +45,22 @@ export async function verdict(lv, obj, genesis, logs, depth = 0) {
   } else if (name !== pname && algorithm(name) <= algorithm(pname)) {
     problems.push('a branch renamed after a clash has a greater algorithm number than parent.name (section 5.3)');
   }
-  const pinvBytes = lv.digests.has('parent.inventory.json') ? await lv.read('parent.inventory.json') : null;
+  const pinvBytes = lv.digests.has('parent/inventory.json') ? await lv.read('parent/inventory.json') : null;
   const pinv = jsonOrNull(pinvBytes);
-  const pobj = await lv.json('parent.object.json');
+  const pobj = await lv.json('parent/object.json');
   if (!isObject(pinv) || !isObject(pobj)) {
-    return [INCONSISTENT, [...problems, 'parent.inventory.json or parent.object.json is missing (section 9.2)']];
+    return [INCONSISTENT, [...problems, 'parent/inventory.json or parent/object.json is missing (section 9.2)']];
   }
   if (await sha512(pinvBytes) !== p.inventorySha512 || pinv.head !== p.objectVersion) {
-    problems.push('parent.inventory.json is not the inventory the pin of parent names');
+    problems.push('parent/inventory.json is not the inventory the pin of parent names');
   }
   const pstate = new Map();
   const state = pinv.versions?.[pinv.head]?.state;
   for (const [d, paths] of Object.entries(isObject(state) ? state : {})) {
     for (const path of Array.isArray(paths) ? paths : []) pstate.set(path, d);
   }
-  if (pstate.get('object.json') !== lv.digests.get('parent.object.json')) {
-    problems.push('parent.object.json is not the object.json the parent inventory records');
+  if (pstate.get('object.json') !== lv.digests.get('parent/object.json')) {
+    problems.push('parent/object.json is not the object.json the parent inventory records');
   }
   if (depth === 0) {
     const own = ['datacite.json', 'object.json'];
@@ -73,7 +73,7 @@ export async function verdict(lv, obj, genesis, logs, depth = 0) {
     }
   }
   if (p.owner !== pobj.owner || p.name !== pobj.name || p.documentVersion !== pobj.documentVersion) {
-    problems.push('parent does not agree with parent.object.json');
+    problems.push('parent does not agree with parent/object.json');
   }
   if (obj.owner === p.owner || obj.owner === rec.originator) {
     problems.push("the owner of a branch is neither the parent's owner nor the originator (section 9.3)");
@@ -86,8 +86,8 @@ export async function verdict(lv, obj, genesis, logs, depth = 0) {
   if (pid === null) return [INCONSISTENT, [...problems, 'parent does not name a line']];
   const witnesses = new Map();
   for (const path of lv.digests.keys()) {
-    const rest = path.slice('parent.signatures/'.length);
-    if (path.startsWith('parent.signatures/') && !rest.includes('/')) witnesses.set(rest, await lv.read(path));
+    const rest = path.slice('parent/signatures/'.length);
+    if (path.startsWith('parent/signatures/') && !rest.includes('/')) witnesses.set(rest, await lv.read(path));
   }
   const judgements = await judgeFolder(witnesses, { objectId: pid, version: p.objectVersion, inventory: p.inventorySha512,
                                                      owner: p.owner, lookup: log ? (n, d) => log.lookup(n, d) : () => null });
@@ -97,14 +97,15 @@ export async function verdict(lv, obj, genesis, logs, depth = 0) {
   const notes = result === CONFIRMED ? [] : [`the parent version is ${status} (section 9.3)`];
   if (problems.length) return [INCONSISTENT, problems];
   if ('parent' in pobj) {
-    const chain = lv.sub('parent.chain/');
+    const inner = lv.sub('parent/');
+    const chain = level(new Map([...inner.digests].filter(([path]) => isEvidence(path))), inner.read);
     const evidence = new Map([...pstate].filter(([path]) => isEvidence(path)));
     if (chain.digests.size !== evidence.size || [...evidence].some(([path, d]) => chain.digests.get(path) !== d)) {
-      return [INCONSISTENT, ['parent.chain/ is not the evidence of the parent version (section 9.3)']];
+      return [INCONSISTENT, ['parent/parent/ is not the evidence of the parent version (section 9.3)']];
     }
     const [sub, more] = await verdict(chain, pobj, genesis, logs, depth + 1);
-    if (sub === INCONSISTENT) return [INCONSISTENT, more.map((m) => `parent.chain/: ${m}`)];
-    notes.push(...more.map((m) => `parent.chain/: ${m}`));
+    if (sub === INCONSISTENT) return [INCONSISTENT, more.map((m) => `parent/parent/: ${m}`)];
+    notes.push(...more.map((m) => `parent/parent/: ${m}`));
     if (ORDER[sub] > ORDER[result]) result = sub;
   }
   return [result, notes];

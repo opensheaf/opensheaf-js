@@ -1,7 +1,8 @@
 // Generated from literate/26-deposit.md by opensheaf-literate: edit the document, not this file.
 import { LABEL } from './names.js';
 import { same } from './schema.js';
-import { dateOf, isEvidence } from './versions.js';
+import { dateOf, isEvidence, ownFiles, currentVersion } from './versions.js';
+import { sha512 } from './http.js';
 import { jsonBytes } from './write.js';
 import { writeDiscovery } from './discovery.js';
 import { OBJ, OBJ_FORMAT, GENESIS, SPEC, exit } from './folder.js';
@@ -291,6 +292,19 @@ export async function deposit(f, a) {
   const next = inv ? `v${Number(inv.head.slice(1)) + 1}` : 'v1';
   await carryForward(f, prevObj, obj, dir, inv, next, a.after ?? null);
   for (const [lp, bytes] of await carriedFiles(f, dir, inv)) if (!files.has(lp)) files.set(lp, bytes);
+  if (inv) {
+    const objs = new Map();
+    for (const v of Object.keys(inv.versions)) objs.set(v, await f.readObjectJson(dir, inv, OBJ, v));
+    const cur = currentVersion(inv, (v) => objs.get(v) ?? null);
+    const state = Object.create(null);
+    for (const [lp, bytes] of files) (state[await sha512(bytes)] ??= []).push(lp);
+    const curObj = objs.get(cur);
+    if (same(ownFiles({ versions: { new: { state } } }, 'new', obj), ownFiles(inv, cur, curObj)) &&
+        (obj.changes?.text ?? null) === (curObj?.changes?.text ?? null)) {
+      exit(`${label}: these are the files and the change note of the current version, ` +
+           `document version ${curObj.documentVersion}: nothing new to deposit (section 4.2)`);
+    }
+  }
   files.set('datacite.json', jsonBytes(datacite));
   const done = await f.addVersion(id, files, obj, a.message || `Deposit: document version ${docVersion}`,
                                   { acknowledged: Boolean(a.iKnow) });

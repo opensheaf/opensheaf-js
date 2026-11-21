@@ -28,8 +28,8 @@ export async function branchPointFiles(c, k) {
   const pobj = JSON.parse(new TextDecoder().decode(read.get(OBJ)));
   const files = new Map();
   for (const [p, bytes] of read) if (p !== 'datacite.json' && p !== OBJ && !isEvidence(p)) files.set(p, bytes);
-  files.set('parent.inventory.json', await a.inventoryBytes(c.id, ver));
-  files.set('parent.object.json', read.get(OBJ));
+  files.set('parent/inventory.json', await a.inventoryBytes(c.id, ver));
+  files.set('parent/object.json', read.get(OBJ));
   const names = (await a.listWitnesses(c.id, ver)) ?? await lineWitnessNames(c.line.log)();
   const witnesses = new Map();
   for (const name of names) {
@@ -41,9 +41,9 @@ export async function branchPointFiles(c, k) {
                                                lookup: log ? (n, d) => log.lookup(n, d) : () => null }))
     .filter((j) => j.status === GOOD).map((j) => j.file);
   for (const [name, bytes] of witnesses) {
-    if (good.includes(name) || good.some((g) => name.startsWith(g + '.'))) files.set(`parent.signatures/${name}`, bytes);
+    if (good.includes(name) || good.some((g) => name.startsWith(g + '.'))) files.set(`parent/signatures/${name}`, bytes);
   }
-  for (const p of Object.keys(state).filter(isEvidence).sort()) files.set(`parent.chain/${p}`, read.get(p));
+  for (const p of Object.keys(state).filter(isEvidence).sort()) files.set(`parent/${p}`, read.get(p));
   const parent = { owner: pobj.owner, name: pobj.name, objectVersion: ver, documentVersion: pobj.documentVersion,
                    inventorySha512: c.digest(k) };
   return { files, parent };
@@ -51,8 +51,8 @@ export async function branchPointFiles(c, k) {
 
 export function chainOwners(files) {
   const out = [];
-  for (let prefix = ''; files.has(prefix + 'parent.object.json'); prefix += 'parent.chain/') {
-    out.push(JSON.parse(new TextDecoder().decode(files.get(prefix + 'parent.object.json'))).owner);
+  for (let prefix = ''; files.has(prefix + 'parent/object.json'); prefix += 'parent/') {
+    out.push(JSON.parse(new TextDecoder().decode(files.get(prefix + 'parent/object.json'))).owner);
   }
   return out;
 }
@@ -131,7 +131,7 @@ export async function makeBranch(f, uri, where, { owner = null, label = null, me
   }
   const [name, move] = await branchName(f, genesis, parent, owner, (head) => later(head, c, k));
   const id = objectId(name, owner);
-  const pobj = JSON.parse(new TextDecoder().decode(files.get('parent.object.json')));
+  const pobj = JSON.parse(new TextDecoder().decode(files.get('parent/object.json')));
   let pdc = null;
   try {
     pdc = await c.archive.json(c.id, c.line.inv, `v${k}`, 'datacite.json');

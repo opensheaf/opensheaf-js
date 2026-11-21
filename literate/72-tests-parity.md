@@ -251,18 +251,25 @@ landing pages, which the verification checks too.
         assert.deepEqual(ours, theirs);
         assert.deepEqual(ours.filter((f) => !f.startsWith('result: ')), []);
         ok(s.js(['deposit', 'paper', '../paper.tex', ...DEPOSIT], { cwd: arch }), 'js deposit on a py archive');
-        const again = findings(s.py(['verify', '--json'], { cwd: arch }));
-        assert.deepEqual(again.filter((f) => !f.startsWith('result: ')),
-                         ['error: paper: v3 document version 3 holds the same files and change note as document version 1, whose number it keeps']);
+        const again = findings(ok(s.py(['verify', '--json'], { cwd: arch }), 'py verify'));
+        assert.deepEqual(again.filter((f) => !f.startsWith('result: ')), []);
         assert.deepEqual(findings(s.js(['verify', '--json'], { cwd: arch })), again);
+        const repeat = ['deposit', 'paper', '../paper.tex', ...DEPOSIT];
+        const [p, j] = [s.py(repeat, { cwd: arch }), s.js(repeat, { cwd: arch })];
+        assert.equal(p.status, 1);
+        assert.equal(j.status, 1);
+        assert.match(p.stderr, /paper: these are the files and the change note of the current version, document version 3: nothing new to deposit \(section 4\.2\)/);
+        assert.equal(j.stderr.trim(), p.stderr.trim());
       } finally {
         await s.done();
       }
     });
 
 The last deposit, made by this program on opensheaf-py's archive,
-repeats the first version's files on purpose: both verifiers must then
-report the same error of section 4.2, and nothing else.
+returns to the first version's files on purpose: a revert, a new document
+version (section 4.2), which neither verifier reports. A deposit of the
+same files again repeats the current version, and both programs refuse it
+alike, with the same message, writing nothing.
 
 3. Rotation keys across the two
 -------------------------------

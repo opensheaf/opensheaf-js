@@ -38,7 +38,7 @@ The module is `core/verify.js`.
     import { finding, schemaFindings, descriptionErrors, memberErrors, memberPins, indexEntries, INDEX_KEY } from './rules.js';
     import { readGenesis, nameOf, isNameOf, algorithm, objectId, parseId, isObject } from './names.js';
     import { sidecarDigest, jsonOrNull } from './owners.js';
-    import { latestSigned, GOOD, SIGNED, VOUCHED, CONTESTED, UNCHECKED, UNSIGNED, INVALID } from './signatures.js';
+    import { latestSigned, GOOD, SIGNED, VOUCHED, CONTESTED, UNCHECKED, UNSIGNED, INVALID, WITNESSES } from './signatures.js';
     import { verdict, levelOfVersion, INCONSISTENT, UNCHECKED as BRANCH_UNCHECKED, ORDER } from './branches.js';
     import { Resolver } from './resolve.js';
     import { same } from './schema.js';
@@ -131,6 +131,8 @@ An archive of version 0.1 is not verified: it must be rebuilt (section
       let archive;
       try {
         archive = await Archive.open(http, given.base, options);
+        archive.lister = given.lister ?? null;
+        archive.unlisted = given.unlisted ?? [];
         report.archive = archive;
         if (archive.old) {
           add('error', 'archive', 'specification 0.1: rebuild (section 16.1)');
@@ -174,7 +176,7 @@ of lines.
         const a = this.archive;
         this.schema('opensheaf.json', a.disc, 'archive');
         await this.storageRoot();
-        const ids = [...a.objects().map((o) => o.id), ...a.drafts().map((d) => d.id)];
+        const ids = [...a.objects().map((o) => o.id), ...a.drafts().map((d) => d.id), ...(a.unlisted || [])];
         const entries = [...new Set(ids)].slice(0, LIMITS.objects);
         if (ids.length > entries.length) this.add('warning', 'opensheaf.json', `lists more than ${LIMITS.objects} objects: only the first ${LIMITS.objects} are checked (section 15.2)`);
         let done = 0;
@@ -517,10 +519,18 @@ collections are then checked (14.5).
           line.statuses.forEach((s, k) => {
             const ver = `v${k + 1}`, where = `${place} ${ver}`;
             for (const j of line.judgements[k]) if (j.status !== GOOD) this.add('warning', where, `${j.file}: ${j.status}: ${j.reason}`, { object: id, ver });
+            for (const n of line.listed?.[k] || []) {
+              if (!(n.startsWith('signature-') && n.endsWith('.json'))) this.add('warning', where, `${n}: not a witness these tools know (section 7.2)`, { object: id, ver });
+            }
             if (s === UNSIGNED || s === INVALID) this.add('warning', where, `not a version of the line: ${s} (sections 7.3 and 7.5)`, { object: id, ver });
             else if (s === UNCHECKED) this.add('warning', where, 'unchecked: the version of the key log its signatures name is not reached (section 7.3)', { object: id, ver });
             else if (s === CONTESTED) this.add('result', where, 'contested (section 7.3)', { object: id, ver });
           });
+          for (const x of (await a.listFolder(id, ...WITNESSES.split('/'))) || []) {
+            if (!(x.kind === 'dir' && Object.hasOwn(o.inv.versions, x.name))) {
+              this.add('warning', place, `${WITNESSES}/${x.name}: not the folder of a version (section 7.2)`, { object: id });
+            }
+          }
           const signed = latestSigned(line.statuses);
           if (signed === null) this.add('warning', place, 'the line has no signed version (section 7.3)', { object: id });
           else {
@@ -549,7 +559,10 @@ point is an error, an unchecked one a warning. Between them the identity
 files stay unchanged; a moved branch point continues the previous one
 (section 9.4). The branch's verdict is the weakest of its branch points,
 a result, with whether the parent's line is held here (and withdrawn),
-removed, or, when resolving, what was found where. A rename after a clash
+removed, or, when resolving, what was found where: the archive that holds
+the parent version is found from `parent.url` through discovery
+documents (`archiveOf`, chapter [15](15-resolve.md)), whatever its
+storage root is called. A rename after a clash
 not justified by the archive, or not by the smallest number free, is a
 warning (section 5.3), and an originator owning a branch an error.
 
@@ -595,7 +608,7 @@ warning (section 5.3), and an originator owning a branch an error.
         } else if (this.tombstoned.has(pid)) {
           this.add('result', place, "the parent's line is removed: a tombstone in this archive (section 13.3)", { object: id });
         } else if (this.resolver) {
-          const at = typeof p.url === 'string' && p.url.includes('/ocfl/') ? [p.url.split('/ocfl/')[0] + '/'] : [];
+          const at = typeof p.url === 'string' ? await this.resolver.archiveOf(p.url, this.options) : [];
           const res = await this.resolver.latest(p.name, p.owner, at, this.options);
           this.add('result', place, `the parent's line: ${res.status}` + (res.copy ? ` at ${res.copy.where}` : ''), { object: id });
         } else {
@@ -757,7 +770,10 @@ lines of the archive need (a warning, section 13.2), each else a result.
 
 The objects held are those listed: a key log of an owner of the
 archive's lines that it does not list is looked for, and reported
-unlisted.
+unlisted. An archive whose storage root can be listed (a folder, chapter
+[28](28-verify-folder.md)) is given the objects it holds and does not
+list, `unlisted`, which are checked with the others, and reported
+unlisted, as `osheaf verify` reports them.
 
     // in core/verify.js:
       status(id, o) {
@@ -790,6 +806,10 @@ unlisted.
         for (const [id, o] of this.found) {
           if (o.draft) continue;
           const e = listed.get(id);
+          if (!e) {
+            this.add('error', 'opensheaf.json', `does not list ${this.where(id)}, an object of the storage root (section 3.1)`, { object: id });
+            continue;
+          }
           const expected = { kind: o.head?.kind ?? null, name: o.head?.name ?? null, owner: o.head?.owner ?? null,
                              head: o.inv.head, inventorySha512: o.sidecar, status: this.status(id, o) };
           const stale = fields.filter((k) => (e?.[k] ?? null) !== expected[k]);

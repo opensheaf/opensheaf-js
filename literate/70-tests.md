@@ -41,6 +41,10 @@ The tests are written with `node:test` and `node:assert`, which both
     import { esc, fmtDate, pyJson, namesJoined, readableIndex } from '../core/website.js';
     import { keeperLink, successorClaim, CONFIRMED, CLAIMED, NOT_CHECKED, KeeperUnreachable } from '../core/keepers.js';
     import { loadEntries, merge, normalise } from '../core/inputs.js';
+    import { mirror } from '../core/mirror.js';
+    import { branch } from '../core/branch.js';
+    import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
+    import { takedown } from '../core/takedown.js';
 
     <<an environment for the tests>>
 
@@ -501,4 +505,54 @@ relative to the file, and give way to the command line.
       assert.equal(merged.label, 'p');
       assert.throws(() => merge({}, { nonsense: 1 }, {}, 'deposit'), /unknown option\(s\) in the file: nonsense/);
       assert.deepEqual(normalise({ 'Date-Info': 'x', tools: { pdflatex: '2025' } }, ''), { date_info: 'x', toolchain: ['pdflatex=2025'] });
+    });
+
+Across archives, in memory
+--------------------------
+
+Two archives in memory, the second reading the first through the `fetch`
+of its storage, at the first's base URL: a mirror of a line of the first,
+a branch of it, a draft rewritten and sealed, and takedowns of the mirror
+and of its key log by law, the second verifying without an error at
+every step (once the key log is gone, the branch point is unchecked). The tests of chapter [74](74-tests-across.md) compare all of
+it with opensheaf-py.
+
+    // in tests of keepers and of options read from files:
+    test('mirrors, branches, drafts and takedowns, in memory', async () => {
+      const one = await newArchive();
+      await deposit(one.f, paper('first', { rights: 'cc-by-4.0' }));
+      const two = await newArchive({ baseUrl: 'https://example.org/two/' });
+      two.f.env.fetch = storageFetch(one.storage, 'https://example.org/papers/');
+      const id = one.f.labels.get('first'), [, name, owner] = id.split(':');
+      const at = ['https://example.org/papers/'];
+      await mirror(two.f, { uri: id, at, label: 'copy' });
+      assert.equal(two.f.labels.get('copy'), id);
+      assert.deepEqual(await errorsOf(two.storage), []);
+      assert.ok(two.env.said.some((l) => l.endsWith(`mirrored, v1 to v1, from ${at[0]}`)), two.env.said.join('\n'));
+      await assert.rejects(mirror(two.f, { uri: id, at, label: 'copy' }), /not given to another line/);
+      await branch(two.f, { uri: `sheaf:${name}:${owner}/v1`, at, label: 'kept' });
+      const kept = two.f.labels.get('kept');
+      assert.equal(kept, `sheaf:${name}:${two.f.archive.owner}`);
+      assert.deepEqual(await errorsOf(two.storage), []);
+      const draft = { label: 'notes', pdf: { name: 'd.pdf', bytes: utf8('%PDF-1.4 one') }, noSource: 'x', title: 'Notes',
+                      author: ['Doe, J'], type: 'Preprint' };
+      await draftDeposit(two.f, draft, true);
+      await draftDeposit(two.f, { ...draft, pdf: { name: 'd.pdf', bytes: utf8('%PDF-1.4 two') } });
+      await draftDeposit(two.f, { ...draft, pdf: { name: 'd.pdf', bytes: utf8('%PDF-1.4 three') }, replace: true });
+      assert.equal((await readJson(two.storage, 'opensheaf.json')).drafts[0].head, 'v2');
+      assert.equal(await two.storage.kind('ocfl/draft/notes/extensions'), null);
+      await seal(two.f, { label: 'notes', newLabel: 'lecture-notes' });
+      await draftDelete(two.f, { label: 'notes' });
+      assert.equal((await readJson(two.storage, 'opensheaf.json')).drafts, undefined);
+      assert.deepEqual(await errorsOf(two.storage), []);
+      await takedown(two.f, { label: 'copy', reason: 'Stopped keeping it.', yes: true });
+      const disc = await readJson(two.storage, 'opensheaf.json');
+      assert.deepEqual(Object.keys(disc.tombstones[0]), ['id', 'kind', 'name', 'owner', 'genesisName', 'lastVersion',
+                                                         'inventorySha512', 'date', 'reason']);
+      assert.deepEqual(await errorsOf(two.storage), []);
+      await assert.rejects(takedown(two.f, { label: `sheaf:${owner}:${owner}`, reason: 'x', yes: true }), /--by-law or --keeper/);
+      await takedown(two.f, { label: `sheaf:${owner}:${owner}`, reason: 'A court order.', byLaw: true, yes: true });
+      const found = await errorsOf(two.storage);
+      assert.ok(found.some((x) => x.includes('kept v1: unchecked branch point')), found.join('\n'));
+      assert.ok(!found.some((x) => x.startsWith('error')), found.join('\n'));
     });

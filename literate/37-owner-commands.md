@@ -487,6 +487,11 @@ keeper, read unless `--offline`.
 Pull another copy of a key log
 ------------------------------
 
+A key log taken down here returns only from a copy holding the version its
+tombstone pins, also as carried by a fork record (section 13.2, chapter
+[42](42-takedown.md)): `recordKeyLog` checks it before it copies a key
+log not held, and the tombstone is then dropped.
+
 `osheaf owner pull URL|PATH` meets another copy of the key log of the
 owner (section 6.3), in another archive or in the folder of an owner
 object: the versions it has beyond this one are appended, or a fork
@@ -523,8 +528,15 @@ collections read other archives.
       const env = f.env;
       let local = await keyLogOf(f, owner);
       if (!local) {
+        if (!others.length) return null;
         const [w, first] = others.shift();
         await first.check();
+        const { mayReturn } = await import('./takedown.js');
+        if (!(await mayReturn(f, objectId(owner, owner), async (n, d) => first.lookup(n, d) != null))) {
+          env.err(`warning: the key log of ${owner} was taken down here, and the copy at ${w} does not hold the version ` +
+                  'its tombstone pins (section 13.2): not copied');
+          return null;
+        }
         const { KeyLog } = await import('./owners.js');
         local = await KeyLog.of(first.genesis, first.versions.filter((v) => v.isVersion));
         env.out(`key log of ${owner}: copied from ${w} (v${local.versions.length})`);

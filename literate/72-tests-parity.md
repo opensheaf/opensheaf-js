@@ -350,9 +350,9 @@ its label, its name and the digest of its previous version left out.
 
     const timeless = (bytes) => bytes.toString('utf-8').replace(/"created": "[^"]*"/g, '"created": "-"');
 
-    async function sameArchives(a, b) {
+    async function sameArchives(a, b, skip = () => false) {
       const A = await filesOf(a), B = await filesOf(b);
-      const kept = (p) => p.startsWith('ocfl/') && (p.includes('/content/') || p.endsWith('inventory.json'));
+      const kept = (p) => p.startsWith('ocfl/') && (p.includes('/content/') || p.endsWith('inventory.json')) && !skip(p);
       assert.deepEqual([...B.keys()].filter(kept).sort(), [...A.keys()].filter(kept).sort());
       for (const [p, bytes] of A) {
         if (!kept(p)) continue;

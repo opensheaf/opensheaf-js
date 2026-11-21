@@ -363,8 +363,15 @@ export async function recordKeyLog(f, owner, others) {
   const env = f.env;
   let local = await keyLogOf(f, owner);
   if (!local) {
+    if (!others.length) return null;
     const [w, first] = others.shift();
     await first.check();
+    const { mayReturn } = await import('./takedown.js');
+    if (!(await mayReturn(f, objectId(owner, owner), async (n, d) => first.lookup(n, d) != null))) {
+      env.err(`warning: the key log of ${owner} was taken down here, and the copy at ${w} does not hold the version ` +
+              'its tombstone pins (section 13.2): not copied');
+      return null;
+    }
     const { KeyLog } = await import('./owners.js');
     local = await KeyLog.of(first.genesis, first.versions.filter((v) => v.isVersion));
     env.out(`key log of ${owner}: copied from ${w} (v${local.versions.length})`);

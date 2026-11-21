@@ -3,10 +3,10 @@ import { Http, FetchError } from './http.js';
 import { Archive } from './archive.js';
 import { verify, Report } from './verify.js';
 import { finding } from './rules.js';
-import { storageFetch, readJson, joinPath, ORIGIN } from './storage.js';
+import { storageFetch, storageLister, readJson, joinPath, ORIGIN } from './storage.js';
 import { ROTATION_FORMAT, SHEET_TITLE } from './keys.js';
 import { unbase64 } from './crypto.js';
-import { objectId } from './names.js';
+import { objectId, parseId } from './names.js';
 import { memberPins } from './versions.js';
 import { ArchiveFolder, environment } from './folder.js';
 import { pageAddress } from './website.js';
@@ -25,9 +25,11 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
   let report;
   try {
     const archive = await Archive.open(http, base);
+    archive.lister = storageLister(storage, base);
+    const f = archive.old ? null : await folderOf(storage);
+    if (f) archive.unlisted = await unlistedObjects(f, archive);
     report = await verify(archive, { schemas, remote, digests, pages: false });
     if (!archive.old) {
-      const f = await folderOf(storage);
       if (f) {
         report.add(...await keeperFindings(f, remote, fetchJson));
         report.add(...await presentationFindings(f, archive.disc));
@@ -43,6 +45,15 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
     report.add(...await lookForKeys(storage));
   }
   return report;
+}
+
+async function unlistedObjects(f, archive) {
+  const listed = new Set([...archive.objects().map((o) => o.id), ...archive.drafts().map((d) => d.id)]);
+  const out = [];
+  for (const { id } of await f.objects()) {
+    if (typeof id === 'string' && parseId(id) && !listed.has(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
 }
 
 async function folderOf(storage) {

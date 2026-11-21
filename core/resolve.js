@@ -165,6 +165,48 @@ export class Resolver {
     return [...out, ...given.slice(0, LIMITS.mirrors)];
   }
 
+  async archiveOf(url, options = {}) {
+    this.bases ??= new Map();
+    if (this.bases.has(url)) return this.bases.get(url);
+    const out = [];
+    this.bases.set(url, out);
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      return out;
+    }
+    if (!['https:', 'http:'].includes(u.protocol) || !u.host) return out;
+    const origin = `${u.protocol}//${u.host}`, path = u.pathname, whole = origin + path;
+    const cuts = [];
+    for (let k = path.length - 2; k >= 0; k--) if (path[k] === '/') cuts.push(k + 1);
+    const guess = path.indexOf('/ocfl/');
+    if (guess >= 0) cuts.unshift(guess + 1);
+    for (const k of [...new Set(cuts)]) {
+      const base = origin + path.slice(0, k);
+      if (this.refused(base)) continue;
+      let archive = this.archives.has(base) ? await this.archives.get(base) : null;
+      if (!archive) {
+        try {
+          archive = await Archive.open(this.http, base, options);
+        } catch (error) {
+          if (error?.kind === 'aborted') throw error;
+          continue;
+        }
+        if (archive.old || archive.disc.specification !== '0.2') continue;
+      }
+      const root = archive.disc.storageRoot ?? 'ocfl/';
+      if (typeof root !== 'string' || root.includes(':') || !root.endsWith('/') ||
+          root.slice(0, -1).split('/').some((x) => ['', '.', '..'].includes(x)) || root.includes('\\')) continue;
+      if (whole.startsWith(archive.root) && whole.length > archive.root.length) {
+        this.archives.set(base, Promise.resolve(archive));
+        out.push(base);
+        break;
+      }
+    }
+    return out;
+  }
+
   async keyLog(owner, where = [], options = {}) {
     if (!this.logs.has(owner)) this.logs.set(owner, { log: null, met: new Set(), found: [] });
     const entry = this.logs.get(owner);

@@ -5,7 +5,7 @@ import { Resolver, MEMBER_STATUS } from './resolve.js';
 import { parseSheaf, objectId, LABEL } from './names.js';
 import { historyOf, currentVersion, dateOf, memberPins } from './versions.js';
 import { same } from './schema.js';
-import { storageFetch, compareText, ORIGIN } from './storage.js';
+import { storageFetch, storageLister, compareText, ORIGIN } from './storage.js';
 import { jsonBytes } from './write.js';
 import { writeDiscovery } from './discovery.js';
 import { OBJ, OBJ_FORMAT, GENESIS, SPEC, exit, plural } from './folder.js';
@@ -22,6 +22,7 @@ export async function openResolver(f) {
   const base = ORIGIN;
   const http = new Http({ fetch: storageFetch(f.storage, base, { fallback: f.env.fetch }), budget: null });
   const home = await Archive.open(http, base);
+  home.lister = storageLister(f.storage, base);
   return new Resolver(http, home, { local: true });
 }
 

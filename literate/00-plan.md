@@ -53,6 +53,7 @@ core/   web-standard ES modules: no Deno.*, no node: modules
   describe, collections, website, keepers,        descriptions, collections, the website
   inputs
   keylogs, wallets, passkey, owner                owners, keys, wallets, passkeys
+  mirror, branch, drafts, takedown                across archives
 cli/    the command line: node: modules, which Deno has too
   disk       an archive folder on a disk
   keystore   current keys (files, the macOS keychain), exported keys, passphrases
@@ -144,8 +145,12 @@ Module map
 | [35](35-wallets.md) | `core/wallets.js` | key wallets: GitHub (REST API), commands of the user's | opensheaf-py 09 |
 | [36](36-passkeys.md) | `core/passkey.js`, `cli/unlock.js` | the passkey hand-off from `unlock.opensheaf.org` | opensheaf-py 09 |
 | [37](37-owner-commands.md) | `core/owner.js` | `owner`, `key`, `sign` | opensheaf-py 19, 22 |
+| [38](38-mirrors.md) | `core/mirror.js` | `resolve`, objects copied from other archives, `mirror` | opensheaf-py 20, 22 |
+| [39](39-branches-kept.md) | `core/branch.js` | `branch`, `accept` | opensheaf-py 23 |
+| [41](41-drafts.md) | `core/drafts.js` | `draft`, `seal` | opensheaf-py 24 |
+| [42](42-takedown.md) | `core/takedown.js` | `takedown`, tombstones, the return of a line | opensheaf-py 25 |
 | [40](40-cli.md) | `cli/*.js` | the command line | opensheaf-py 60 |
-| [70](70-tests.md)–[73](73-tests-owners.md) | `tests/*.test.js` | the tests | |
+| [70](70-tests.md)–[74](74-tests-across.md) | `tests/*.test.js` | the tests | |
 
 The chapters 05 to 17 are the Explorer's, copied with their reasoning;
 where they speak of "the explorer", they speak of the reader of archives
@@ -178,9 +183,10 @@ The phases
    `unlock.opensheaf.org`); the macOS keychain through `security`; `init
    --owner --key-log` and `init --keys`. See "Phase 3: results and notes"
    below.
-4. **Across archives**: `resolve`, `mirror`, `branch`,
-   `accept`, `draft`, `seal`, `takedown`; `verify --remote` with keepers;
-   the completeness checks of the storage root.
+4. **Across archives** (done): `resolve`, `mirror`, `branch`, `accept`,
+   `draft`, `seal`, `takedown`; `verify --remote` with the parent lines
+   of branches found through their discovery documents; the completeness
+   checks of the storage root. See "Phase 4: results and notes" below.
 5. **Services**: `arxiv fetch|import` and `zenodo`, on the command line
    only (their APIs do not allow requests from other origins, CORS, so a
    browser cannot call them).
@@ -321,6 +327,94 @@ Notes for phase 4:
   use the passkeys of `unlock.opensheaf.org`, so the Manager will either
   live on that origin or hand off to that page as the command line does.
 
+Phase 4: results and notes
+--------------------------
+
+What the tests show (chapters [70](70-tests.md) and
+[74](74-tests-across.md)), each command run by both programs on two
+copies of one archive, the other archives served over HTTP:
+
+- `resolve` gives the same JSON as opensheaf-py for a line, a document
+  version, a pin, a short form, a key log and a version not found, in an
+  archive and outside one;
+- `mirror` of a line of an archive made by this program, made by
+  opensheaf-py and by this program, writes the same files, the mirrored
+  object byte for byte as its source, with the key log copied beside it;
+  both refuse a closed licence alike, and `mirror --all` stops alike at
+  the latest signed version, reporting the version after it;
+- `accept` (with `--with-original`) and `branch` of a line of an archive
+  made by opensheaf-py give the same branches, evidence included, and the
+  same selections (the pins of the accepted copy aside, whose
+  inventories record their times); a branch point moves alike, and the
+  same branch point is refused alike; a branch of that branch, made in an
+  archive of opensheaf-py, carries the same `parent.chain/`; both
+  verifications, also with `--remote`, find the branch points confirmed
+  and the parent's line where `parent.url` says;
+- `draft new|deposit` (with `--replace`), `seal` and `draft delete` give
+  the same files (a sealed work its name aside);
+- `takedown` of a line, of a mirror and of a key log by law writes the
+  same tombstones and indexes, refuses alike what it refuses, and the
+  line returns alike through a new mirror; both verifications give the
+  same findings on the archives each took down, the signature files left
+  unchecked by a key log taken down included;
+- the verification of a folder is complete as opensheaf-py's is: objects
+  the discovery document does not list, and every file of the witness
+  folders, are read and checked (the `lister` of chapter
+  [14](14-archive.md)).
+
+Where the two differ:
+
+- **Witness files read over HTTP.** A copy read over HTTP brings the
+  signature files whose names the reader computes from the owner's key
+  log, as in both programs; but where opensheaf-py reads another archive
+  from a folder (`--at PATH`, or locations that name a folder), it lists
+  the witness folders and copies every file, timestamps and stray files
+  included, into a mirror or the evidence of a branch, while this program,
+  which reaches such a folder through its `fetch`, copies the signature
+  files only. The archive's own witness folders are listed by both.
+- **The OCFL validator.** opensheaf-py also runs `ocfl-py` when it is
+  installed; this program makes the checks of OCFL that OpenSheaf relies
+  on itself (chapter [28](28-verify-folder.md)), and reports an object at
+  a path other than its identifier gives as not listed, where
+  opensheaf-py says where it is.
+- **Quoting in two messages.** A `sheaf:` URI that cannot be read is
+  quoted in opensheaf-py's message (Python's `repr`), and not here (the
+  message is the Explorer's, chapter [06](06-names.md)).
+
+Two options were added to the Explorer's chapters, to be carried to the
+Explorer (or taken with the core in phase 7): the `lister` of an archive
+(chapter [14](14-archive.md)), with the `listed` witness files of a line
+and the `unlisted` objects of a verification (chapter
+[17](17-verify.md)), and `archiveOf` of the resolver (chapter
+[15](15-resolve.md)), which the Explorer can use for the parent lines of
+branches too.
+
+Notes for phase 5 (arXiv and Zenodo, on the command line only):
+
+- `osheaf zenodo` builds and signs a version before Zenodo publishes it,
+  and adds it later (opensheaf-py's `add_version(..., stage_in=...)` and
+  `install_version`); `addVersion` (chapter [23](23-folder.md)) builds in
+  a staging folder already and will need the same split, the lock
+  (`zenodoPending`) being read already;
+- `arxiv import` deposits with `--from` entries and seals new works, which
+  `deposit` does; it reads arXiv's API with its rate limits, and arXiv's
+  PDFs and sources, through the `fetch` of the environment;
+- TeXmacs sources without a PDF remain opensheaf-py's until TeXmacs is
+  called as an external program.
+
+Notes for phase 6 (the Manager, writing directly):
+
+- every command of this phase writes through a storage: versions,
+  mirrors and branches are built in `.staging-*` folders and renamed into
+  place, and takedowns remove folders file by file; a storage over the
+  Git Data API makes the whole command one commit, the renames costing
+  nothing;
+- such a storage should also give a `lister` (from Git's trees), so that
+  the Manager's verification is complete, as that of a folder is;
+- `mirror` and `branch` read other archives in the browser, which needs
+  their servers to send CORS headers (GitHub Pages does); `fetchObject`
+  holds each file in memory once, which bounds what a page can copy.
+
 What stays in Python for now
 ----------------------------
 
@@ -328,8 +422,8 @@ What stays in Python for now
   opensheaf-py, which runs TeXmacs headless; the command line here will
   call TeXmacs as an external program in a later phase. Until then, a
   deposit gives the PDF.
-- Everything of phases 4 and 5, above: `osheaf` of opensheaf-py does it on
-  the same archives, and the command here says so when asked.
+- Everything of phase 5, above: `osheaf` of opensheaf-py does it on the
+  same archives, and the command here says so when asked.
 - The TeXmacs index of an archive (`--index texmacs`).
 - YAML configurations (`osheaf.yaml`), which opensheaf-py reads; this
   program reads `osheaf.json` (it reads YAML for `--from FILE` only).

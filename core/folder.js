@@ -6,7 +6,7 @@ import { Http } from './http.js';
 import { Archive } from './archive.js';
 import { SIGNED, VOUCHED } from './signatures.js';
 import { hex } from './crypto.js';
-import { readJson, writeText, storageFetch, compareText, joinPath, ORIGIN } from './storage.js';
+import { readJson, writeText, storageFetch, storageLister, compareText, joinPath, ORIGIN } from './storage.js';
 import { jsonBytes, utcNow, today, genesisRecord, orderedInventory, inventoryFile, sidecar, sha512hex,
          sha256hex, md5hex, signatureFile, signatureFileName, WITNESSES, INVENTORY_TYPE } from './write.js';
 import { newKey, randomBytes } from './keys.js';
@@ -193,6 +193,7 @@ export class ArchiveFolder {
       const base = /^https?:\/\/[^/]+\/(.*\/)?$/.test(this.archive.baseUrl || '') ? this.archive.baseUrl : ORIGIN;
       const http = new Http({ fetch: storageFetch(this.storage, base), budget: null });
       this.cached = new Archive(http, base, { specification: SPEC, storageRoot: 'ocfl/', storageLayout: this.layout });
+      this.cached.lister = storageLister(this.storage, base);
     }
     return this.cached;
   }
@@ -266,13 +267,14 @@ export class ArchiveFolder {
       exit(`${name}: a Zenodo deposit was published and its version is not added yet: osheaf zenodo ${name} ` +
            'completes it first (appendix A.1)');
     }
-    const { log, latest, signers } = await this.signingKeys(obj.owner);
+    const draft = id.startsWith('sheaf:draft:');
+    const { log, latest, signers } = draft ? { log: null, latest: null, signers: [] } : await this.signingKeys(obj.owner);
     obj = Object.fromEntries(Object.entries(obj).filter(([k]) => k !== 'previous'));
     if (inv === null) {
       if (await s.kind(dir)) exit(`${dir} exists, and is not an object`);
       inv = { id, type: INVENTORY_TYPE, digestAlgorithm: 'sha512', head: 'v0', manifest: {}, versions: {},
               fixity: { md5: {}, sha256: {} } };
-    } else {
+    } else if (!draft) {
       await this.checkBeforeExtending(id, acknowledged);
       obj.previous = sidecarDigest(await s.read(joinPath(dir, inv.head, 'inventory.json.sha512')));
     }
@@ -303,12 +305,12 @@ export class ArchiveFolder {
       const data = inventoryFile(inv);
       await s.write(joinPath(stage, ver, 'inventory.json'), data);
       await s.write(joinPath(stage, ver, 'inventory.json.sha512'), await sidecar(data));
-      const pin = log.pin(latest.number), digest = await sha512hex(data);
+      const pin = log ? log.pin(latest.number) : null, digest = await sha512hex(data);
       for (const key of signers) {
         await s.write(joinPath(stage, 'witnesses', await signatureFileName(key.did)),
                       await signatureFile(key, id, ver, digest, obj.owner, pin));
       }
-      await this.moveStaged(dir, stage, ver);
+      await this.moveStaged(dir, stage, ver, draft);
     } finally {
       await removeTree(s, stage);
       this.changed();
@@ -316,7 +318,7 @@ export class ArchiveFolder {
     return inv;
   }
 
-  async moveStaged(dir, stage, ver) {
+  async moveStaged(dir, stage, ver, draft = false) {
     const s = this.storage;
     const data = await s.read(joinPath(stage, ver, 'inventory.json'));
     const sc = await s.read(joinPath(stage, ver, 'inventory.json.sha512'));
@@ -324,13 +326,13 @@ export class ArchiveFolder {
       const obj = joinPath(stage, 'object');
       await writeText(s, joinPath(obj, '0=ocfl_object_1.1'), 'ocfl_object_1.1\n');
       await s.rename(joinPath(stage, ver), joinPath(obj, ver));
-      await s.rename(joinPath(stage, 'witnesses'), joinPath(obj, WITNESSES, ver));
+      if (!draft) await s.rename(joinPath(stage, 'witnesses'), joinPath(obj, WITNESSES, ver));
       await s.write(joinPath(obj, 'inventory.json'), data);
       await s.write(joinPath(obj, 'inventory.json.sha512'), sc);
       await s.rename(obj, dir);
     } else {
       await s.rename(joinPath(stage, ver), joinPath(dir, ver));
-      await s.rename(joinPath(stage, 'witnesses'), joinPath(dir, WITNESSES, ver));
+      if (!draft) await s.rename(joinPath(stage, 'witnesses'), joinPath(dir, WITNESSES, ver));
       for (const [name, bytes] of [['inventory.json', data], ['inventory.json.sha512', sc]]) {
         await s.write(joinPath(stage, name), bytes);
         await s.rename(joinPath(stage, name), joinPath(dir, name));

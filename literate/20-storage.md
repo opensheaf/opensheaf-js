@@ -244,3 +244,24 @@ have. A path that is not safe, or that names a folder, is not found.
         return new Response(init.method === 'HEAD' ? null : bytes, { status: 200, headers });
       };
     }
+
+A storage can also be listed, which a web server cannot: `storageLister`
+gives the `lister` of an archive read over the storage's own `fetch`
+(chapter [14](14-archive.md)), the entries of the folder at an address
+under `origin`, an empty list when there is no such folder, and `null`
+for an address elsewhere, which it cannot list.
+
+    // in reading a storage over fetch:
+    export function storageLister(storage, origin = ORIGIN) {
+      const base = new URL(origin);
+      return async (url) => {
+        const u = new URL(url);
+        if (u.origin !== base.origin || !u.pathname.startsWith(base.pathname)) return null;
+        try {
+          const path = decodeURIComponent(u.pathname.slice(base.pathname.length)).replace(/\/$/, '');
+          return (await storage.list(checkPath(path, { folder: true }))) || [];
+        } catch {
+          return [];
+        }
+      };
+    }

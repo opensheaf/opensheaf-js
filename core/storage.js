@@ -146,3 +146,17 @@ export function storageFetch(storage, origin = ORIGIN, { fallback = null } = {})
     return new Response(init.method === 'HEAD' ? null : bytes, { status: 200, headers });
   };
 }
+
+export function storageLister(storage, origin = ORIGIN) {
+  const base = new URL(origin);
+  return async (url) => {
+    const u = new URL(url);
+    if (u.origin !== base.origin || !u.pathname.startsWith(base.pathname)) return null;
+    try {
+      const path = decodeURIComponent(u.pathname.slice(base.pathname.length)).replace(/\/$/, '');
+      return (await storage.list(checkPath(path, { folder: true }))) || [];
+    } catch {
+      return [];
+    }
+  };
+}

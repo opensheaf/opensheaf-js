@@ -33,7 +33,7 @@ versions (section 8.5).
     import { parseSheaf, objectId, LABEL } from './names.js';
     import { historyOf, currentVersion, dateOf, memberPins } from './versions.js';
     import { same } from './schema.js';
-    import { storageFetch, compareText, ORIGIN } from './storage.js';
+    import { storageFetch, storageLister, compareText, ORIGIN } from './storage.js';
     import { jsonBytes } from './write.js';
     import { writeDiscovery } from './discovery.js';
     import { OBJ, OBJ_FORMAT, GENESIS, SPEC, exit, plural } from './folder.js';
@@ -75,6 +75,7 @@ of the archive in its `at` is read there too, as opensheaf-py reads it
       const base = ORIGIN;
       const http = new Http({ fetch: storageFetch(f.storage, base, { fallback: f.env.fetch }), budget: null });
       const home = await Archive.open(http, base);
+      home.lister = storageLister(f.storage, base);
       return new Resolver(http, home, { local: true });
     }
 

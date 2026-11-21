@@ -6,11 +6,12 @@
 > [!WARNING]
 > **Draft.** OpenSheaf 0.2 is a draft specification. Until version 1.0, any
 > revision may change the format in incompatible ways, and archives made now
-> may have to be rebuilt. opensheaf-js is at its third phase: it makes
+> may have to be rebuilt. opensheaf-js is at its fourth phase: it makes
 > archives and their websites, deposits papers, keeps their descriptions
 > and collections, keeps owners and their keys (wallets and passkeys
-> included), and verifies archives; for mirrors, branches, arXiv, Zenodo
-> and TeXmacs, use [opensheaf-py](https://github.com/opensheaf/opensheaf-py).
+> included), resolves, mirrors, branches and takes down lines, keeps
+> drafts, and verifies archives; for arXiv, Zenodo and TeXmacs, use
+> [opensheaf-py](https://github.com/opensheaf/opensheaf-py).
 
 The tools of [OpenSheaf](https://opensheaf.org) archives (the `osheaf`
 command) in JavaScript: a port of
@@ -30,7 +31,7 @@ and the phases.
 
 ## Status
 
-Phases 1 to 3 (version 0.1.0):
+Phases 1 to 4 (version 0.1.0):
 
 - `osheaf init DIR --new-owner --export KEYS`: an archive and a new owner
   (rotation keys exported, in clear with `--no-passphrase` or under a
@@ -57,7 +58,18 @@ Phases 1 to 3 (version 0.1.0):
   current keys of this device, key wallets (a private GitHub repository,
   through GitHub's API, or commands of a password manager), the clipboard,
   and passkeys (Touch ID) through `https://unlock.opensheaf.org/`;
-  `osheaf help-config`.
+  `osheaf help-config`;
+- `osheaf resolve URI [--at URL] [--json]`: what a `sheaf:` URI names, in
+  any archive, checked; `osheaf mirror URI --at URL [--label]` and
+  `mirror --all`: copies of lines written elsewhere, with their owners'
+  key logs, grown only by signed versions from copies that agree;
+- `osheaf branch URI --label LABEL` and `osheaf accept URI --selection
+  LABEL [--with-original]`: branches and accepted copies, with the
+  evidence of their branch points, and branch points moved;
+- `osheaf draft new|deposit|delete DRAFT` and `osheaf seal DRAFT --label
+  LABEL`: drafts and the works sealed from them;
+- `osheaf takedown LABEL --reason TEXT [--by-law | --keeper]`: objects
+  taken down, with their tombstones, and lines that return.
 
 Every command that changes an archive writes its website again. The files
 written are those opensheaf-py writes, byte for byte (the times of
@@ -65,13 +77,16 @@ versions aside): the parity tests compare them, and the websites the two
 write for one archive are the same. Archives made by opensheaf-js pass
 `osheaf verify` of opensheaf-py with no finding, and the other way round;
 rotation keys exported by one sign with the other; one owner is kept by
-both in turn, and one key wallet serves both. Other archives are read
+both in turn, and one key wallet serves both; each mirrors, branches and
+takes down what the other made, with the same files and the same
+findings of both verifications. Other archives are read
 where `OPENSHEAF_LOCATIONS` (or `locations` in `osheaf.json`) says, as
 opensheaf-py reads them. TeXmacs sources without a PDF, the TeXmacs
-index, mirrors, branches, arXiv and Zenodo are in opensheaf-py, and come
-here in later phases; the differences known are listed in the plan
+index, arXiv and Zenodo are in opensheaf-py, and come here in later
+phases; the differences known are listed in the plan
 ([phase 2](literate/00-plan.md#phase-2-results-and-notes),
-[phase 3](literate/00-plan.md#phase-3-results-and-notes)).
+[phase 3](literate/00-plan.md#phase-3-results-and-notes),
+[phase 4](literate/00-plan.md#phase-4-results-and-notes)).
 
 ## Running
 

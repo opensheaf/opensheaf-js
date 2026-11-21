@@ -122,18 +122,31 @@ Owners and keys
 31. [The commands of owners and keys](37-owner-commands.md): `owner`,
     `key`, `sign`, `init --owner`.
 
+Across archives
+---------------
+
+32. [Resolution and mirrors](38-mirrors.md): `resolve`, objects copied
+    from other archives, `mirror`.
+33. [Branches and accepted copies](39-branches-kept.md): `branch`,
+    `accept`.
+34. [Drafts and sealing](41-drafts.md): `draft`, `seal`.
+35. [Takedowns and tombstones](42-takedown.md): `takedown`, the return of
+    a line.
+
 The command line
 ----------------
 
-32. [The command line](40-cli.md): a folder on a disk, the keys of this
+36. [The command line](40-cli.md): a folder on a disk, the keys of this
     device (files, the macOS keychain), the clipboard, the listener of
     the passkey hand-off, the commands.
 
 The tests
 ---------
 
-33. [The tests](70-tests.md): storages, files, key files, an archive in
+37. [The tests](70-tests.md): storages, files, key files, an archive in
     memory, owners, wallets and passkeys.
-34. [The tests of names, keys and signatures](71-tests-identity.md),
+38. [The tests of names, keys and signatures](71-tests-identity.md),
     against appendix C and the edge cases of Ed25519.
-35. [The tests of parity with opensheaf-py](72-tests-parity.md).
+39. [The tests of parity with opensheaf-py](72-tests-parity.md).
+40. [The tests across archives](74-tests-across.md): resolution, mirrors,
+    branches, drafts and takedowns, by both programs.

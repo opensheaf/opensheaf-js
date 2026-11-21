@@ -11,14 +11,18 @@ so nothing here is written twice. Only the command line touches a disk,
 a terminal or the environment; everything it does to an archive is done
 by `core/` (chapters [20](20-storage.md) to [28](28-verify-folder.md)).
 
-This phase has the commands that make and keep an archive of one's own:
-`init`, `deposit` (`--from` a file, chapter [33](33-inputs.md)),
-`notice`, `withdraw`, `complete`, `relate`, `relicense`, `describe`
-(chapter [29](29-description.md)), `collect`, `collection` (chapter
-[30](30-collections.md)), `index` and `verify`; every command that changes
-the archive writes the website again (chapter [31](31-website.md)). The
-others answer that they are in opensheaf-py for now (chapter
-[00](00-plan.md) gives the order in which they come).
+It has the commands that make and keep an archive of one's own: `init`,
+`deposit` (`--from` a file, chapter [33](33-inputs.md)), `notice`,
+`withdraw`, `complete`, `relate`, `relicense`, `describe` (chapter
+[29](29-description.md)), `collect`, `collection` (chapter
+[30](30-collections.md)), `index` and `verify`; those of owners and keys
+(chapter [37](37-owner-commands.md)); and those across archives,
+`resolve`, `mirror`, `branch`, `accept`, `draft`, `seal` and `takedown`
+(chapters [38](38-mirrors.md) to [42](42-takedown.md)). Every command that
+changes the archive writes the website again (chapter
+[31](31-website.md)). `zenodo` and `arxiv` answer that they are in
+opensheaf-py for now (chapter [00](00-plan.md) gives the order in which
+they come).
 
 The three files are `cli/disk.js` (an archive folder on a disk),
 `cli/keystore.js` (the current keys of this device, the exported
@@ -465,6 +469,10 @@ arguments ends with the status 2, as argparse does.
     import * as owners from '../core/owner.js';
     import { loadKeyLog, OwnerError } from '../core/keylogs.js';
     import { CONFIG_HELP } from '../core/wallets.js';
+    import { resolveCommand, mirror } from '../core/mirror.js';
+    import { branch, accept } from '../core/branch.js';
+    import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
+    import { takedown } from '../core/takedown.js';
 
     export const VERSION = '0.1.0';
 
@@ -505,6 +513,10 @@ The options are those of opensheaf-py, for the commands of this phase.
     };
 
     const I_KNOW = { '--i-know': flag('iKnow') };
+    const DRAFT_DEPOSIT = {
+      positionals: ['draft', 'source'],
+      options: Object.fromEntries(Object.entries(DEPOSIT.options).filter(([o]) => !['--new', '--owner', '--from'].includes(o))),
+    };
     const MEMBERS = (more) => ({ positionals: ['collection!', 'uri+'], options: { ...more, '--message': value('message') } });
 
     <<the groups of options of owners and keys>>
@@ -585,17 +597,44 @@ The options are those of opensheaf-py, for the commands of this phase.
                options: { '--no-html': flag('noHtml') } },
       verify: { help: 'check the archive (section 14 of the specification)', positionals: [],
                 options: { '--remote': flag('remote'), '--json': flag('json') } },
+      resolve: { help: 'find and check what a sheaf: URI names (section 12.3)', positionals: ['uri!'],
+                 options: { '--at': value('at', { repeat: true }), '--json': flag('json') } },
+      mirror: { help: "copy a line written elsewhere, with its owner's key log (section 11)", positionals: ['uri'],
+                options: { '--at': value('at', { repeat: true }), '--label': value('label'), '--all': flag('all'),
+                           '--licence-checked': flag('licenceChecked') } },
+      branch: { help: 'a branch of a signed version of another line (section 9)', positionals: ['uri!'],
+                options: { '--at': value('at', { repeat: true }), '--label': value('label'), '--message': value('message'),
+                           '--owner': value('owner') } },
+      accept: { help: 'an accepted copy, listed in a selection (section 9.6)', positionals: ['uri!'],
+                options: { '--at': value('at', { repeat: true }), '--label': value('label'), '--message': value('message'),
+                           '--selection': value('selection', { required: true }), '--with-original': flag('withOriginal') } },
+      draft: {
+        help: 'unsigned work in progress at draft/<id>/ (section 10.1)',
+        actions: {
+          new: { help: 'make a draft with a first deposit', ...DRAFT_DEPOSIT, defaults: { type: 'Preprint' } },
+          deposit: { help: 'deposit a new version into a draft', ...DRAFT_DEPOSIT,
+                     options: { ...DRAFT_DEPOSIT.options, '--replace': flag('replace') }, defaults: { type: 'Preprint' } },
+          delete: { help: 'delete a draft (no tombstone)', positionals: ['draft!'], options: {} },
+        },
+      },
+      seal: { help: 'seal the work of a draft as a new line (section 10.2)', positionals: ['draft!'],
+              options: { '--label': value('newLabel', { required: true }), '--owner': value('owner'),
+                         '--delete-draft': flag('deleteDraft'), '--message': value('message') } },
+      takedown: { help: 'delete an object, leaving a tombstone (section 13.2)', positionals: ['label!'],
+                  options: { '--reason': value('reason', { required: true }), '--by-law': flag('byLaw'),
+                             '--keeper': flag('keeper'), '--yes': flag('yes') },
+                  exclusive: [['--by-law', '--keeper']] },
       <<the options of owners and keys>>
     };
 
-    const LATER = ['resolve', 'mirror', 'branch', 'accept', 'draft', 'seal', 'takedown', 'zenodo', 'arxiv'];
+    const LATER = ['zenodo', 'arxiv'];
 
 A positional argument is optional (`label`), required (`label!`), one or
 more (`uri+`) or any number (`collection*`); an option may be required, as
 in argparse, which names what is missing.
 
     // in the options of the commands:
-    const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER', did: 'DID',
+    const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER', did: 'DID', draft: 'DRAFT',
                        exposed: 'DID', place: 'URL|PATH' };
 
     function positional(p) {
@@ -647,6 +686,7 @@ The reading of the arguments:
         where = `${out.cmd} ${action}`;
       }
       const args = { ...(spec.defaults || {}) };
+      const k0 = k;
       for (const o of Object.values(spec.options)) if (o.repeat) args[o.dest] = [];
       const positionals = [];
       let rest = false;
@@ -689,6 +729,19 @@ The reading of the arguments:
         }
         if (o.repeat) args[o.dest].push(v);
         else args[o.dest] = v;
+      }
+      for (const group of spec.exclusive || []) {
+        const given = argv.slice(k0).map((a) => a.split('=')[0]).map((a) => {
+          try {
+            return a.startsWith('--') && a !== '--' ? option(spec, a, where) : null;
+          } catch {
+            return null;
+          }
+        }).filter((o) => group.includes(o));
+        if (new Set(given).size > 1) {
+          const [first, second] = [...new Set(given)];
+          throw new UsageError(`osheaf ${where}: error: argument ${second}: not allowed with argument ${first}`);
+        }
       }
       if (args.help) {
         out.args = args;
@@ -856,12 +909,16 @@ them to the deposit of chapter [26](26-deposit.md).
     }
 
     async function depositRun(f, args) {
+      await deposit(f, await depositFiles(args));
+    }
+
+    async function depositFiles(args) {
       const a = { ...args };
       a.source = args.source ? await readFile(args.source) : null;
       a.pdf = args.pdf ? await readFile(args.pdf) : null;
       a.extraSource = (await extraSources(args.extraSource)).map((x) => ({ ...x, logical: x.logical === x.name ? '' : x.logical }));
       a.abstractFile = args.abstractFile ? await fs.readFile(args.abstractFile, 'utf-8') : null;
-      await deposit(f, a);
+      return a;
     }
 
 A command that takes `--from FILE` runs once for each entry of the file,
@@ -1038,6 +1095,8 @@ next to the program (a binary made by `deno compile` carries them, with
       },
 
       <<running the commands of owners and keys>>
+
+      <<running the commands across archives>>
     };
 
 ### The entry point
@@ -1059,9 +1118,8 @@ next to the program (a binary made by `deno compile` carries them, with
     command that changes the archive. deposit, relicense, relate, describe and
     init also take their options from a YAML or JSON file: --from FILE.
 
-    The other commands of opensheaf-py (resolve, mirror, branch, accept, draft,
-    seal, takedown, zenodo, arxiv) come in later versions; until then, use
-    opensheaf-py.
+    The other commands of opensheaf-py (zenodo, arxiv) come in later versions;
+    until then, use opensheaf-py.
 
     Warning: OpenSheaf 0.2 is a draft. Until version 1.0, a revision may change
     the format in incompatible ways, and archives may have to be rebuilt.`;
@@ -1422,3 +1480,66 @@ The wallets' side, and the rest:
         write: given.write || ((text) => process.stdout.write(text)),
       };
     }
+
+The commands across archives
+----------------------------
+
+`resolve` runs in an archive, whose storage root and locations it then
+uses, or anywhere else, as opensheaf-py's does; `mirror`, `branch`,
+`accept`, `draft`, `seal` and `takedown` change the archive (chapters
+[38](38-mirrors.md) to [42](42-takedown.md)), and write its website
+again. `draft new|deposit` reads its files as `deposit` does.
+
+    // in running the commands across archives:
+    async resolve(root, args, env) {
+      let f = null;
+      try {
+        f = await openArchive(root, env);
+      } catch (error) {
+        if (root || !(error instanceof Stop)) throw error;
+      }
+      return resolveCommand(f, args, env);
+    },
+
+    async mirror(root, args, env) {
+      const f = await openArchive(root, env);
+      await mirror(f, args);
+      await present(f);
+      return 0;
+    },
+
+    async branch(root, args, env) {
+      const f = await openArchive(root, env);
+      await branch(f, args);
+      await present(f);
+      return 0;
+    },
+
+    async accept(root, args, env) {
+      const f = await openArchive(root, env);
+      await accept(f, args);
+      await present(f);
+      return 0;
+    },
+
+    async draft(root, args, env) {
+      const f = await openArchive(root, env);
+      if (args.action === 'delete') await draftDelete(f, { label: args.draft });
+      else await draftDeposit(f, await depositFiles({ ...args, label: args.draft }), args.action === 'new');
+      await present(f);
+      return 0;
+    },
+
+    async seal(root, args, env) {
+      const f = await openArchive(root, env);
+      await seal(f, { ...args, label: args.draft });
+      await present(f);
+      return 0;
+    },
+
+    async takedown(root, args, env) {
+      const f = await openArchive(root, env);
+      await takedown(f, args);
+      await present(f);
+      return 0;
+    },

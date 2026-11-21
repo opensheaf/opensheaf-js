@@ -5,7 +5,7 @@ import { isObjectId, isVersion, under, underPath, contentPathProblem, pathOf, OW
 import { contentPath, historyOf, currentVersion, versionsOf, filesOf } from './versions.js';
 import { objectId, parseId, isObject } from './names.js';
 import { KeyLog, Version, sidecarDigest, jsonOrNull } from './owners.js';
-import { fileName, lineStatusesOf, latestSigned, WITNESSES, UNCHECKED } from './signatures.js';
+import { fileName, lineStatusesOf, latestSigned, judgeFolder, lineStatuses, WITNESSES, UNCHECKED } from './signatures.js';
 import { sameBytes } from './crypto.js';
 
 export function baseOf(url, relativeTo = globalThis.location?.href) {
@@ -59,6 +59,7 @@ export class Archive {
     this.paths = new Map();
     this.keyLogs = new Map();
     this.lines = new Map();
+    this.lister = null;
   }
 
   objects() {
@@ -216,6 +217,17 @@ export class Archive {
     return { inv, objs, hist: historyOf(inv, objOf, at || inv.head), current: currentVersion(inv, objOf, at || inv.head) };
   }
 
+  async listWitnesses(id, ver) {
+    if (!this.lister) return null;
+    const found = await this.lister(this.url(id, ...WITNESSES.split('/'), ver, 'x').slice(0, -1));
+    return found ? found.filter((e) => e.kind === 'file').map((e) => e.name) : null;
+  }
+
+  async listFolder(id, ...segments) {
+    if (!this.lister) return null;
+    return this.lister(this.url(id, ...segments, 'x').slice(0, -1));
+  }
+
   async witness(id, ver, name, options = {}) {
     await this.locate(id);
     try {
@@ -334,12 +346,31 @@ export class Archive {
         return null;
       }) : null;
     }
-    let judgements, statuses, unnamed = false;
-    if (!log) {
+    let judgements, statuses, unnamed = false, listed = null;
+    if (this.lister) listed = await Promise.all(versions.map((v) => this.listWitnesses(id, v.ver)));
+    if (listed?.every((x) => x !== null)) {
+      const withWitnesses = await Promise.all(versions.map(async (v, k) => {
+        const witnesses = new Map();
+        for (const name of listed[k]) {
+          const bytes = await this.witness(id, v.ver, name, options);
+          if (bytes) witnesses.set(name, bytes);
+        }
+        return { version: v.ver, digest: v.digest, witnesses };
+      }));
+      if (log) {
+        ({ judgements, statuses } = await lineStatusesOf(id, owner, withWitnesses, log));
+      } else {
+        judgements = await Promise.all(withWitnesses.map((v) => judgeFolder(v.witnesses, {
+          objectId: id, version: v.version, inventory: v.digest, owner, lookup: () => null })));
+        statuses = lineStatuses(judgements);
+      }
+    } else if (!log) {
+      listed = null;
       unnamed = true;
       judgements = versions.map(() => []);
       statuses = versions.map(() => UNCHECKED);
     } else {
+      listed = null;
       const dids = new Set();
       for (const v of log.versions) {
         for (const did of Array.isArray(v.keys?.keys) ? v.keys.keys : []) dids.add(did);
@@ -358,6 +389,6 @@ export class Archive {
       ({ judgements, statuses } = await lineStatusesOf(id, owner, withWitnesses, log));
     }
     const n = latestSigned(statuses);
-    return { id, inv, versions, objs, owner, log, judgements, statuses, unnamed, latest: n ? `v${n}` : null };
+    return { id, inv, versions, objs, owner, log, judgements, statuses, unnamed, listed, latest: n ? `v${n}` : null };
   }
 }

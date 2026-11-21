@@ -12,10 +12,21 @@ opensheaf-py makes on the files of the folder that look like private keys
 (section 15.4) is made here too. Content digests are always checked, as
 opensheaf-py checks them.
 
-What opensheaf-py checks and this program does not yet: the completeness
-of the storage root (objects and witness files that the discovery
-document does not list), and an independent OCFL validator (chapter
-[17](17-verify.md) lists them). Two checks are made as opensheaf-py makes
+A folder can be listed, so the verification of a folder is complete as
+opensheaf-py's is (section 14.1): the objects of the storage root that
+the discovery document does not list are found and checked with the
+others, and reported unlisted; and every file of every witness folder is
+read (the `lister` of chapter [14](14-archive.md)), so that signature
+files of keys the key log does not list, or without a key log, are
+judged, and other files and folders are reported (section 7.2).
+
+What opensheaf-py checks and this program does not: an independent OCFL
+validator. opensheaf-py runs `ocfl-py` when it is installed, and reports
+only its errors; this program makes the checks of OCFL that OpenSheaf
+relies on itself (the declarations, the layout, every inventory and its
+checksum files, versions without gaps, safe content paths, every content
+digest) and no other, and an object at a path other than its identifier
+gives is reported as not listed rather than misplaced. Two checks are made as opensheaf-py makes
 them, from the folder rather than over HTTP: the presentation of appendix
 A.3, which also applies to an archive that configures a readable index or
 has landing pages without declaring the profile `website`; and the links
@@ -32,10 +43,10 @@ The module is `core/check.js`.
     import { Archive } from './archive.js';
     import { verify, Report } from './verify.js';
     import { finding } from './rules.js';
-    import { storageFetch, readJson, joinPath, ORIGIN } from './storage.js';
+    import { storageFetch, storageLister, readJson, joinPath, ORIGIN } from './storage.js';
     import { ROTATION_FORMAT, SHEET_TITLE } from './keys.js';
     import { unbase64 } from './crypto.js';
-    import { objectId } from './names.js';
+    import { objectId, parseId } from './names.js';
     import { memberPins } from './versions.js';
     import { ArchiveFolder, environment } from './folder.js';
     import { pageAddress } from './website.js';
@@ -71,9 +82,11 @@ over the network, through `fetch`.
       let report;
       try {
         const archive = await Archive.open(http, base);
+        archive.lister = storageLister(storage, base);
+        const f = archive.old ? null : await folderOf(storage);
+        if (f) archive.unlisted = await unlistedObjects(f, archive);
         report = await verify(archive, { schemas, remote, digests, pages: false });
         if (!archive.old) {
-          const f = await folderOf(storage);
           if (f) {
             report.add(...await keeperFindings(f, remote, fetchJson));
             report.add(...await presentationFindings(f, archive.disc));
@@ -92,8 +105,23 @@ over the network, through `fetch`.
     }
 
 The folder is read as an archive kept (chapter [23](23-folder.md)) for
-the two checks below, when its configuration can be read; without one,
-they are not made.
+the checks below, when its configuration can be read; without one, they
+are not made. Its storage root is walked, as opensheaf-py walks it, for
+the objects the discovery document does not list (drafts included), which
+the verification then checks with the others (section 14.1:
+completeness).
+
+    // in verifying a folder:
+    async function unlistedObjects(f, archive) {
+      const listed = new Set([...archive.objects().map((o) => o.id), ...archive.drafts().map((d) => d.id)]);
+      const out = [];
+      for (const { id } of await f.objects()) {
+        if (typeof id === 'string' && parseId(id) && !listed.has(id) && !out.includes(id)) out.push(id);
+      }
+      return out;
+    }
+
+The archive kept is opened quietly: what it would say is not a finding.
 
     // in verifying a folder:
     async function folderOf(storage) {

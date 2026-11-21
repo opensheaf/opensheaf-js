@@ -44,7 +44,7 @@ The module is `core/archive.js`.
     import { contentPath, historyOf, currentVersion, versionsOf, filesOf } from './versions.js';
     import { objectId, parseId, isObject } from './names.js';
     import { KeyLog, Version, sidecarDigest, jsonOrNull } from './owners.js';
-    import { fileName, lineStatusesOf, latestSigned, WITNESSES, UNCHECKED } from './signatures.js';
+    import { fileName, lineStatusesOf, latestSigned, judgeFolder, lineStatuses, WITNESSES, UNCHECKED } from './signatures.js';
     import { sameBytes } from './crypto.js';
 
 The base URL
@@ -142,6 +142,7 @@ verification.
         this.paths = new Map();
         this.keyLogs = new Map();
         this.lines = new Map();
+        this.lister = null;
       }
 
 The entries of the discovery document, as far as they can be used: the
@@ -341,6 +342,30 @@ record, a key log's `keys.json`, the evidence of a branch) as bytes.
 A file of a witness folder is read only when its name is known, since a
 server lists no folders (section 14.1); `null` when there is none.
 
+An archive read from files that can be listed (a folder, through its
+storage, chapter [20](20-storage.md)) is given a `lister`: a function
+from the address of a folder to its entries, `[{ name, kind }]`, or
+`null` when it cannot list it. Its witness folders are then read whole,
+as opensheaf-py reads a folder: every signature file is judged, also one
+of a key its key log does not list, or without any key log, and the other
+files are seen (the verification reports them, section 7.2). This
+option is opensheaf-js's, to be carried to the Explorer (chapter
+[00](00-plan.md)).
+
+    // in core/archive.js:
+      async listWitnesses(id, ver) {
+        if (!this.lister) return null;
+        const found = await this.lister(this.url(id, ...WITNESSES.split('/'), ver, 'x').slice(0, -1));
+        return found ? found.filter((e) => e.kind === 'file').map((e) => e.name) : null;
+      }
+
+      async listFolder(id, ...segments) {
+        if (!this.lister) return null;
+        return this.lister(this.url(id, ...segments, 'x').slice(0, -1));
+      }
+
+One file of a witness folder, by its name:
+
     // in core/archive.js:
       async witness(id, ver, name, options = {}) {
         await this.locate(id);
@@ -502,12 +527,31 @@ for each object version, its digest and `object.json`; `log`, `statuses`,
             return null;
           }) : null;
         }
-        let judgements, statuses, unnamed = false;
-        if (!log) {
+        let judgements, statuses, unnamed = false, listed = null;
+        if (this.lister) listed = await Promise.all(versions.map((v) => this.listWitnesses(id, v.ver)));
+        if (listed?.every((x) => x !== null)) {
+          const withWitnesses = await Promise.all(versions.map(async (v, k) => {
+            const witnesses = new Map();
+            for (const name of listed[k]) {
+              const bytes = await this.witness(id, v.ver, name, options);
+              if (bytes) witnesses.set(name, bytes);
+            }
+            return { version: v.ver, digest: v.digest, witnesses };
+          }));
+          if (log) {
+            ({ judgements, statuses } = await lineStatusesOf(id, owner, withWitnesses, log));
+          } else {
+            judgements = await Promise.all(withWitnesses.map((v) => judgeFolder(v.witnesses, {
+              objectId: id, version: v.version, inventory: v.digest, owner, lookup: () => null })));
+            statuses = lineStatuses(judgements);
+          }
+        } else if (!log) {
+          listed = null;
           unnamed = true;
           judgements = versions.map(() => []);
           statuses = versions.map(() => UNCHECKED);
         } else {
+          listed = null;
           const dids = new Set();
           for (const v of log.versions) {
             for (const did of Array.isArray(v.keys?.keys) ? v.keys.keys : []) dids.add(did);
@@ -526,6 +570,6 @@ for each object version, its digest and `object.json`; `log`, `statuses`,
           ({ judgements, statuses } = await lineStatusesOf(id, owner, withWitnesses, log));
         }
         const n = latestSigned(statuses);
-        return { id, inv, versions, objs, owner, log, judgements, statuses, unnamed, latest: n ? `v${n}` : null };
+        return { id, inv, versions, objs, owner, log, judgements, statuses, unnamed, listed, latest: n ? `v${n}` : null };
       }
     }

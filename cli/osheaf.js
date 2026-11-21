@@ -22,6 +22,10 @@ import { loadEntries, merge, UsageProblem } from '../core/inputs.js';
 import * as owners from '../core/owner.js';
 import { loadKeyLog, OwnerError } from '../core/keylogs.js';
 import { CONFIG_HELP } from '../core/wallets.js';
+import { resolveCommand, mirror } from '../core/mirror.js';
+import { branch, accept } from '../core/branch.js';
+import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
+import { takedown } from '../core/takedown.js';
 
 export const VERSION = '0.1.0';
 
@@ -49,6 +53,10 @@ const DEPOSIT = {
 };
 
 const I_KNOW = { '--i-know': flag('iKnow') };
+const DRAFT_DEPOSIT = {
+  positionals: ['draft', 'source'],
+  options: Object.fromEntries(Object.entries(DEPOSIT.options).filter(([o]) => !['--new', '--owner', '--from'].includes(o))),
+};
 const MEMBERS = (more) => ({ positionals: ['collection!', 'uri+'], options: { ...more, '--message': value('message') } });
 
 const EXPORT = { '--export': value('export'), '--no-passphrase': flag('noPassphrase'), '--print': flag('print'),
@@ -138,6 +146,33 @@ export const COMMANDS = {
            options: { '--no-html': flag('noHtml') } },
   verify: { help: 'check the archive (section 14 of the specification)', positionals: [],
             options: { '--remote': flag('remote'), '--json': flag('json') } },
+  resolve: { help: 'find and check what a sheaf: URI names (section 12.3)', positionals: ['uri!'],
+             options: { '--at': value('at', { repeat: true }), '--json': flag('json') } },
+  mirror: { help: "copy a line written elsewhere, with its owner's key log (section 11)", positionals: ['uri'],
+            options: { '--at': value('at', { repeat: true }), '--label': value('label'), '--all': flag('all'),
+                       '--licence-checked': flag('licenceChecked') } },
+  branch: { help: 'a branch of a signed version of another line (section 9)', positionals: ['uri!'],
+            options: { '--at': value('at', { repeat: true }), '--label': value('label'), '--message': value('message'),
+                       '--owner': value('owner') } },
+  accept: { help: 'an accepted copy, listed in a selection (section 9.6)', positionals: ['uri!'],
+            options: { '--at': value('at', { repeat: true }), '--label': value('label'), '--message': value('message'),
+                       '--selection': value('selection', { required: true }), '--with-original': flag('withOriginal') } },
+  draft: {
+    help: 'unsigned work in progress at draft/<id>/ (section 10.1)',
+    actions: {
+      new: { help: 'make a draft with a first deposit', ...DRAFT_DEPOSIT, defaults: { type: 'Preprint' } },
+      deposit: { help: 'deposit a new version into a draft', ...DRAFT_DEPOSIT,
+                 options: { ...DRAFT_DEPOSIT.options, '--replace': flag('replace') }, defaults: { type: 'Preprint' } },
+      delete: { help: 'delete a draft (no tombstone)', positionals: ['draft!'], options: {} },
+    },
+  },
+  seal: { help: 'seal the work of a draft as a new line (section 10.2)', positionals: ['draft!'],
+          options: { '--label': value('newLabel', { required: true }), '--owner': value('owner'),
+                     '--delete-draft': flag('deleteDraft'), '--message': value('message') } },
+  takedown: { help: 'delete an object, leaving a tombstone (section 13.2)', positionals: ['label!'],
+              options: { '--reason': value('reason', { required: true }), '--by-law': flag('byLaw'),
+                         '--keeper': flag('keeper'), '--yes': flag('yes') },
+              exclusive: [['--by-law', '--keeper']] },
   owner: {
     help: 'make an owner, change its keys, end it, show its key log',
     actions: {
@@ -185,9 +220,9 @@ export const COMMANDS = {
   'help-config': { help: 'describe osheaf.json and your own configuration (key wallets)', positionals: [], options: {} },
 };
 
-const LATER = ['resolve', 'mirror', 'branch', 'accept', 'draft', 'seal', 'takedown', 'zenodo', 'arxiv'];
+const LATER = ['zenodo', 'arxiv'];
 
-const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER', did: 'DID',
+const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER', did: 'DID', draft: 'DRAFT',
                    exposed: 'DID', place: 'URL|PATH' };
 
 function positional(p) {
@@ -265,6 +300,7 @@ export function parseArgs(argv) {
     where = `${out.cmd} ${action}`;
   }
   const args = { ...(spec.defaults || {}) };
+  const k0 = k;
   for (const o of Object.values(spec.options)) if (o.repeat) args[o.dest] = [];
   const positionals = [];
   let rest = false;
@@ -307,6 +343,19 @@ export function parseArgs(argv) {
     }
     if (o.repeat) args[o.dest].push(v);
     else args[o.dest] = v;
+  }
+  for (const group of spec.exclusive || []) {
+    const given = argv.slice(k0).map((a) => a.split('=')[0]).map((a) => {
+      try {
+        return a.startsWith('--') && a !== '--' ? option(spec, a, where) : null;
+      } catch {
+        return null;
+      }
+    }).filter((o) => group.includes(o));
+    if (new Set(given).size > 1) {
+      const [first, second] = [...new Set(given)];
+      throw new UsageError(`osheaf ${where}: error: argument ${second}: not allowed with argument ${first}`);
+    }
   }
   if (args.help) {
     out.args = args;
@@ -455,12 +504,16 @@ async function extraSources(specs) {
 }
 
 async function depositRun(f, args) {
+  await deposit(f, await depositFiles(args));
+}
+
+async function depositFiles(args) {
   const a = { ...args };
   a.source = args.source ? await readFile(args.source) : null;
   a.pdf = args.pdf ? await readFile(args.pdf) : null;
   a.extraSource = (await extraSources(args.extraSource)).map((x) => ({ ...x, logical: x.logical === x.name ? '' : x.logical }));
   a.abstractFile = args.abstractFile ? await fs.readFile(args.abstractFile, 'utf-8') : null;
-  await deposit(f, a);
+  return a;
 }
 
 const REQUIRED = { deposit: ['label', 'title', 'author'], relicense: ['label', 'rights', 'method'],
@@ -669,6 +722,59 @@ const RUN = {
     env.out(CONFIG_HELP);
     return 0;
   },
+
+  async resolve(root, args, env) {
+    let f = null;
+    try {
+      f = await openArchive(root, env);
+    } catch (error) {
+      if (root || !(error instanceof Stop)) throw error;
+    }
+    return resolveCommand(f, args, env);
+  },
+
+  async mirror(root, args, env) {
+    const f = await openArchive(root, env);
+    await mirror(f, args);
+    await present(f);
+    return 0;
+  },
+
+  async branch(root, args, env) {
+    const f = await openArchive(root, env);
+    await branch(f, args);
+    await present(f);
+    return 0;
+  },
+
+  async accept(root, args, env) {
+    const f = await openArchive(root, env);
+    await accept(f, args);
+    await present(f);
+    return 0;
+  },
+
+  async draft(root, args, env) {
+    const f = await openArchive(root, env);
+    if (args.action === 'delete') await draftDelete(f, { label: args.draft });
+    else await draftDeposit(f, await depositFiles({ ...args, label: args.draft }), args.action === 'new');
+    await present(f);
+    return 0;
+  },
+
+  async seal(root, args, env) {
+    const f = await openArchive(root, env);
+    await seal(f, { ...args, label: args.draft });
+    await present(f);
+    return 0;
+  },
+
+  async takedown(root, args, env) {
+    const f = await openArchive(root, env);
+    await takedown(f, args);
+    await present(f);
+    return 0;
+  },
 };
 
 export const USAGE = `usage: osheaf [-h] [--version] [--root ROOT] COMMAND ...
@@ -687,9 +793,8 @@ The website (osheaf.json "index": {"html": ...}) is written again after every
 command that changes the archive. deposit, relicense, relate, describe and
 init also take their options from a YAML or JSON file: --from FILE.
 
-The other commands of opensheaf-py (resolve, mirror, branch, accept, draft,
-seal, takedown, zenodo, arxiv) come in later versions; until then, use
-opensheaf-py.
+The other commands of opensheaf-py (zenodo, arxiv) come in later versions;
+until then, use opensheaf-py.
 
 Warning: OpenSheaf 0.2 is a draft. Until version 1.0, a revision may change
 the format in incompatible ways, and archives may have to be rebuilt.`;

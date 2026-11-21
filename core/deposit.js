@@ -5,6 +5,7 @@ import { dateOf, isEvidence } from './versions.js';
 import { jsonBytes } from './write.js';
 import { writeDiscovery } from './discovery.js';
 import { OBJ, OBJ_FORMAT, GENESIS, SPEC, exit } from './folder.js';
+import { joinPath } from './storage.js';
 
 export const RIGHTS = {
   'cc-by-4.0': { rights: 'Creative Commons Attribution 4.0 International',
@@ -150,8 +151,17 @@ export async function carriedFiles(f, dir, inv) {
 
 export async function deposit(f, a) {
   const label = a.label;
+  const draft = Boolean(a.draft);
   let id = null, owner = null;
-  if (f.labels.has(label)) {
+  if (draft) {
+    if (!label || !LABEL.test(label) || label.length > 64) {
+      exit('the identifier of a draft matches ^[a-z0-9]+(-[a-z0-9]+)*$ and has at most 64 characters (section 10.1)');
+    }
+    id = `sheaf:draft:${label}`;
+    const held = (await f.storage.kind(joinPath(await f.dirOf(id), 'inventory.json'))) === 'file';
+    if (a.new && held) exit(`the draft ${label} exists: osheaf draft deposit ${label} adds a version to it`);
+    if (!a.new && !held) exit(`no draft ${label} in this archive (osheaf draft new ${label} makes one)`);
+  } else if (f.labels.has(label)) {
     if (a.new) exit(`${label} is the label of a line already: deposit a new version without --new, ` +
                     'or choose another label for a new work');
     id = f.labels.get(label);
@@ -238,6 +248,7 @@ export async function deposit(f, a) {
   if (abstract) datacite.descriptions = [{ description: abstract, descriptionType: 'Abstract' }];
   const related = relatedFromArgs(a.related);
   if (related.length) datacite.relatedIdentifiers = related;
+  if (draft) delete datacite.url;
 
   const obj = { format: OBJ_FORMAT, specification: SPEC, kind: 'document', name: null, owner,
                 documentVersion: docVersion };
@@ -261,14 +272,17 @@ export async function deposit(f, a) {
       '.txt': 'text/plain', '.html': 'text/html' }[suffixOf(a.licenceFile).toLowerCase()] || 'text/plain' };
   }
 
-  if (id === null) {
+  if (draft) {
+    delete obj.name;
+    delete obj.owner;
+  } else if (id === null) {
     const sealed = await f.seal('document', owner);
     id = sealed.id;
     files.set(GENESIS, sealed.genesis);
   } else {
     files.set(GENESIS, await f.readLogical(dir, inv, GENESIS));
   }
-  obj.name = id.split(':')[1];
+  if (!draft) obj.name = id.split(':')[1];
   if (prevObj?.parent) {
     obj.parent = prevObj.parent;
     const state = inv.versions[inv.head].state;
@@ -280,7 +294,7 @@ export async function deposit(f, a) {
   files.set('datacite.json', jsonBytes(datacite));
   const done = await f.addVersion(id, files, obj, a.message || `Deposit: document version ${docVersion}`,
                                   { acknowledged: Boolean(a.iKnow) });
-  f.labels.set(label, id);
+  if (!draft) f.labels.set(label, id);
   await writeDiscovery(f);
   f.env.out(`${label}: ${done.head} (document version ${docVersion}) ${id}`);
   return { id, head: done.head, documentVersion: docVersion };

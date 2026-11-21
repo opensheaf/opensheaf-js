@@ -52,9 +52,12 @@ core/   web-standard ES modules: no Deno.*, no node: modules
   deposit, init, check
   describe, collections, website, keepers,        descriptions, collections, the website
   inputs
+  keylogs, wallets, passkey, owner                owners, keys, wallets, passkeys
 cli/    the command line: node: modules, which Deno has too
   disk       an archive folder on a disk
-  keystore   current keys, exported keys, passphrases
+  keystore   current keys (files, the macOS keychain), exported keys, passphrases
+  outside    the clipboard, key wallets' commands and GitHub's API, files, stdin
+  unlock     the listener of the passkey hand-off
   osheaf     the command
 tests/  node:test, run by deno test and node --test
 ```
@@ -137,8 +140,12 @@ Module map
 | [31](31-website.md) | `core/website.js` | the website (profile `website`) | opensheaf-py 30, 31 |
 | [32](32-keepers.md) | `core/keepers.js` | the link of an owner to its keeper | opensheaf-py 06 |
 | [33](33-inputs.md) | `core/inputs.js` | options from YAML or JSON files | opensheaf-py 60 |
+| [34](34-key-logs.md) | `core/keylogs.js` | key logs rotated, exposed, ended, forked, met; read from folders | opensheaf-py 06 |
+| [35](35-wallets.md) | `core/wallets.js` | key wallets: GitHub (REST API), commands of the user's | opensheaf-py 09 |
+| [36](36-passkeys.md) | `core/passkey.js`, `cli/unlock.js` | the passkey hand-off from `unlock.opensheaf.org` | opensheaf-py 09 |
+| [37](37-owner-commands.md) | `core/owner.js` | `owner`, `key`, `sign` | opensheaf-py 19, 22 |
 | [40](40-cli.md) | `cli/*.js` | the command line | opensheaf-py 60 |
-| [70](70-tests.md)–[72](72-tests-parity.md) | `tests/*.test.js` | the tests | |
+| [70](70-tests.md)–[73](73-tests-owners.md) | `tests/*.test.js` | the tests | |
 
 The chapters 05 to 17 are the Explorer's, copied with their reasoning;
 where they speak of "the explorer", they speak of the reader of archives
@@ -164,12 +171,14 @@ The phases
    that `init` makes the same configuration as opensheaf-py; `--from
    FILE`; the presentation and keeper checks of `verify`. See "Phase 2:
    results and notes" below.
-3. **Owners and keys**: `owner rotate|expose|end|show|init`, `sign`,
-   `key new|export|import|forget`; key wallets (GitHub and command
-   wallets, envelopes, `key push|pull|list`); passkey unlock
-   (`key enroll|unlock`, WebAuthn PRF, `unlock.opensheaf.org`); the macOS
-   keychain through `security`; `init --owner --key-log`.
-4. **Across archives**: `resolve`, `mirror`, `owner pull`, `branch`,
+3. **Owners and keys** (done): `owner init|rotate|expose|end|show|pull`,
+   `sign`, `key new|push|pull|list|forget|export|import|enroll|unlock`,
+   `help-config`; key wallets (GitHub, through its REST API, and command
+   wallets; envelopes); passkey unlock (the hand-off from
+   `unlock.opensheaf.org`); the macOS keychain through `security`; `init
+   --owner --key-log` and `init --keys`. See "Phase 3: results and notes"
+   below.
+4. **Across archives**: `resolve`, `mirror`, `branch`,
    `accept`, `draft`, `seal`, `takedown`; `verify --remote` with keepers;
    the completeness checks of the storage root.
 5. **Services**: `arxiv fetch|import` and `zenodo`, on the command line
@@ -254,6 +263,64 @@ Notes for phase 3:
   `verify` (chapter [17](17-verify.md)), with which the verification of a
   folder makes the check of the presentation as opensheaf-py makes it.
 
+Phase 3: results and notes
+--------------------------
+
+What the tests show (chapters [72](72-tests-parity.md) and
+[73](73-tests-owners.md)):
+
+- one owner is kept by both programs in turn: this program rotates,
+  exposes and ends key logs opensheaf-py made, and the other way round;
+  each signs again what a key exposed by the other signed; `owner show`
+  says the same in both; both verifications agree, without a finding;
+- copies of a key log are met by either (`owner pull` of a folder, `init
+  --owner --key-log`): extended alike, and a fork recorded by each on the
+  other's copy verifies with both;
+- one key wallet serves both: the keys opensheaf-py puts in a private
+  GitHub repository (through `gh`) are listed, pulled and signed with by
+  this program (through GitHub's API), and those this program puts there
+  by opensheaf-py; `key list` says the same in both;
+- the text of `key export` of either, in clear or under the passphrase,
+  is imported by the other;
+- the hand-off of a passkey gives the vector of opensheaf-py's tests (the
+  code `371 704`, the same ciphertext and tag), with WebCrypto's X25519
+  and HMAC; the messages of the commands are opensheaf-py's.
+
+Where the two differ:
+
+- **GitHub without `gh`.** The GitHub wallet calls GitHub's REST API with
+  `fetch`; the token is `GH_TOKEN`, `GITHUB_TOKEN` or `gh auth token`,
+  and `OPENSHEAF_GITHUB_API` names another API (a test double, GitHub
+  Enterprise). The messages of a failed request are GitHub's, not `gh`'s.
+- **`keyring`.** The Python package has no equivalent: on macOS,
+  `OPENSHEAF_KEY_STORE=keyring` is taken as `security`, the keychain that
+  `keyring` uses there (with a note); elsewhere it is refused, and a key
+  kept in the Secret Service or the Credential Manager by opensheaf-py is
+  moved with `key export --stdout` and `key import --stdin`. Without
+  `OPENSHEAF_KEY_STORE`, keys are kept in the keychain on macOS, else in
+  files, and the warning on a key kept in a file says so.
+- **Witness files of key logs read over HTTP.** A key log read from
+  another archive (`owner pull URL`) carries the signature files of the
+  rotation keys the reader of chapter [14](14-archive.md) expects, not
+  every file of the folder; a fork record made from it may carry fewer
+  witness files than opensheaf-py's would, and is as valid.
+- **`owner pull` of a folder that is an archive**: as for `--at` (phase
+  2), an archive is reached by its URL, through the locations; a folder
+  given is read as the folder of an owner object.
+
+Notes for phase 4:
+
+- `owner pull URL` reads the key log through the resolver; `mirror` will
+  write the key log beside the lines it copies with `recordKeyLog`
+  (chapter [37](37-owner-commands.md)), which needs the takedown check of
+  opensheaf-py's `record_key_log` (a key log taken down here returns only
+  with the version its tombstone pins) before it copies a key log not
+  held yet;
+- the Manager (phase 6) can reuse `core/wallets.js` (GitHub's API through
+  `fetch`) and `core/keys.js` as they are; a page of another origin cannot
+  use the passkeys of `unlock.opensheaf.org`, so the Manager will either
+  live on that origin or hand off to that page as the command line does.
+
 What stays in Python for now
 ----------------------------
 
@@ -261,7 +328,7 @@ What stays in Python for now
   opensheaf-py, which runs TeXmacs headless; the command line here will
   call TeXmacs as an external program in a later phase. Until then, a
   deposit gives the PDF.
-- Everything of phases 3 to 5, above: `osheaf` of opensheaf-py does it on
+- Everything of phases 4 and 5, above: `osheaf` of opensheaf-py does it on
   the same archives, and the command here says so when asked.
 - The TeXmacs index of an archive (`--index texmacs`).
 - YAML configurations (`osheaf.yaml`), which opensheaf-py reads; this

@@ -222,11 +222,16 @@ export class ArchiveFolder {
     if (errors.length) stop(`the key log of ${who} has errors: ` + errors.join('; '));
     const latest = log.latest();
     if (!latest) stop(`the owner ${who} has ended (section 6.3): nothing is signed for it`);
-    const found = await this.env.keyStore.current(owner, latest.keys.keys);
+    let found = await this.env.keyStore.current(owner, latest.keys.keys);
     const need = latest.keys.threshold;
+    if (found.length < need && !this.env.signingKeyGiven && this.env.pullFromWallet) {
+      found = await this.env.pullFromWallet(this, owner, latest, found);
+    }
     if (found.length < need) {
+      const hint = this.env.keyStore.keptOnDevice() ? 'osheaf key new makes one for this computer'
+        : 'configure a key wallet, from which each command opens them';
       stop(`this computer holds ${found.length} of the current keys of ${who}, and v${latest.number} ` +
-           `of its key log needs ${need} to sign (osheaf key new makes one for this computer)`);
+           `of its key log needs ${need} to sign (${hint})`);
     }
     return { log, latest, signers: found };
   }

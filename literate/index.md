@@ -89,7 +89,8 @@ Keeping an archive
 14. [Storage: an archive as files](20-storage.md): on a disk, in memory,
     over GitHub later; and a storage read over `fetch`.
 15. [Keys: signing, and key files](21-keys.md): Ed25519 with WebCrypto,
-    rotation key files in clear and under a passphrase.
+    rotation key files in clear and under a passphrase, envelopes that a
+    passphrase or a passkey opens, texts for password managers.
 16. [Writing files as opensheaf-py writes them](22-writing.md): JSON,
     genesis records, inventories, signature files, key logs.
 17. [The archive kept](23-folder.md): configuration, objects, key logs
@@ -109,17 +110,30 @@ Keeping an archive
 26. [Keepers](32-keepers.md): the link of an owner to its keeper.
 27. [Options from files](33-inputs.md): `--from FILE`, YAML or JSON.
 
+Owners and keys
+---------------
+
+28. [Key logs, changed](34-key-logs.md): rotating, exposing, ending, fork
+    records, copies met, key logs read from folders.
+29. [Key wallets](35-wallets.md): a private GitHub repository through
+    GitHub's API, or commands of the user's.
+30. [Passkey unlock](36-passkeys.md): the hand-off from
+    `unlock.opensheaf.org`, X25519 and HKDF with WebCrypto.
+31. [The commands of owners and keys](37-owner-commands.md): `owner`,
+    `key`, `sign`, `init --owner`.
+
 The command line
 ----------------
 
-28. [The command line](40-cli.md): a folder on a disk, the keys of this
-    device, the commands.
+32. [The command line](40-cli.md): a folder on a disk, the keys of this
+    device (files, the macOS keychain), the clipboard, the listener of
+    the passkey hand-off, the commands.
 
 The tests
 ---------
 
-29. [The tests](70-tests.md): storages, files, key files, an archive in
-    memory.
-30. [The tests of names, keys and signatures](71-tests-identity.md),
+33. [The tests](70-tests.md): storages, files, key files, an archive in
+    memory, owners, wallets and passkeys.
+34. [The tests of names, keys and signatures](71-tests-identity.md),
     against appendix C and the edge cases of Ed25519.
-31. [The tests of parity with opensheaf-py](72-tests-parity.md).
+35. [The tests of parity with opensheaf-py](72-tests-parity.md).

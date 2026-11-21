@@ -1,9 +1,9 @@
 // Generated from literate/40-cli.md by opensheaf-literate: edit the document, not this file.
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { Key, KeyError, base64 } from '../core/keys.js';
 import { keyId } from '../core/names.js';
@@ -11,8 +11,10 @@ import { unbase64 } from '../core/crypto.js';
 import { Stop, sentence, short } from '../core/folder.js';
 
 export const SIGNING_KEY = 'OPENSHEAF_SIGNING_KEY', KEY_STORE = 'OPENSHEAF_KEY_STORE';
+export const SERVICE = 'opensheaf-current-key';
 const STORES = ['keyring', 'security', 'file', 'none'];
-const STORE_NAMES = { file: 'a file of this computer', none: 'memory, for this command only' };
+const STORE_NAMES = { keyring: 'the keychain', security: 'the keychain', file: 'a file of this computer',
+                      none: 'memory, for this command only' };
 
 export function keyFolder(owner, env = process.env) {
   const base = env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
@@ -30,16 +32,82 @@ async function keyFromBase64(text, where) {
   return Key.fromSeed(seed);
 }
 
-export function fileKeyStore({ env = process.env, warn } = {}) {
+export function securityCommand(args, input = null) {
+  const r = spawnSync('security', args, { input: input ?? undefined, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+  return { status: r.error ? 127 : r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+}
+
+export function keyStore({ env = process.env, warn = () => {}, err = warn, security = null,
+                           platform = process.platform } = {}) {
   const pinned = env[KEY_STORE] || null;
-  const memory = new Map();
-  const store = () => {
+  const run = security || securityCommand;
+  const hasSecurity = Boolean(security) || (platform === 'darwin' && existsSync('/usr/bin/security'));
+  const memory = new Map(), seen = new Map();
+  let noted = false;
+  const stores = () => {
     if (pinned && !STORES.includes(pinned)) throw new Stop(sentence(`${KEY_STORE} is one of ${STORES.join(', ')}`));
-    if (pinned === 'keyring' || pinned === 'security') {
-      throw new Stop(sentence(`${KEY_STORE}=${pinned}: opensheaf-js keeps current keys in files for now ` +
-                              `(${KEY_STORE}=file); the keychain comes in a later version`));
+    if (pinned === 'none') return [];
+    if (pinned === 'keyring') {
+      if (platform !== 'darwin') {
+        throw new Stop(sentence(`${KEY_STORE}=keyring: opensheaf-js cannot reach the system keyring of this system ` +
+                                `(keyring is a Python package); use ${KEY_STORE}=file, and move a key kept there with ` +
+                                'osheaf key export --stdout and osheaf key import --stdin'));
+      }
+      if (!noted) err(`Note: ${KEY_STORE}=keyring: opensheaf-js uses the macOS keychain through security, where keyring keeps the keys.`);
+      noted = true;
+      return ['security'];
     }
-    return pinned || 'file';
+    if (pinned) return [pinned];
+    return hasSecurity ? ['security', 'file'] : ['file'];
+  };
+  const account = (owner, kid) => `${owner}:${kid}`;
+  const slot = (store, owner, kid) => `${store}|${store === 'file' ? keyFolder(owner, env) : ''}|${owner}|${kid}`;
+  const read = async (store, owner, kid) => {
+    if (store === 'none') return memory.get(account(owner, kid)) ?? null;
+    if (store === 'security') {
+      if (!hasSecurity) return null;
+      const r = await run(['find-generic-password', '-s', SERVICE, '-a', account(owner, kid), '-w']);
+      return r.status === 0 ? r.stdout.trim() : null;
+    }
+    const p = path.join(keyFolder(owner, env), `${kid}.key`);
+    let st = null;
+    try {
+      st = await fs.lstat(p);
+    } catch {
+      return null;
+    }
+    if (st.isSymbolicLink()) throw new Stop(sentence(`${p} is a symbolic link: a key file is a plain file of its own`));
+    if (platform !== 'win32' && (st.mode & 0o077)) {
+      throw new Stop(sentence(`${p} can be read by other users: chmod 600 it (and check who read it)`));
+    }
+    return (await fs.readFile(p, 'ascii')).trim();
+  };
+  const lookup = async (store, owner, kid) => {
+    const s = slot(store, owner, kid);
+    if (store === 'none') return read(store, owner, kid);
+    if (!seen.has(s)) seen.set(s, await read(store, owner, kid));
+    return seen.get(s);
+  };
+
+  const write = async (store, owner, kid, text) => {
+    if (store === 'none') {
+      memory.set(account(owner, kid), text);
+      return true;
+    }
+    if (store === 'security') {
+      if (!hasSecurity) return false;
+      const r = await run(['-i'], `add-generic-password -U -s ${SERVICE} -a ${account(owner, kid)} -w ${text}\n`);
+      if (r.status !== 0) return false;
+      const back = await run(['find-generic-password', '-s', SERVICE, '-a', account(owner, kid), '-w']);
+      return back.status === 0 && back.stdout.trim() === text;
+    }
+    const folder = keyFolder(owner, env);
+    await fs.mkdir(folder, { recursive: true, mode: 0o700 });
+    const p = path.join(folder, `${kid}.key`);
+    await fs.writeFile(p, text + '\n', { flag: 'wx', mode: 0o600 });
+    warn(`a current key of ${short(owner)} is kept in ${p}, protected only by the permissions of your files` +
+         (platform === 'darwin' ? '' : '; opensheaf-js reaches no credential store on this system'));
+    return true;
   };
   return {
     keptOnDevice: () => pinned !== 'none',
@@ -54,49 +122,46 @@ export function fileKeyStore({ env = process.env, warn } = {}) {
         return [key];
       }
       const found = [];
-      const kind = store();
       for (const did of dids) {
         const kid = await keyId(did);
-        let text = memory.get(`${owner}:${kid}`) ?? null;
-        if (text === null && kind === 'file') {
-          const p = path.join(keyFolder(owner, env), `${kid}.key`);
-          let st = null;
-          try {
-            st = await fs.lstat(p);
-          } catch {
-            st = null;
-          }
-          if (st?.isSymbolicLink()) throw new Stop(sentence(`${p} is a symbolic link: a key file is a plain file of its own`));
-          if (st && process.platform !== 'win32' && (st.mode & 0o077)) {
-            throw new Stop(sentence(`${p} can be read by other users: chmod 600 it (and check who read it)`));
-          }
-          if (st) text = (await fs.readFile(p, 'ascii')).trim();
-        }
-        if (text) {
-          const key = await keyFromBase64(text, `${kind} ${owner}:${kid}`);
-          if (key.did !== did) throw new Stop(sentence(`${kind} ${owner}:${kid} holds another key than ${did}`));
+        for (const store of [...stores(), 'none']) {
+          const text = await lookup(store, owner, kid);
+          if (!text) continue;
+          const key = await keyFromBase64(text, `${store} ${account(owner, kid)}`);
+          if (key.did !== did) throw new Stop(sentence(`${store} ${account(owner, kid)} holds another key than ${did}`));
           found.push(key);
+          break;
         }
       }
       return found;
     },
-    async keep(owner, key) {
-      const kind = store();
+    async keep(owner, key, store = null) {
       const text = base64(key.seed);
-      if (kind === 'none') {
-        memory.set(`${owner}:${key.id}`, text);
-        return 'none';
+      const todo = store ? [store] : stores();
+      for (const s of todo.length ? todo : ['none']) {
+        if (await write(s, owner, key.id, text)) {
+          if (s !== 'none') seen.set(slot(s, owner, key.id), text);
+          return s;
+        }
       }
-      const folder = keyFolder(owner, env);
-      await fs.mkdir(folder, { recursive: true, mode: 0o700 });
-      const p = path.join(folder, `${key.id}.key`);
-      await fs.writeFile(p, text + '\n', { flag: 'wx', mode: 0o600 });
-      warn(`a current key of ${short(owner)} is kept in ${p}, protected only by the permissions of your files; ` +
-           'opensheaf-js does not use the system\'s credential store yet');
-      return 'file';
+      throw new Stop(sentence(`no store kept the key ${key.did}`));
+    },
+    async forget(owner, did) {
+      const kid = await keyId(did);
+      for (const s of stores()) {
+        if (s === 'security' && hasSecurity) {
+          await run(['delete-generic-password', '-s', SERVICE, '-a', account(owner, kid)]);
+        } else if (s === 'file') {
+          await fs.unlink(path.join(keyFolder(owner, env), `${kid}.key`)).catch(() => {});
+        }
+        seen.set(slot(s, owner, kid), null);
+      }
+      memory.delete(account(owner, kid));
     },
   };
 }
+
+export const fileKeyStore = keyStore;
 
 export function exportFolder(archiveRoot = null) {
   return {
@@ -172,7 +237,7 @@ function hidden(prompt) {
 
 export function passphrases(env = process.env, warn = () => {}) {
   let asked = null;
-  return async ({ confirm = true, where = null } = {}) => {
+  const ask = async ({ confirm = true, where = null } = {}) => {
     if (env.OPENSHEAF_PASSPHRASE) return env.OPENSHEAF_PASSPHRASE;
     if (asked !== null) return asked;
     const command = (env.OPENSHEAF_PASSPHRASE_COMMAND || '').trim();
@@ -191,6 +256,8 @@ export function passphrases(env = process.env, warn = () => {}) {
     if (confirm && (await hidden('The passphrase again: ')) !== first) throw new Stop(sentence('the two passphrases differ'));
     return (asked = first);
   };
+  ask.known = () => Boolean(env.OPENSHEAF_PASSPHRASE) || asked !== null;
+  return ask;
 }
 
 export { KeyError };

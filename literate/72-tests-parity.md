@@ -38,7 +38,17 @@ never the user's:
    local server (both programs reading it through `OPENSHEAF_LOCATIONS`):
    `collection new|add|status|update|remove|follow|sync` give the same
    `members.json` and `datacite.json` and say the same, and `osheaf verify
-   --remote` gives the same findings.
+   --remote` gives the same findings;
+9. one owner kept by both: each rotates, exposes and ends the key log the
+   other made, signs again what an exposed key signed, and meets the
+   other's copies (`owner pull`, `init --owner --key-log`), extending them
+   or recording a fork; both verifications agree, and `owner show` says
+   the same;
+10. one key wallet, a double of a private GitHub repository shared by the
+    two (a double of `gh` for opensheaf-py, a local double of GitHub's API
+    for this program, on the same files): the keys either puts there the
+    other lists, pulls and signs with; and the texts of `key export` of
+    either are imported by the other.
 
 opensheaf-py is found as `OSHEAF_PY`, or as `osheaf` on the `PATH`; the
 continuous integration installs it from its repository. Without it, the
@@ -77,6 +87,10 @@ tests are skipped, with the reason.
 
     <<parity: collections across archives>>
 
+    <<parity: owners kept by both>>
+
+    <<parity: one wallet for both>>
+
 Running the two
 ---------------
 
@@ -109,8 +123,8 @@ not one in the temporary home) or Node.
       if (process.env.SYSTEMROOT) env.SYSTEMROOT = process.env.SYSTEMROOT;
       env.DENO_DIR = process.env.DENO_DIR || path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Caches/deno'
         : process.platform === 'win32' ? 'AppData/Local/deno' : '.cache/deno');
-      const run = (command, args, { cwd = root, more = {} } = {}) => {
-        const r = spawnSync(command[0], [...command.slice(1), ...args], { cwd, env: { ...env, ...more }, encoding: 'utf-8' });
+      const run = (command, args, { cwd = root, more = {}, input = undefined } = {}) => {
+        const r = spawnSync(command[0], [...command.slice(1), ...args], { cwd, env: { ...env, ...more }, encoding: 'utf-8', input });
         if (r.error) throw r.error;
         return r;
       };
@@ -632,6 +646,302 @@ network.
         assert.ok(verified(s, arch, more).some((f) => /not held in this archive: not resolved/.test(f)));
       } finally {
         server?.stop();
+        await s.done();
+      }
+    });
+
+Owners kept by both
+-------------------
+
+One owner, made by opensheaf-py, its rotation keys exported in clear;
+both programs share the file store of the sandbox, so that a current key
+made by one signs with the other. Each step is made by one program on the
+key log the other wrote last, and the two verifications of the archive
+agree, without a finding.
+
+    // in parity: owners kept by both:
+    async function keyFiles(dir) {
+      return (await readdir(dir)).sort().map((n) => path.join(dir, n));
+    }
+
+    function clean(s, where, more = {}) {
+      const found = verified(s, where, more);
+      assert.deepEqual(found.filter((f) => !f.startsWith('result: ')), [], where);
+      return found;
+    }
+
+    test('one owner kept by both: rotate, expose, sign again, end', { skip }, async () => {
+      const s = await sandbox();
+      try {
+        await papers(s);
+        const k = (n) => path.join(s.root, n);
+        ok(s.py(await initArgs('arch', k('k1'))), 'py init');
+        const arch = k('arch');
+        ok(s.py(['deposit', 'paper', '../paper.tex', ...DEPOSIT, '--new'], { cwd: arch }), 'py deposit');
+        const k1 = await keyFiles(k('k1'));
+        const fresh = ok(s.js(['key', 'new'], { cwd: arch }), 'js key new').stdout.split('\n')[1].trim();
+        ok(s.js(['owner', 'rotate', '--add', fresh, '--rotation-key', k1[0], '--rotation-key', k1[2], '--export', k('k2'),
+                 '--no-passphrase', '--yes'], { cwd: arch }), 'js rotate a py key log');
+        clean(s, arch);
+        const k2 = await keyFiles(k('k2'));
+        ok(s.py(['owner', 'rotate', '--rotation-key', k2[1], '--rotation-key', k2[2], '--export', k('k3'), '--no-passphrase',
+                 '--yes', '--next-threshold', '1', '--rotation', '2'], { cwd: arch }), 'py rotate a js key log');
+        clean(s, arch);
+        const show = ok(s.py(['owner', 'show', '--offline'], { cwd: arch }), 'py show').stdout;
+        const first = /Current keys  (did:key:\S+)/.exec(show)[1];
+        assert.notEqual(first, fresh);
+        const k3 = await keyFiles(k('k3'));
+        ok(s.js(['owner', 'expose', first, '--rotation-key', k3[0], '--export', k('k4'), '--no-passphrase', '--yes'],
+                { cwd: arch }), 'js expose');
+        const contested = verified(s, arch);
+        assert.ok(contested.some((f) => /contested/.test(f)), contested.join('\n'));
+        ok(s.py(['sign', 'paper', '--version', 'v1', '--yes'], { cwd: arch }), 'py sign again');
+        ok(s.js(['sign', 'main', '--version', 'v1', '--yes'], { cwd: arch }), 'js sign again');
+        clean(s, arch);
+        await both(s, arch, ['owner', 'show', '--offline']);
+        await both(s, arch, ['sign', 'paper', '--version', 'v1', '--yes'], { status: 1 });
+        const k4 = await keyFiles(k('k4'));
+        const { a, b } = await both(s, arch, ['owner', 'end', '--successor', 'a'.repeat(51) + 'q', '--rotation-key', k4[0]]);
+        clean(s, a);
+        clean(s, b);
+        ok(s.py(['owner', 'end', '--rotation-key', k4[0]], { cwd: arch }), 'py end');
+        await both(s, arch, ['deposit', 'paper', '../paper.tex', ...DEPOSIT], { status: 1 });
+        await both(s, arch, ['owner', 'show', '--offline']);
+        clean(s, arch);
+      } finally {
+        await s.done();
+      }
+    });
+
+Copies of the key log across the two: an archive made by each for the
+owner of an archive of the other (`init --owner --key-log`), brought up to
+date by `owner pull` of each, then forked, each recording the fork the
+other's copy shows.
+
+    // in parity: owners kept by both:
+    test('copies of a key log met by both: init --owner, pull, forks', { skip }, async () => {
+      const s = await sandbox();
+      try {
+        const k = (n) => path.join(s.root, n);
+        ok(s.py(await initArgs('one', k('k1'))), 'py init a');
+        const owner = JSON.parse(await readFile(k('one/osheaf.json'), 'utf-8')).owner;
+        const folder = (dir) => path.join(dir, 'ocfl', owner, owner);
+        const init = (dir) => ['init', dir, '--name', 'B', '--base-url', 'https://example.org/b/', '--curator', 'Doe, Jane',
+                               '--owner', owner, '--key-log', folder(k('one'))];
+        ok(s.js(init(k('two'))), 'js init --owner');
+        ok(s.py([...init(k('three')).slice(0, 2), '--name', 'C', '--base-url', 'https://example.org/c/', ...init(k('three')).slice(6)]),
+           'py init --owner');
+        const k1 = await keyFiles(k('k1'));
+        ok(s.py(['owner', 'rotate', '--rotation-key', k1[0], '--rotation-key', k1[1], '--export', k('k2'), '--no-passphrase',
+                 '--yes'], { cwd: k('one') }), 'py rotate a');
+        const pulled = ok(s.js(['owner', 'pull', folder(k('one'))], { cwd: k('two') }), 'js pull');
+        assert.match(pulled.stdout, /1 version added/);
+        const again = ok(s.py(['owner', 'pull', folder(k('one'))], { cwd: k('three') }), 'py pull');
+        assert.equal(said(again).replaceAll(k('one'), 'A'), said(pulled).replaceAll(k('one'), 'A'));
+        clean(s, k('two'));
+        clean(s, k('three'));
+        ok(s.js(['owner', 'rotate', '--rotation-key', (await keyFiles(k('k2')))[0], '--rotation-key', (await keyFiles(k('k2')))[1],
+                 '--export', k('k3b'), '--no-passphrase', '--yes'], { cwd: k('two') }), 'js rotate b');
+        ok(s.py(['owner', 'rotate', '--rotation-key', (await keyFiles(k('k2')))[1], '--rotation-key', (await keyFiles(k('k2')))[2],
+                 '--export', k('k3c'), '--no-passphrase', '--yes'], { cwd: k('three') }), 'py rotate c');
+        const fj = ok(s.js(['owner', 'pull', folder(k('three'))], { cwd: k('two') }), 'js pull a fork');
+        const fp = ok(s.py(['owner', 'pull', folder(k('two'))], { cwd: k('three') }), 'py pull a fork');
+        assert.match(fj.stdout, /a fork at v3 met at .*: fork record appended as v4/);
+        assert.match(fp.stdout, /a fork at v3 met at .*: fork record appended as v4/);
+        for (const dir of [k('two'), k('three')]) {
+          const found = clean(s, dir);
+          assert.ok(found.some((f) => /fork/.test(f)), found.join('\n'));
+        }
+        await both(s, k('two'), ['owner', 'show', '--offline']);
+      } finally {
+        await s.done();
+      }
+    });
+
+One wallet for both
+-------------------
+
+A private GitHub repository, as two doubles over one folder: opensheaf-py
+reaches it through a double of `gh` (the one of its own tests, found first
+on the `PATH`), and this program through a double of GitHub's contents
+API, a local server (`OPENSHEAF_GITHUB_API`, with a token in
+`GITHUB_TOKEN`), both written in Python, a process of their own, so that
+they answer while the tests wait for the commands. The keys are locked
+with the passphrase of `OPENSHEAF_PASSPHRASE`, at the cost both programs
+use.
+
+    // in parity: one wallet for both:
+    const FAKE_STATE = `import base64, hashlib, json, os, sys
+    state = os.environ["FAKE_GH_DIR"]
+    def repos():
+        return json.load(open(os.path.join(state, "repos.json")))
+    def sha(f):
+        return hashlib.sha1(open(f, "rb").read()).hexdigest()
+    def answer(method, path, body):
+        """(status, value) of the contents API for METHOD on PATH (repos/OWNER/REPO/contents/...)."""
+        parts = path.strip("/").split("/")
+        repo = "/".join(parts[1:3])
+        if parts[0] != "repos" or repo not in repos():
+            return 404, {"message": "Not Found"}
+        if len(parts) == 3:
+            vis = repos()[repo]
+            vis = vis if isinstance(vis, str) else "private" if vis else "public"
+            return 200, {"full_name": repo, "private": vis != "public", "visibility": vis}
+        full = os.path.join(state, "contents", repo, *parts[4:])
+        if method == "GET":
+            if os.path.isdir(full):
+                return 200, [{"name": n, "type": "dir" if os.path.isdir(os.path.join(full, n)) else "file"}
+                             for n in sorted(os.listdir(full))]
+            if os.path.isfile(full):
+                return 200, {"type": "file", "sha": sha(full), "content": base64.encodebytes(open(full, "rb").read()).decode()}
+            return 404, {"message": "Not Found"}
+        if method == "PUT":
+            if os.path.exists(full) and body.get("sha") != sha(full):
+                return 409, {"message": "sha does not match"}
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            open(full, "wb").write(base64.b64decode(body["content"]))
+            return 200, {}
+        if method == "DELETE":
+            if not os.path.isfile(full) or body.get("sha") != sha(full):
+                return 404, {"message": "Not Found"}
+            os.remove(full)
+            return 200, {}
+        return 405, {}
+    `;
+
+    const FAKE_GH = `${FAKE_STATE}
+    args = sys.argv[1:]
+    if args[:2] == ["auth", "status"]:
+        sys.exit(0)
+    method, body, path, rest = "GET", None, None, args[1:]
+    while rest:
+        a = rest.pop(0)
+        if a == "-H":
+            rest.pop(0)
+        elif a == "-X":
+            method = rest.pop(0)
+        elif a == "--input":
+            rest.pop(0)
+            body = json.loads(sys.stdin.read())
+        else:
+            path = a
+    status, value = answer(method, path, body)
+    if status != 200:
+        print(json.dumps(value))
+        print(f"gh: {value.get('message')} (HTTP {status})", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(value))
+    `;
+
+    const FAKE_API = `${FAKE_STATE}
+    import http.server
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def go(self):
+            if self.headers.get("Authorization") != "Bearer a-token":
+                return self.send(401, {"message": "Bad credentials"})
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n)) if n else None
+            self.send(*answer(self.command, self.path, body))
+        do_GET = do_PUT = do_DELETE = go
+        def send(self, status, value):
+            data = json.dumps(value).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        def log_message(self, *args):
+            pass
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    print(f"port {server.server_port}", flush=True)
+    server.serve_forever()
+    `;
+
+    async function wallets(s) {
+      const state = path.join(s.root, 'gh-state');
+      await mkdir(path.join(state, 'contents'), { recursive: true });
+      await writeFile(path.join(state, 'repos.json'), JSON.stringify({ 'me/keys': true, 'me/open': false }));
+      const bin = path.join(s.root, 'bin');
+      await mkdir(bin);
+      await writeFile(path.join(bin, 'gh'), '#!/usr/bin/env python3\n' + FAKE_GH, { mode: 0o755 });
+      const server = spawn('python3', ['-u', '-c', FAKE_API], { stdio: ['ignore', 'pipe', 'inherit'],
+                                                                  env: { ...process.env, FAKE_GH_DIR: state } });
+      const port = await new Promise((resolve, reject) => {
+        let text = '';
+        server.stdout.on('data', (chunk) => {
+          text += chunk;
+          const m = /port (\d+)/.exec(text);
+          if (m) resolve(Number(m[1]));
+        });
+        server.on('exit', () => reject(new Error('the double of GitHub stopped')));
+      });
+      return {
+        state, stop: () => server.kill(),
+        more: { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_GH_DIR: state, OPENSHEAF_PASSPHRASE: 'correct horse',
+                OPENSHEAF_GITHUB_API: `http://127.0.0.1:${port}`, GITHUB_TOKEN: 'a-token', OPENSHEAF_UNLOCK: 'passphrase' },
+      };
+    }
+
+The keys put in the wallet by `init --keys` of opensheaf-py are listed by
+this program as by opensheaf-py; a current key forgotten here is pulled
+back from it; this program rotates with the rotation keys opensheaf-py
+put there and puts new ones, which opensheaf-py lists and rotates with in
+turn; each removes the keys used up; the archive stays without a finding.
+
+    // in parity: one wallet for both:
+    test('one wallet for both: keys put by either, read by the other', { skip }, async () => {
+      const s = await sandbox();
+      const w = await wallets(s);
+      try {
+        const more = w.more;
+        const arch = path.join(s.root, 'arch');
+        ok(s.py(['init', arch, '--name', 'Papers', '--base-url', 'https://example.org/papers/', '--curator', 'Doe, Jane',
+                 '--new-owner', '--keys', 'github:me/keys', '--yes'], { more }), 'py init --keys');
+        await both(s, arch, ['key', 'list'], { more });
+        assert.match(said(s.js(['key', 'list'], { cwd: arch, more })), /holds 4 keys/);
+        const show = ok(s.js(['owner', 'show', '--offline'], { cwd: arch, more }), 'js show').stdout;
+        const did = /Current keys  (did:key:\S+)/.exec(show)[1];
+        ok(s.js(['key', 'forget', did], { cwd: arch, more }), 'js forget');
+        assert.match(ok(s.js(['key', 'pull'], { cwd: arch, more }), 'js pull').stdout, /Pulled 1 current key/);
+        ok(s.js(['owner', 'rotate', '--keys', 'github:me/keys'], { cwd: arch, more }), 'js rotate from the wallet');
+        await both(s, arch, ['key', 'list'], { more });
+        ok(s.py(['owner', 'rotate', '--keys', 'github:me/keys'], { cwd: arch, more }), 'py rotate from the wallet');
+        ok(s.py(['key', 'forget', '--from-wallet', '--used', '--yes'], { cwd: arch, more }), 'py forget --used');
+        await both(s, arch, ['key', 'list'], { more });
+        await both(s, arch, ['key', 'list', '--wallet', 'github:me/open'], { more, status: 0 });
+        ok(s.js(['init', path.join(s.root, 'js'), '--name', 'J', '--base-url', 'https://example.org/j/', '--curator', 'Doe, Jane',
+                 '--new-owner', '--keys', 'github:me/keys', '--yes'], { more }), 'js init --keys');
+        const jsArch = path.join(s.root, 'js');
+        await both(s, jsArch, ['key', 'list'], { more });
+        ok(s.py(['owner', 'rotate', '--keys', 'github:me/keys'], { cwd: jsArch, more }), 'py rotate with keys put by js');
+        clean(s, arch, more);
+        clean(s, jsArch, more);
+      } finally {
+        w.stop();
+        await s.done();
+      }
+    });
+
+The text of a key for a password manager, in clear and under the
+passphrase, exported by either program and imported by the other into a
+key store of its own.
+
+    // in parity: one wallet for both:
+    test('key texts exported by either are imported by the other', { skip }, async () => {
+      const s = await sandbox();
+      try {
+        ok(s.py(await initArgs('arch', path.join(s.root, 'keys'))), 'py init');
+        const arch = path.join(s.root, 'arch');
+        const pass = { OPENSHEAF_PASSPHRASE: 'correct horse' };
+        for (const [from, to, extra] of [['py', 'js', []], ['js', 'py', []], ['py', 'js', ['--encrypt']], ['js', 'py', ['--encrypt']]]) {
+          const text = ok(s[from](['key', 'export', '--stdout', ...extra], { cwd: arch, more: pass }), `${from} export`).stdout;
+          assert.match(text, /^opensheaf-key-text\/0\.2\n/);
+          const other = { ...pass, XDG_CONFIG_HOME: path.join(s.root, `xdg-${from}-${to}-${extra.length}`) };
+          const r = ok(s[to](['key', 'import', '--stdin'], { cwd: arch, more: other, input: text }), `${to} import`);
+          assert.match(r.stdout, /is now kept in a file of this computer\./);
+          assert.match(ok(s[from](['owner', 'show', '--offline'], { cwd: arch, more: other }), 'show').stdout, /\(on this computer\)/);
+        }
+      } finally {
         await s.done();
       }
     });

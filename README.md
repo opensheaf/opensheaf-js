@@ -6,10 +6,11 @@
 > [!WARNING]
 > **Draft.** OpenSheaf 0.2 is a draft specification. Until version 1.0, any
 > revision may change the format in incompatible ways, and archives made now
-> may have to be rebuilt. opensheaf-js is at its second phase: it makes
+> may have to be rebuilt. opensheaf-js is at its third phase: it makes
 > archives and their websites, deposits papers, keeps their descriptions
-> and collections, and verifies archives; for owners, keys and everything
-> else, use [opensheaf-py](https://github.com/opensheaf/opensheaf-py).
+> and collections, keeps owners and their keys (wallets and passkeys
+> included), and verifies archives; for mirrors, branches, arXiv, Zenodo
+> and TeXmacs, use [opensheaf-py](https://github.com/opensheaf/opensheaf-py).
 
 The tools of [OpenSheaf](https://opensheaf.org) archives (the `osheaf`
 command) in JavaScript: a port of
@@ -29,7 +30,7 @@ and the phases.
 
 ## Status
 
-Phases 1 and 2 (version 0.1.0):
+Phases 1 to 3 (version 0.1.0):
 
 - `osheaf init DIR --new-owner --export KEYS`: an archive and a new owner
   (rotation keys exported, in clear with `--no-passphrase` or under a
@@ -46,19 +47,31 @@ Phases 1 and 2 (version 0.1.0):
   catalogues and selections, with members of any archive, read over HTTP;
 - `osheaf collect`, `osheaf index` (the discovery document, the indexes
   and the website: home page, landing pages, owner pages, sitemap),
-  `osheaf verify [--remote] [--json]`.
+  `osheaf verify [--remote] [--json]`;
+- `osheaf owner init|rotate|expose|end|show|pull`: an owner's key log
+  changed with rotation keys read from their files (`--rotation-key`) or
+  from a key wallet, a fork recorded when copies meet; `osheaf sign LABEL
+  --version vN`, which signs again what an exposed key signed; `osheaf
+  init --owner NAME --key-log DIR` and `init --keys LEVEL`;
+- `osheaf key new|push|pull|list|forget|export|import|enroll|unlock`: the
+  current keys of this device, key wallets (a private GitHub repository,
+  through GitHub's API, or commands of a password manager), the clipboard,
+  and passkeys (Touch ID) through `https://unlock.opensheaf.org/`;
+  `osheaf help-config`.
 
 Every command that changes an archive writes its website again. The files
 written are those opensheaf-py writes, byte for byte (the times of
 versions aside): the parity tests compare them, and the websites the two
 write for one archive are the same. Archives made by opensheaf-js pass
 `osheaf verify` of opensheaf-py with no finding, and the other way round;
-rotation keys exported by one sign with the other. Other archives are read
+rotation keys exported by one sign with the other; one owner is kept by
+both in turn, and one key wallet serves both. Other archives are read
 where `OPENSHEAF_LOCATIONS` (or `locations` in `osheaf.json`) says, as
 opensheaf-py reads them. TeXmacs sources without a PDF, the TeXmacs
-index, owners' key rotation, wallets, mirrors, branches, arXiv and Zenodo
-are in opensheaf-py, and come here in later phases; the differences known
-are listed in [the plan](literate/00-plan.md#phase-2-results-and-notes).
+index, mirrors, branches, arXiv and Zenodo are in opensheaf-py, and come
+here in later phases; the differences known are listed in the plan
+([phase 2](literate/00-plan.md#phase-2-results-and-notes),
+[phase 3](literate/00-plan.md#phase-3-results-and-notes)).
 
 ## Running
 
@@ -98,10 +111,15 @@ node cli/osheaf.js --help
 npx github:opensheaf/opensheaf-js --help
 ```
 
-Current keys are kept in files (`OPENSHEAF_KEY_STORE=file`, under
-`XDG_CONFIG_HOME` or `~/.config`), where opensheaf-py keeps them when it
-has no keyring; `OPENSHEAF_SIGNING_KEY` and `OPENSHEAF_PASSPHRASE` work as
-in opensheaf-py.
+Current keys are kept where opensheaf-py keeps them: on macOS in the
+keychain (through `security`), else in files under `XDG_CONFIG_HOME` or
+`~/.config` (`OPENSHEAF_KEY_STORE=security|file|none` chooses;
+`keyring`, a Python package, is taken as the keychain on macOS and
+refused elsewhere). `OPENSHEAF_SIGNING_KEY`, `OPENSHEAF_PASSPHRASE`,
+`OPENSHEAF_PASSPHRASE_COMMAND`, `OPENSHEAF_WALLET` and `OPENSHEAF_UNLOCK`
+work as in opensheaf-py, and `~/.config/opensheaf/config.json` configures
+a key wallet (`osheaf help-config`). The GitHub wallet needs no `gh`: its
+token is `GH_TOKEN`, `GITHUB_TOKEN`, or that of `gh auth token`.
 
 ## Building and testing
 

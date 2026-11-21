@@ -31,7 +31,7 @@ To make a change:
 4. test: `deno test -A tests/` (`deno task test`). The parity tests need
    opensheaf-py's `osheaf` on the `PATH`, or `OSHEAF_PY=/path/to/osheaf`;
    without it they are skipped. Under Node: `npm ci && node --test
-   tests/core.test.js tests/identity.test.js`.
+   tests/core.test.js tests/identity.test.js tests/owners.test.js`.
 
 ## Rules
 

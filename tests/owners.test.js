@@ -1,0 +1,545 @@
+// Generated from literate/73-tests-owners.md by opensheaf-literate: edit the document, not this file.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, readdir, readFile, writeFile, cp, mkdir } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { main } from '../cli/osheaf.js';
+import { keyStore } from '../cli/keystore.js';
+import { ask } from '../cli/unlock.js';
+import * as passkey from '../core/passkey.js';
+import { passkeySalt, keyFileText, keyText, readKey, exampleKey, removePasskeys, passkeysOf, passkeyKek, Passkey,
+         KeyError } from '../core/keys.js';
+import { sha256, utf8 } from '../core/crypto.js';
+import { base64 } from '../core/keys.js';
+
+const COST = { opslimit: 1, memlimit: 8192 };
+const PASS = 'correct horse';
+
+function fakeGitHub(repos) {
+  const calls = [];
+  const json = (status, value) => new Response(JSON.stringify(value), { status });
+  const sha = async (text) => [...await sha256(utf8(text))].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 40);
+  const fetch = async (url, init = {}) => {
+    const u = new URL(url);
+    const method = init.method || 'GET';
+    calls.push(`${method} ${u.pathname}`);
+    const parts = u.pathname.split('/').filter(Boolean);
+    const repo = `${parts[1]}/${parts[2]}`;
+    if (parts[0] !== 'repos' || !(repo in repos)) return json(404, { message: 'Not Found' });
+    const r = repos[repo];
+    if (parts.length === 3) return json(200, { full_name: repo, private: r.visibility !== 'public', visibility: r.visibility });
+    const p = parts.slice(4).join('/');
+    const body = init.body ? JSON.parse(init.body) : null;
+    if (method === 'GET') {
+      if (p in r.files) return json(200, { type: 'file', sha: await sha(r.files[p]), content: base64(utf8(r.files[p])) });
+      const below = Object.keys(r.files).filter((f) => p === '' || f.startsWith(p + '/'));
+      if (!below.length) return json(404, { message: 'Not Found' });
+      const names = new Map();
+      for (const f of below) {
+        const rest = p === '' ? f : f.slice(p.length + 1);
+        const k = rest.indexOf('/');
+        names.set(k < 0 ? rest : rest.slice(0, k), k < 0 ? 'file' : 'dir');
+      }
+      return json(200, [...names].map(([name, type]) => ({ name, type })));
+    }
+    if (method === 'PUT') {
+      if (p in r.files && body.sha !== (await sha(r.files[p]))) return json(409, { message: 'sha does not match' });
+      r.files[p] = new TextDecoder().decode(Uint8Array.from(atob(body.content), (c) => c.charCodeAt(0)));
+      return json(200, {});
+    }
+    if (method === 'DELETE') {
+      if (!(p in r.files) || body.sha !== (await sha(r.files[p]))) return json(404, { message: 'Not Found' });
+      delete r.files[p];
+      return json(200, {});
+    }
+    return json(405, {});
+  };
+  return { fetch, calls };
+}
+
+const CRED = 'ZmFrZS1wYXNza2V5LWNyZWRlbnRpYWw';
+
+function fakeBrowser(opened, { answer = 'secret', cred = CRED } = {}) {
+  return async (url) => {
+    assert.ok(url.startsWith(passkey.UNLOCK_PAGE + '#') && !url.includes('?'));
+    const q = Object.fromEntries(new URLSearchParams(url.split('#')[1]));
+    opened.push(q);
+    if (answer === 'none') return true;
+    const salt = await passkeySalt(q.owner);
+    const used = q.mode === 'enroll' ? ((q.cred || '').split(',').includes(cred) ? null : cred) : q.cred.split(',')[0];
+    const fields = { state: q.state };
+    if (answer === 'error' || used === null) {
+      fields.error = used === null ? 'InvalidStateError: a passkey of this owner is here already' : 'NotAllowedError: the user cancelled';
+    } else {
+      let prf = await sha256(new Uint8Array([...utf8('fake prf ' + used), ...salt]));
+      if (answer === 'forged') prf = await sha256(utf8('forged'));
+      let [epk, ct, tag] = await passkey.seal(prf, passkey.fromB64url(q.pk), q.state, q.mode, q.owner, used);
+      if (answer === 'tampered') ct = new Uint8Array(32);
+      Object.assign(fields, { epk: passkey.b64url(epk), ct: passkey.b64url(ct), tag: passkey.b64url(tag), cred: used });
+    }
+    setTimeout(async () => {
+      const r = await fetch(`http://127.0.0.1:${q.port}/callback?` + new URLSearchParams(fields));
+      opened.push({ status: r.status });
+      await r.text();
+    }, 10);
+    return true;
+  };
+}
+
+async function sandbox({ repos = null, security = null } = {}) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'osheaf-owners-'));
+  const githubRepos = repos || { 'me/keys': { visibility: 'private', files: {} },
+                                 'me/open': { visibility: 'public', files: {} },
+                                 'me/papers': { visibility: 'private', files: {} } };
+  const github = fakeGitHub(githubRepos);
+  const box = { root, github, githubRepos, clip: '', opened: [], browser: null, vars: {}, inputs: [], cleared: [] };
+  box.run = async (argv, { vars = {}, stdin = '' } = {}) => {
+    const out = [], err = [];
+    const environ = { XDG_CONFIG_HOME: path.join(root, 'config'), OPENSHEAF_KEY_STORE: 'file', ...box.vars, ...vars };
+    const ask = async () => PASS;
+    ask.known = () => true;
+    const status = await main(argv, {
+      out: (l) => out.push(l), err: (l) => err.push(l), write: (t) => out.push(t.replace(/\n$/, '')),
+      input: async () => box.inputs.shift() ?? '',
+      keyStore: keyStore({ env: environ, warn: (t) => err.push('Warning: ' + t), err: (t) => err.push(t), security }),
+      passphrase: ask, cost: COST, environ,
+      clipboard: { clearAfter: 60, copy: async (t) => { box.clip = t; }, paste: async () => box.clip,
+                   clearLater: (t) => box.cleared.push(t) },
+      wallets: {
+        userConfig: () => JSON.parse(environ.USER_CONFIG || '{}'), userConfigPath: () => path.join(root, 'config', 'opensheaf', 'config.json'),
+        walletEnv: () => environ.OPENSHEAF_WALLET || '', remotes: async () => environ.REMOTES || '',
+        run: async (command, input) => runShell(command, input),
+        github: { api: 'https://api.github.invalid', fetch: github.fetch, token: async () => 'a token' },
+      },
+      readStdin: async () => stdin,
+      openBrowser: box.browser || (async (url) => assert.fail(`a browser was opened: ${url}`)),
+      unlockTimeout: 3000, unlockMode: environ.OPENSHEAF_UNLOCK || '', passphraseGiven: Boolean(environ.GIVEN),
+      signingKeyGiven: false,
+    });
+    return { status, out: out.join('\n'), err: err.join('\n'), said: [...out, ...err].join('\n') };
+  };
+  box.ok = async (argv, options) => {
+    const r = await box.run(argv, options);
+    assert.equal(r.status, 0, `${argv.join(' ')}:\n${r.said}`);
+    return r;
+  };
+  box.done = () => rm(root, { recursive: true, force: true });
+  return box;
+}
+
+async function runShell(command, input) {
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(command, { shell: true, input: input ?? undefined, encoding: 'utf-8' });
+  return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+}
+
+async function archive(box, name = 'arch', more = []) {
+  const dir = path.join(box.root, name);
+  await box.ok(['init', dir, '--name', 'Papers', '--base-url', `https://example.org/${name}/`, '--curator', 'Doe, Jane',
+                '--new-owner', '--yes', ...more]);
+  const cfg = JSON.parse(await readFile(path.join(dir, 'osheaf.json'), 'utf-8'));
+  return { dir, owner: cfg.owner, r: ['--root', dir] };
+}
+
+async function exported(box, folder) {
+  return (await readdir(path.join(box.root, folder))).map((n) => path.join(box.root, folder, n));
+}
+
+async function deposit(box, a, label, text, isNew = false) {
+  await writeFile(path.join(box.root, `${label}.pdf`), `%PDF-1.4 ${text}\n`);
+  return box.ok([...a.r, 'deposit', label, '--pdf', path.join(box.root, `${label}.pdf`), '--no-source', 'x',
+                 '--title', 'T', '--author', 'Doe, J', ...(isNew ? ['--new'] : [])]);
+}
+
+async function errorsOf(box, a) {
+  const r = await box.run([...a.r, 'verify', '--json']);
+  return JSON.parse(r.out).filter((f) => f.severity !== 'result').map((f) => `${f.severity}: ${f.place}: ${f.message}`);
+}
+
+test('an owner offline: rotate, expose, sign again, end', async () => {
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+    await deposit(box, a, 'paper', 'one', true);
+    const fresh = (await box.ok([...a.r, 'key', 'new'])).out.split('\n')[1].trim();
+    assert.match(fresh, /^did:key:z6Mk/);
+    const k1 = await exported(box, 'k1');
+    const r = await box.ok([...a.r, 'owner', 'rotate', '--add', fresh, '--rotation-key', k1[0], '--rotation-key', k1[1],
+                            '--export', path.join(box.root, 'k2'), '--no-passphrase', '--yes']);
+    assert.match(r.out, /Done: v2 of the key log of .*, signed by 2 rotation keys of v1:/);
+    const show = (await box.ok([...a.r, 'owner', 'show', '--offline'])).out;
+    const first = /Current keys  (did:key:\S+)/.exec(show)[1];
+    assert.equal((show.match(/\(on this computer\)/g) || []).length, 2);
+    const k2 = await exported(box, 'k2');
+    await box.ok([...a.r, 'owner', 'expose', first, '--rotation-key', k2[0], '--rotation-key', k2[2],
+                  '--export', path.join(box.root, 'k3'), '--no-passphrase', '--yes']);
+    assert.match((await box.ok([...a.r, 'owner', 'show', '--offline'])).out, /Exposed keys  did:key:/);
+    const refused = await box.run([...a.r, 'sign', 'paper', '--version', 'v2']);
+    assert.equal(refused.status, 1);
+    assert.match(refused.err, /no object version v2/);
+    box.inputs.push('wrong');
+    assert.match((await box.run([...a.r, 'sign', 'paper', '--version', 'v1'])).err, /Not confirmed: nothing was signed/);
+    const again = await box.ok([...a.r, 'sign', 'paper', '--version', 'v1', '--yes']);
+    assert.match(again.out, /signed again by 1 key of .*, under v3 of the key log; it is now signed\./);
+    await box.ok([...a.r, 'sign', 'main', '--version', 'v1', '--yes']);
+    assert.deepEqual(await errorsOf(box, a), []);
+    const k3 = await exported(box, 'k3');
+    const ended = await box.ok([...a.r, 'owner', 'end', '--rotation-key', k3[0], '--rotation-key', k3[1]]);
+    assert.match(ended.out, /has ended, at v4 of its key log\./);
+    const after = await box.run([...a.r, 'deposit', 'paper', '--pdf', path.join(box.root, 'paper.pdf'), '--no-source', 'x',
+                                 '--title', 'T', '--author', 'Doe, J']);
+    assert.equal(after.status, 1);
+    assert.match(after.err, /has ended \(section 6\.3\): nothing is signed for it/);
+    assert.deepEqual(await errorsOf(box, a), []);
+  } finally {
+    await box.done();
+  }
+});
+
+test('copies of a key log: init --owner, pull, a fork recorded', async () => {
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+    const ownerDir = path.join(a.dir, 'ocfl', a.owner, a.owner);
+    await cp(ownerDir, path.join(box.root, 'v1copy'), { recursive: true });
+    const b = path.join(box.root, 'b');
+    await box.ok(['init', b, '--name', 'B', '--base-url', 'https://example.org/b/', '--curator', 'Doe, Jane',
+                  '--owner', a.owner, '--key-log', path.join(box.root, 'v1copy')]);
+    const k1 = await exported(box, 'k1');
+    await box.ok([...a.r, 'owner', 'rotate', '--rotation-key', k1[0], '--rotation-key', k1[1],
+                  '--export', path.join(box.root, 'k2'), '--no-passphrase', '--yes']);
+    const pulled = await box.ok(['--root', b, 'owner', 'pull', ownerDir]);
+    assert.match(pulled.out, /1 version added from the copy at/);
+    assert.match(pulled.out, /is here up to v2\./);
+    assert.match((await box.ok(['--root', b, 'owner', 'pull', ownerDir])).out, /is here up to v2\./);
+    const c = path.join(box.root, 'c');
+    await box.ok(['init', c, '--name', 'C', '--base-url', 'https://example.org/c/', '--curator', 'Doe, Jane',
+                  '--owner', a.owner, '--key-log', path.join(box.root, 'v1copy')]);
+    await box.ok(['--root', c, 'owner', 'rotate', '--rotation-key', k1[1], '--rotation-key', k1[2],
+                  '--export', path.join(box.root, 'k2c'), '--no-passphrase', '--yes']);
+    const fork = await box.ok([...a.r, 'owner', 'pull', path.join(c, 'ocfl', a.owner, a.owner)]);
+    assert.match(fork.out, /a fork at v2 met at .*: fork record appended as v3; the owner has ended/);
+    assert.match(fork.out, /it was ended by a fork at v2\./);
+    assert.match((await box.ok([...a.r, 'owner', 'show', '--offline'])).out, /Status        ended by a fork at v2/);
+    assert.deepEqual(await errorsOf(box, a), []);
+    const wrong = await box.run(['--root', b, 'owner', 'pull', path.join(box.root, 'nowhere')]);
+    assert.equal(wrong.status, 1);
+  } finally {
+    await box.done();
+  }
+});
+
+test('an owner in a GitHub wallet', async () => {
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--keys', 'github:me/keys']);
+    const repo = Object.keys(fakeFiles(box));
+    assert.equal(repo.length, 4);
+    assert.deepEqual(JSON.parse(await readFile(path.join(a.dir, 'osheaf.json'), 'utf-8')).keys, { wallet: 'github:me/keys' });
+    const list = await box.ok([...a.r, 'key', 'list']);
+    assert.match(list.out, /The wallet github:me\/keys holds 4 keys:/);
+    assert.equal((list.out.match(/rotation/g) || []).length, 3);
+    assert.match(list.out, /current\s+\S+\s+v1\s+passphrase/);
+    assert.ok(!/seed/.test(list.said));
+    const show = (await box.ok([...a.r, 'owner', 'show', '--offline'])).out;
+    const did = /Current keys  (did:key:\S+)/.exec(show)[1];
+    assert.match((await box.ok([...a.r, 'key', 'forget', did])).out, /no longer holds the current key/);
+    assert.match((await box.ok([...a.r, 'key', 'pull'])).out, /Pulled 1 current key of .* into a file of this computer\./);
+    assert.match((await box.ok([...a.r, 'key', 'pull'])).out, /already on this computer/);
+    await box.ok([...a.r, 'key', 'forget', did]);
+    await deposit(box, a, 'paper', 'one', true);
+    assert.match((await box.ok([...a.r, 'owner', 'show', '--offline'])).out, /\(on this computer\)/);
+    assert.match((await box.ok([...a.r, 'key', 'push'])).out, /already in github:me\/keys/);
+    const moved = await box.ok([...a.r, 'owner', 'rotate', '--keys', 'offline', '--export', path.join(box.root, 'k2'),
+                                '--no-passphrase', '--yes']);
+    assert.match(moved.err, /Reading the 2 rotation keys of v1 .* from github:me\/keys/);
+    assert.match(moved.err, /Moved up to the maximum security level/);
+    const refused = await box.run([...a.r, 'key', 'forget', '--from-wallet', '--used']);
+    assert.equal(refused.status, 1);
+    box.inputs.push('forget');
+    const gone = await box.ok([...a.r, 'key', 'forget', '--from-wallet', '--used']);
+    assert.match(gone.out, /Done: 3 keys of .* removed from github:me\/keys\./);
+    assert.equal(Object.keys(fakeFiles(box)).length, 1);
+    assert.deepEqual(await errorsOf(box, a), []);
+  } finally {
+    await box.done();
+  }
+});
+
+function fakeFiles(box) {
+  return box.githubRepos['me/keys'].files;
+}
+
+test('the wallets refused', async () => {
+  const box = await sandbox();
+  try {
+    const open = await box.run(['init', path.join(box.root, 'x'), '--name', 'X', '--base-url', 'https://example.org/x/',
+                                '--curator', 'Doe, Jane', '--new-owner', '--yes', '--keys', 'github:me/open']);
+    assert.equal(open.status, 1);
+    assert.match(open.err, /me\/open is not a private repository: a wallet must be private: nothing was written to the key log\./);
+    const own = await box.run(['init', path.join(box.root, 'y'), '--name', 'Y', '--base-url', 'https://me.github.io/papers/',
+                               '--curator', 'Doe, Jane', '--new-owner', '--yes', '--keys', 'github:me/papers']);
+    assert.equal(own.status, 1);
+    assert.match(own.err, /me\/papers is a repository of the archive, which is public/);
+    const remote = await box.run(['init', path.join(box.root, 'z'), '--name', 'Z', '--base-url', 'https://example.org/z/',
+                                  '--curator', 'Doe, Jane', '--new-owner', '--yes', '--keys', 'github:Me/Keys'],
+                                 { vars: { REMOTES: 'origin\tgit@github.com:me/keys.git (fetch)\n' } });
+    assert.match(remote.err, /is a repository of the archive/);
+    const a = await archive(box, 'arch', ['--keys', 'github:me/keys']);
+    const cfg = JSON.parse(await readFile(path.join(a.dir, 'osheaf.json'), 'utf-8'));
+    await writeFile(path.join(a.dir, 'osheaf.json'), JSON.stringify({ ...cfg, keys: { wallet: 'command', read: 'cat x' } }, null, 2));
+    const cmd = await box.run([...a.r, 'key', 'list']);
+    assert.equal(cmd.status, 1);
+    assert.match(cmd.err, /osheaf.json configures a command wallet/);
+    await writeFile(path.join(a.dir, 'osheaf.json'), JSON.stringify(cfg, null, 2));
+    const rows = (await box.ok([...a.r, 'key', 'list'])).out.split('\n').filter((l) => /rotation/.test(l));
+    const show = (await box.ok([...a.r, 'owner', 'show', '--offline'])).out;
+    assert.ok(rows.length === 3 && show);
+    const files = box.githubRepos['me/keys'].files;
+    const rotation = Object.entries(files).find(([, t]) => /kind rotation/.test(t))[1];
+    const rdid = /key (did:key:\S+)/.exec(rotation)[1];
+    const kept = await box.run([...a.r, 'key', 'forget', '--from-wallet', rdid, '--yes']);
+    assert.equal(kept.status, 1);
+    assert.match(kept.err, /a rotation key of the latest version of the key log, kept/);
+    await box.ok([...a.r, 'key', 'forget', '--from-wallet', rdid, '--yes', '--force']);
+    assert.equal(Object.keys(files).length, 3);
+  } finally {
+    await box.done();
+  }
+});
+
+test('a command wallet', async () => {
+  const box = await sandbox();
+  try {
+    const store = path.join(box.root, 'pm');
+    await mkdir(store);
+    box.vars.OPENSHEAF_WALLET = JSON.stringify({
+      wallet: 'command', read: `cat '${store}/{owner}-{k}' 2>/dev/null`, write: `cat > '${store}/{owner}-{k}'`,
+      list: `ls '${store}' | tr '-' ' '`, forget: `rm '${store}/{owner}-{k}'` });
+    const a = await archive(box, 'arch', ['--keys', 'command']);
+    assert.equal((await readdir(store)).length, 4);
+    assert.equal(JSON.parse(await readFile(path.join(a.dir, 'osheaf.json'), 'utf-8')).keys, undefined);
+    assert.match((await box.ok([...a.r, 'key', 'list'])).out, /The wallet command holds 4 keys:/);
+    await box.ok([...a.r, 'owner', 'rotate', '--keys', 'command']);
+    assert.equal((await readdir(store)).length, 7);
+    box.inputs.push('forget');
+    await box.ok([...a.r, 'key', 'forget', '--from-wallet', '--used']);
+    assert.equal((await readdir(store)).length, 4);
+    assert.deepEqual(await errorsOf(box, a), []);
+  } finally {
+    await box.done();
+  }
+});
+
+test('key files, passkey locks and texts', async () => {
+  const owner = 'a'.repeat(51) + 'q', k = await exampleKey('wallet passkey');
+  const salt = await passkeySalt(owner);
+  const old = new Passkey('b2xkLWNyZWRlbnRpYWw', salt, { rp: 'opensheaf.org', kek: await passkeyKek(new Uint8Array(32).fill(4)) });
+  const now = new Passkey('bmV3LWNyZWRlbnRpYWw', salt, { kek: await passkeyKek(new Uint8Array(32).fill(5)) });
+  const text = await keyFileText(k, owner, 'current', 1, 'pass', { passkeys: [old, now], cost: COST });
+  assert.match(text, /wrap passkey prf rp=opensheaf.org cred=b2xkLWNyZWRlbnRpYWw/);
+  assert.equal((await readKey(text, null, { [old.cred]: old.kek })).key.did, k.did);
+  assert.equal((await readKey(text, 'pass')).key.did, k.did);
+  await assert.rejects(readKey(text, null, { [now.cred]: old.kek }), /a passphrase is needed/);
+  const found = Object.fromEntries(passkeysOf(text).map((p) => [p.cred, p]));
+  assert.ok((await found[now.cred].opens(now.kek)) && !(await found[now.cred].opens(old.kek)));
+  const moved = removePasskeys(text, null, 'opensheaf.org');
+  assert.ok(!moved.includes('rp=opensheaf.org') && moved.split('wrap passkey').length === 2);
+  assert.throws(() => removePasskeys(text), KeyError);
+  const costly = text.replace('opslimit=1 memlimit=8192', 'opslimit=5 memlimit=8192');
+  await assert.rejects(readKey(costly, 'pass'), /out of bounds/);
+  const plain = await keyText(k, owner);
+  assert.equal((await readKey(plain)).key.did, k.did);
+  const locked = await keyText(k, owner, 'current', 'pass', COST);
+  assert.equal((await readKey(locked, 'pass')).key.did, k.did);
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+    assert.equal((await box.run([...a.r, 'key', 'export'])).status, 1);
+    const out = (await box.ok([...a.r, 'key', 'export', '--stdout'])).out;
+    assert.match(out, /^opensheaf-key-text\/0\.2\nkind current\n/);
+    const clip = await box.ok([...a.r, 'key', 'export', '--clipboard', '--encrypt']);
+    assert.match(clip.err, /is on the clipboard: paste it/);
+    assert.equal(box.cleared[0], box.clip);
+    const did = /key (did:key:\S+)/.exec(out)[1];
+    await box.ok([...a.r, 'key', 'forget', did]);
+    assert.match((await box.ok([...a.r, 'key', 'import', '--clipboard'])).out, /is now kept in a file of this computer\./);
+    assert.match((await box.ok([...a.r, 'key', 'import', '--stdin'], { stdin: out + '\n' })).out, /already on this computer/);
+    const rot = await readFile((await exported(box, 'k1'))[0], 'utf-8');
+    assert.match((await box.run([...a.r, 'key', 'import', '--stdin'], { stdin: rot })).err, /A rotation key is never kept on a device/);
+  } finally {
+    await box.done();
+  }
+});
+
+test('passkeys: enroll, unlock, and keys opened by them', async () => {
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--keys', 'github:me/keys']);
+    box.browser = fakeBrowser(box.opened);
+    const enrolled = await box.ok([...a.r, 'key', 'enroll']);
+    assert.match(enrolled.out, /Done: the 4 keys of .* open with your passkey \(Touch ID\) and still with your passphrase\./);
+    assert.deepEqual(box.opened.filter((q) => q.mode).map((q) => q.mode), ['enroll', 'unlock']);
+    assert.match(enrolled.err, /Check that the browser shows the code \d{3} \d{3}/);
+    assert.match((await box.ok([...a.r, 'key', 'enroll'])).out, /already opens with your passkey/);
+    assert.match((await box.ok([...a.r, 'key', 'list'])).out, /passphrase, passkey \(unlock\.opensheaf\.org\)/);
+    const show = (await box.ok([...a.r, 'owner', 'show', '--offline'])).out;
+    await box.ok([...a.r, 'key', 'forget', /Current keys  (did:key:\S+)/.exec(show)[1]]);
+    box.opened.length = 0;
+    const unlocked = await box.ok([...a.r, 'key', 'unlock']);
+    assert.match(unlocked.out, /All 4 keys of .* opened with your passkey\./);
+    assert.match(unlocked.out, /Pulled 1 current key/);
+    box.opened.length = 0;
+    const rotated = await box.ok([...a.r, 'owner', 'rotate', '--keys', 'github:me/keys']);
+    assert.equal(box.opened.filter((q) => q.mode).length, 1);
+    assert.match(rotated.err, /2\/2 rotation key/);
+    assert.ok(!/open with your passphrase only/.test(rotated.err));
+    const files = Object.values(box.githubRepos['me/keys'].files);
+    assert.ok(files.every((t) => t.includes(`cred=${CRED}`)));
+    box.opened.length = 0;
+    const passphraseOnly = await box.ok([...a.r, 'owner', 'rotate', '--keys', 'github:me/keys'], { vars: { OPENSHEAF_UNLOCK: 'passphrase' } });
+    assert.equal(box.opened.length, 0);
+    assert.match(passphraseOnly.err, /open with your passphrase only: run osheaf key enroll/);
+    const current = /Current keys  (did:key:\S+)/.exec((await box.ok([...a.r, 'owner', 'show', '--offline'])).out)[1];
+    for (const answer of ['forged', 'tampered', 'error']) {
+      box.browser = fakeBrowser(box.opened, { answer });
+      const r = await box.run([...a.r, 'key', 'unlock']);
+      assert.equal(r.status, 1, answer);
+      assert.match(r.err, answer === 'forged' ? /opens no key/ : /did not unlock the keys/);
+      await box.ok([...a.r, 'key', 'forget', current]);
+      const fallback = await box.ok([...a.r, 'key', 'pull']);
+      assert.match(fallback.err, /osheaf asks for the passphrase instead/);
+      assert.match(fallback.out, /Pulled 1 current key/);
+    }
+    assert.deepEqual(await errorsOf(box, a), []);
+  } finally {
+    await box.done();
+  }
+});
+
+test('passkeys of the old relying party are reported, and moved', async () => {
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--keys', 'github:me/keys']);
+    box.browser = fakeBrowser(box.opened);
+    await box.ok([...a.r, 'key', 'enroll']);
+    const files = box.githubRepos['me/keys'].files;
+    for (const p of Object.keys(files)) files[p] = files[p].replace('rp=unlock.opensheaf.org', 'rp=opensheaf.org');
+    assert.match((await box.ok([...a.r, 'key', 'list'])).out, /passphrase, passkey \(opensheaf\.org\)/);
+    box.opened.length = 0;
+    const r = await box.ok([...a.r, 'owner', 'rotate', '--keys', 'github:me/keys']);
+    assert.equal(box.opened.length, 0);
+    assert.equal((r.err.match(/was enrolled on opensheaf\.org, which osheaf no longer asks/g) || []).length, 1);
+    box.browser = fakeBrowser(box.opened, { cred: 'c2Vjb25kLWNyZWRlbnRpYWw' });
+    await box.ok([...a.r, 'key', 'enroll', '--new-passkey']);
+    const gone = await box.ok([...a.r, 'key', 'forget', '--rp', 'opensheaf.org', '--yes']);
+    assert.match(gone.out, /Done: the 4 keys open with your passkey \(unlock\.opensheaf\.org\) and your passphrase\./);
+    assert.ok(Object.values(files).every((t) => !t.includes('rp=opensheaf.org')));
+  } finally {
+    await box.done();
+  }
+});
+
+function fakeSecurity() {
+  const items = new Map(), calls = [];
+  const run = async (args, input = null) => {
+    calls.push(args[0]);
+    if (args[0] === '-i') {
+      const m = /^add-generic-password -U -s (\S+) -a (\S+) -w (\S+)\n$/.exec(input);
+      if (!m) return { status: 1, stdout: '' };
+      items.set(`${m[1]} ${m[2]}`, m[3]);
+      return { status: 0, stdout: '' };
+    }
+    const key = `${args[args.indexOf('-s') + 1]} ${args[args.indexOf('-a') + 1]}`;
+    if (args[0] === 'find-generic-password') return items.has(key) ? { status: 0, stdout: items.get(key) + '\n' } : { status: 44, stdout: '' };
+    if (args[0] === 'delete-generic-password') return { status: items.delete(key) ? 0 : 44, stdout: '' };
+    return { status: 1, stdout: '' };
+  };
+  return { items, calls, run };
+}
+
+test('the keychain, through security', async () => {
+  const sec = fakeSecurity();
+  const box = await sandbox({ security: sec.run });
+  try {
+    box.vars.OPENSHEAF_KEY_STORE = 'security';
+    const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+    assert.equal(sec.items.size, 1);
+    assert.ok([...sec.items.keys()][0].startsWith(`opensheaf-current-key ${a.owner}:`));
+    assert.ok(!(await readdir(box.root)).includes('config'));
+    sec.calls.length = 0;
+    await deposit(box, a, 'one', 'one', true);
+    assert.equal(sec.calls.filter((c) => c === 'find-generic-password').length, 1);
+    const store = keyStore({ env: { OPENSHEAF_KEY_STORE: 'keyring' }, platform: 'darwin', security: sec.run, err: (t) => sec.calls.push(t) });
+    const did = /Current keys  (did:key:\S+)/.exec((await box.ok([...a.r, 'owner', 'show', '--offline'])).out)[1];
+    assert.equal((await store.current(a.owner, [did])).length, 1);
+    assert.ok(sec.calls.some((c) => /keyring: opensheaf-js uses the macOS keychain/.test(c)));
+    const elsewhere = keyStore({ env: { OPENSHEAF_KEY_STORE: 'keyring' }, platform: 'linux' });
+    await assert.rejects(elsewhere.current(a.owner, [did]), /cannot reach the system keyring/);
+    await box.ok([...a.r, 'key', 'forget', did]);
+    assert.equal(sec.items.size, 0);
+  } finally {
+    await box.done();
+  }
+});
+
+const HAND_OFF = { sk: '3MnQ1WVJ9j-gIHW04onidnPAdXBkj8Ex38awjc_xIFU', pk: 'EDUGNAoWiXZye3oZT1uexqCDj6g-_pOiwL6N01HzQX0',
+                   esk: 'XsIioGnOBETGr9GuOkvzh0s9Mnee8lz8KkfLHClLxGc', epk: 'wz_hpV5NNJh92Eqb4TE6dA7IVbA2LrWBmV8GisGgjBE',
+                   state: 'Zaz8C5ywR4VKbNOX7dQHUg', mode: 'unlock',
+                   owner: 'em4v3kp5btra7jlggxhvl5y6uluymzk2ezcdjg4pnptnk5tygora', cred: 'ZmFrZS1wYXNza2V5LWNyZWRlbnRpYWw',
+                   secret: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8',
+                   ct: '715olE38lfUKZdHslhzg2vWDWtGo88nSvuZNo4v-Hrc', tag: '2MlYwfCCb9AS4OVAMHXml-cxWi4HCPyd34BNYNVGeyU',
+                   code: '371 704' };
+
+test('the hand-off vector shared with opensheaf-py', async () => {
+  const v = HAND_OFF, b = passkey.fromB64url;
+  const sk = await passkey.keyPairOf(b(v.sk)), esk = await passkey.keyPairOf(b(v.esk));
+  assert.equal(passkey.b64url(sk.publicKey), v.pk);
+  assert.equal(passkey.b64url(esk.publicKey), v.epk);
+  assert.deepEqual([...b(v.secret)], [...Array(32).keys()]);
+  const ctx = [v.state, v.mode, v.owner, v.cred];
+  const [epk, ct, tag] = await passkey.seal(b(v.secret), sk.publicKey, ...ctx, esk);
+  assert.deepEqual([passkey.b64url(epk), passkey.b64url(ct), passkey.b64url(tag)], [v.epk, v.ct, v.tag]);
+  assert.equal(passkey.b64url(await passkey.unseal(sk, b(v.epk), b(v.ct), b(v.tag), ...ctx)), v.secret);
+  assert.equal(await passkey.confirmationCode(v.state, sk.publicKey), v.code);
+  const changed = [[b(v.epk), b(v.ct), b(v.tag), 'another state', ...ctx.slice(1)],
+                   [b(v.epk), b(v.ct), b(v.tag), v.state, 'enroll', ...ctx.slice(2)],
+                   [b(v.epk), b(v.ct), b(v.tag), v.state, v.mode, 'a'.repeat(52), v.cred],
+                   [b(v.epk), b(v.ct), b(v.tag), v.state, v.mode, v.owner, 'b3RoZXI'],
+                   [b(v.epk), Uint8Array.from(b(v.ct), (x, k) => (k ? x : x ^ 1)), b(v.tag), ...ctx],
+                   [b(v.epk), b(v.ct), new Uint8Array(32), ...ctx],
+                   [sk.publicKey, b(v.ct), b(v.tag), ...ctx],
+                   [b(v.epk), b(v.ct).slice(0, 16), b(v.tag), ...ctx]];
+  for (const args of changed) await assert.rejects(passkey.unseal(sk, ...args));
+});
+
+test('the listener takes one answer, from the page it opened', async () => {
+  const owner = 'em4v3kp5btra7jlggxhvl5y6uluymzk2ezcdjg4pnptnk5tygora';
+  const said = [];
+  const statuses = [];
+  const open = async (url) => {
+    const q = Object.fromEntries(new URLSearchParams(url.split('#')[1]));
+    const base = `http://127.0.0.1:${q.port}`;
+    const get = async (p) => {
+      const r = await fetch(base + p);
+      statuses.push(r.status);
+      return r.text();
+    };
+    await get('/other');
+    await get('/callback?state=x');
+    await get('/callback?state=' + 'W'.repeat(22) + '&error=no');
+    const [epk, ct, tag] = await passkey.seal(new Uint8Array(32).fill(7), passkey.fromB64url(q.pk), q.state, q.mode, q.owner, CRED);
+    const fields = { state: q.state, epk: passkey.b64url(epk), ct: passkey.b64url(ct), tag: passkey.b64url(tag), cred: CRED };
+    assert.match(await get('/callback?' + new URLSearchParams(fields)), /osheaf has the key/);
+    await get('/callback?' + new URLSearchParams(fields));
+    return true;
+  };
+  const got = await ask('unlock', owner, [CRED], { open, err: (l) => said.push(l), timeout: 3000 });
+  assert.deepEqual([...got.secret], Array(32).fill(7));
+  assert.deepEqual(statuses, [404, 400, 403, 200, 409]);
+  await assert.rejects(ask('unlock', owner, [CRED], { noBrowser: true, err: (l) => said.push(l), timeout: 200 }),
+                       /no answer from the browser in time/);
+  assert.ok(said.some((l) => l.startsWith('Go to this address in your browser')));
+  await assert.rejects(ask('unlock', 'not an owner', [], { timeout: 100 }), /not an owner name/);
+});

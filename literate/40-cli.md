@@ -115,22 +115,40 @@ Keys on this device
 The current key of an owner on this device is found as opensheaf-py finds
 it (its chapter [07-keys](https://opensheaf.org/opensheaf-py/07-keys.html)):
 first in the environment variable `OPENSHEAF_SIGNING_KEY` (the base64
-seed of one key, for continuous integration), then in the key store. Of
-opensheaf-py's stores, this phase has the file store:
-`~/.config/opensheaf/keys/<owner>/<k>.key` (or under `XDG_CONFIG_HOME`),
-the seed in base64, readable by its owner only, in the same place and
-form as opensheaf-py's, so that a key made by one signs with the other.
-The system's credential store (the macOS keychain, through `security`)
-comes later; `OPENSHEAF_KEY_STORE=keyring|security` says so, and
+seed of one key, for continuous integration), then in the key stores, in
+turn:
+
+- on macOS, **the keychain**, through the command `security`, under the
+  service `opensheaf-current-key` and the account `<owner>:<k>`: the
+  item opensheaf-py writes there too, directly or through the package
+  `keyring`, whose macOS backend is that keychain;
+- **a file**, `~/.config/opensheaf/keys/<owner>/<k>.key` (or under
+  `XDG_CONFIG_HOME`), the seed in base64, readable by its owner only,
+  never a symbolic link, in the same place and form as opensheaf-py's.
+
+`OPENSHEAF_KEY_STORE=security|file` uses that store alone, and
 `OPENSHEAF_KEY_STORE=none` keeps a new key in the memory of the command
-only, as in opensheaf-py.
+only, as in opensheaf-py. `keyring`, a Python package, has no equivalent
+here: on macOS it is taken as `security`, the keychain that `keyring`
+uses there, with a note; elsewhere (the Secret Service of Linux, the
+Credential Manager of Windows) it is refused, and a key kept there by
+opensheaf-py is given to this program with `osheaf key export --stdout`
+and `osheaf key import --stdin`, or kept in a file.
+
+A key written to the keychain is read back before it counts as kept; the
+seed goes to `security` on its standard input (`security -i`), never in
+its arguments, which other users could see. Each store is read once per
+command and key (opensheaf-py's `_SEEN`), so that a command that signs
+several things asks the keychain once. The runner of `security` is given
+to the store, so that the tests use one of their own and never touch the
+keychain of the person running them.
 
     // in cli/keystore.js:
-    import { promises as fs } from 'node:fs';
+    import { promises as fs, existsSync } from 'node:fs';
     import path from 'node:path';
     import os from 'node:os';
     import process from 'node:process';
-    import { execSync } from 'node:child_process';
+    import { execSync, spawnSync } from 'node:child_process';
     import { createInterface } from 'node:readline/promises';
     import { Key, KeyError, base64 } from '../core/keys.js';
     import { keyId } from '../core/names.js';
@@ -138,8 +156,10 @@ only, as in opensheaf-py.
     import { Stop, sentence, short } from '../core/folder.js';
 
     export const SIGNING_KEY = 'OPENSHEAF_SIGNING_KEY', KEY_STORE = 'OPENSHEAF_KEY_STORE';
+    export const SERVICE = 'opensheaf-current-key';
     const STORES = ['keyring', 'security', 'file', 'none'];
-    const STORE_NAMES = { file: 'a file of this computer', none: 'memory, for this command only' };
+    const STORE_NAMES = { keyring: 'the keychain', security: 'the keychain', file: 'a file of this computer',
+                          none: 'memory, for this command only' };
 
     export function keyFolder(owner, env = process.env) {
       const base = env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
@@ -157,16 +177,90 @@ only, as in opensheaf-py.
       return Key.fromSeed(seed);
     }
 
-    export function fileKeyStore({ env = process.env, warn } = {}) {
+    export function securityCommand(args, input = null) {
+      const r = spawnSync('security', args, { input: input ?? undefined, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      return { status: r.error ? 127 : r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+    }
+
+The stores to use: the pinned one, or the keychain (on macOS) and the
+file.
+
+    // in cli/keystore.js:
+    export function keyStore({ env = process.env, warn = () => {}, err = warn, security = null,
+                               platform = process.platform } = {}) {
       const pinned = env[KEY_STORE] || null;
-      const memory = new Map();
-      const store = () => {
+      const run = security || securityCommand;
+      const hasSecurity = Boolean(security) || (platform === 'darwin' && existsSync('/usr/bin/security'));
+      const memory = new Map(), seen = new Map();
+      let noted = false;
+      const stores = () => {
         if (pinned && !STORES.includes(pinned)) throw new Stop(sentence(`${KEY_STORE} is one of ${STORES.join(', ')}`));
-        if (pinned === 'keyring' || pinned === 'security') {
-          throw new Stop(sentence(`${KEY_STORE}=${pinned}: opensheaf-js keeps current keys in files for now ` +
-                                  `(${KEY_STORE}=file); the keychain comes in a later version`));
+        if (pinned === 'none') return [];
+        if (pinned === 'keyring') {
+          if (platform !== 'darwin') {
+            throw new Stop(sentence(`${KEY_STORE}=keyring: opensheaf-js cannot reach the system keyring of this system ` +
+                                    `(keyring is a Python package); use ${KEY_STORE}=file, and move a key kept there with ` +
+                                    'osheaf key export --stdout and osheaf key import --stdin'));
+          }
+          if (!noted) err(`Note: ${KEY_STORE}=keyring: opensheaf-js uses the macOS keychain through security, where keyring keeps the keys.`);
+          noted = true;
+          return ['security'];
         }
-        return pinned || 'file';
+        if (pinned) return [pinned];
+        return hasSecurity ? ['security', 'file'] : ['file'];
+      };
+      const account = (owner, kid) => `${owner}:${kid}`;
+      const slot = (store, owner, kid) => `${store}|${store === 'file' ? keyFolder(owner, env) : ''}|${owner}|${kid}`;
+      const read = async (store, owner, kid) => {
+        if (store === 'none') return memory.get(account(owner, kid)) ?? null;
+        if (store === 'security') {
+          if (!hasSecurity) return null;
+          const r = await run(['find-generic-password', '-s', SERVICE, '-a', account(owner, kid), '-w']);
+          return r.status === 0 ? r.stdout.trim() : null;
+        }
+        const p = path.join(keyFolder(owner, env), `${kid}.key`);
+        let st = null;
+        try {
+          st = await fs.lstat(p);
+        } catch {
+          return null;
+        }
+        if (st.isSymbolicLink()) throw new Stop(sentence(`${p} is a symbolic link: a key file is a plain file of its own`));
+        if (platform !== 'win32' && (st.mode & 0o077)) {
+          throw new Stop(sentence(`${p} can be read by other users: chmod 600 it (and check who read it)`));
+        }
+        return (await fs.readFile(p, 'ascii')).trim();
+      };
+      const lookup = async (store, owner, kid) => {
+        const s = slot(store, owner, kid);
+        if (store === 'none') return read(store, owner, kid);
+        if (!seen.has(s)) seen.set(s, await read(store, owner, kid));
+        return seen.get(s);
+      };
+
+Writing: the first store that keeps the key, read back; the file is made
+exclusively, readable by its owner only, and not through a link.
+
+    // in cli/keystore.js:
+      const write = async (store, owner, kid, text) => {
+        if (store === 'none') {
+          memory.set(account(owner, kid), text);
+          return true;
+        }
+        if (store === 'security') {
+          if (!hasSecurity) return false;
+          const r = await run(['-i'], `add-generic-password -U -s ${SERVICE} -a ${account(owner, kid)} -w ${text}\n`);
+          if (r.status !== 0) return false;
+          const back = await run(['find-generic-password', '-s', SERVICE, '-a', account(owner, kid), '-w']);
+          return back.status === 0 && back.stdout.trim() === text;
+        }
+        const folder = keyFolder(owner, env);
+        await fs.mkdir(folder, { recursive: true, mode: 0o700 });
+        const p = path.join(folder, `${kid}.key`);
+        await fs.writeFile(p, text + '\n', { flag: 'wx', mode: 0o600 });
+        warn(`a current key of ${short(owner)} is kept in ${p}, protected only by the permissions of your files` +
+             (platform === 'darwin' ? '' : '; opensheaf-js reaches no credential store on this system'));
+        return true;
       };
       return {
         keptOnDevice: () => pinned !== 'none',
@@ -181,49 +275,46 @@ only, as in opensheaf-py.
             return [key];
           }
           const found = [];
-          const kind = store();
           for (const did of dids) {
             const kid = await keyId(did);
-            let text = memory.get(`${owner}:${kid}`) ?? null;
-            if (text === null && kind === 'file') {
-              const p = path.join(keyFolder(owner, env), `${kid}.key`);
-              let st = null;
-              try {
-                st = await fs.lstat(p);
-              } catch {
-                st = null;
-              }
-              if (st?.isSymbolicLink()) throw new Stop(sentence(`${p} is a symbolic link: a key file is a plain file of its own`));
-              if (st && process.platform !== 'win32' && (st.mode & 0o077)) {
-                throw new Stop(sentence(`${p} can be read by other users: chmod 600 it (and check who read it)`));
-              }
-              if (st) text = (await fs.readFile(p, 'ascii')).trim();
-            }
-            if (text) {
-              const key = await keyFromBase64(text, `${kind} ${owner}:${kid}`);
-              if (key.did !== did) throw new Stop(sentence(`${kind} ${owner}:${kid} holds another key than ${did}`));
+            for (const store of [...stores(), 'none']) {
+              const text = await lookup(store, owner, kid);
+              if (!text) continue;
+              const key = await keyFromBase64(text, `${store} ${account(owner, kid)}`);
+              if (key.did !== did) throw new Stop(sentence(`${store} ${account(owner, kid)} holds another key than ${did}`));
               found.push(key);
+              break;
             }
           }
           return found;
         },
-        async keep(owner, key) {
-          const kind = store();
+        async keep(owner, key, store = null) {
           const text = base64(key.seed);
-          if (kind === 'none') {
-            memory.set(`${owner}:${key.id}`, text);
-            return 'none';
+          const todo = store ? [store] : stores();
+          for (const s of todo.length ? todo : ['none']) {
+            if (await write(s, owner, key.id, text)) {
+              if (s !== 'none') seen.set(slot(s, owner, key.id), text);
+              return s;
+            }
           }
-          const folder = keyFolder(owner, env);
-          await fs.mkdir(folder, { recursive: true, mode: 0o700 });
-          const p = path.join(folder, `${key.id}.key`);
-          await fs.writeFile(p, text + '\n', { flag: 'wx', mode: 0o600 });
-          warn(`a current key of ${short(owner)} is kept in ${p}, protected only by the permissions of your files; ` +
-               'opensheaf-js does not use the system\'s credential store yet');
-          return 'file';
+          throw new Stop(sentence(`no store kept the key ${key.did}`));
+        },
+        async forget(owner, did) {
+          const kid = await keyId(did);
+          for (const s of stores()) {
+            if (s === 'security' && hasSecurity) {
+              await run(['delete-generic-password', '-s', SERVICE, '-a', account(owner, kid)]);
+            } else if (s === 'file') {
+              await fs.unlink(path.join(keyFolder(owner, env), `${kid}.key`)).catch(() => {});
+            }
+            seen.set(slot(s, owner, kid), null);
+          }
+          memory.delete(account(owner, kid));
         },
       };
     }
+
+    export const fileKeyStore = keyStore;
 
 The rotation keys exported by `init` go to a folder outside the archive:
 the folder is refused if it is inside an archive (this one, or any folder
@@ -265,7 +356,8 @@ What the person types
 
 The passphrase of exported keys comes from `OPENSHEAF_PASSPHRASE`, or from
 the output of the command `OPENSHEAF_PASSPHRASE_COMMAND`, or is asked,
-twice, without echo; it is asked once per command. Answers to questions
+twice, without echo; it is asked once per command (`known()` says
+whether it is given or asked already). Answers to questions
 are read from the standard input.
 
     // in cli/keystore.js:
@@ -314,7 +406,7 @@ are read from the standard input.
 
     export function passphrases(env = process.env, warn = () => {}) {
       let asked = null;
-      return async ({ confirm = true, where = null } = {}) => {
+      const ask = async ({ confirm = true, where = null } = {}) => {
         if (env.OPENSHEAF_PASSPHRASE) return env.OPENSHEAF_PASSPHRASE;
         if (asked !== null) return asked;
         const command = (env.OPENSHEAF_PASSPHRASE_COMMAND || '').trim();
@@ -333,6 +425,8 @@ are read from the standard input.
         if (confirm && (await hidden('The passphrase again: ')) !== first) throw new Stop(sentence('the two passphrases differ'));
         return (asked = first);
       };
+      ask.known = () => Boolean(env.OPENSHEAF_PASSPHRASE) || asked !== null;
+      return ask;
     }
 
     export { KeyError };
@@ -353,7 +447,9 @@ arguments ends with the status 2, as argparse does.
     import { promises as fs } from 'node:fs';
     import { fileURLToPath } from 'node:url';
     import { DiskStorage } from './disk.js';
-    import { fileKeyStore, exportFolder, passphrases, readLine } from './keystore.js';
+    import { keyStore, exportFolder, passphrases, readLine } from './keystore.js';
+    import { outside } from './outside.js';
+    import { enroll, unlock, systemBrowser } from './unlock.js';
     import { ArchiveFolder, environment, Stop, CONFIG_NAMES, REBUILD, sentence } from '../core/folder.js';
     import { init } from '../core/init.js';
     import { deposit, checkRights } from '../core/deposit.js';
@@ -366,6 +462,9 @@ arguments ends with the status 2, as argparse does.
     import { present, readableIndex, hasWebsite } from '../core/website.js';
     import { fetchJsonWith } from '../core/keepers.js';
     import { loadEntries, merge, UsageProblem } from '../core/inputs.js';
+    import * as owners from '../core/owner.js';
+    import { loadKeyLog, OwnerError } from '../core/keylogs.js';
+    import { CONFIG_HELP } from '../core/wallets.js';
 
     export const VERSION = '0.1.0';
 
@@ -407,6 +506,8 @@ The options are those of opensheaf-py, for the commands of this phase.
 
     const I_KNOW = { '--i-know': flag('iKnow') };
     const MEMBERS = (more) => ({ positionals: ['collection!', 'uri+'], options: { ...more, '--message': value('message') } });
+
+    <<the groups of options of owners and keys>>
 
     export const COMMANDS = {
       init: {
@@ -484,17 +585,18 @@ The options are those of opensheaf-py, for the commands of this phase.
                options: { '--no-html': flag('noHtml') } },
       verify: { help: 'check the archive (section 14 of the specification)', positionals: [],
                 options: { '--remote': flag('remote'), '--json': flag('json') } },
+      <<the options of owners and keys>>
     };
 
-    const LATER = ['resolve', 'mirror', 'branch', 'accept', 'draft', 'seal', 'takedown', 'zenodo', 'arxiv', 'owner',
-                   'sign', 'key', 'help-config'];
+    const LATER = ['resolve', 'mirror', 'branch', 'accept', 'draft', 'seal', 'takedown', 'zenodo', 'arxiv'];
 
 A positional argument is optional (`label`), required (`label!`), one or
 more (`uri+`) or any number (`collection*`); an option may be required, as
 in argparse, which names what is missing.
 
     // in the options of the commands:
-    const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER' };
+    const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER', did: 'DID',
+                       exposed: 'DID', place: 'URL|PATH' };
 
     function positional(p) {
       const m = /^([a-zA-Z]+)([!+*]?)$/.exec(p);
@@ -654,8 +756,9 @@ the status 1.
         exportFolder: exportFolder(archiveRoot),
         ...given,
       });
-      env.keyStore ??= fileKeyStore({ warn: (t) => env.warn(t) });
+      env.keyStore ??= keyStore({ warn: (t) => env.warn(t), err: (t) => env.err(t) });
       env.passphrase ??= passphrases(process.env, (t) => env.warn(t));
+      <<the environment of owners and keys>>
       if (!given.fetch) env.fetch = locatedFetch(() => env.locations || {});
       env.fetchJson ??= fetchJsonWith(env.fetch);
       env.template ??= defaultTemplate;
@@ -667,6 +770,8 @@ the status 1.
       const f = await ArchiveFolder.open(new DiskStorage(where), env);
       if (f.old) throw new Stop(REBUILD);
       env.locations = f.archive.locations || {};
+      env.archiveRoot = where;
+      env.exportFolder = exportFolder(where);
       return f;
     }
 
@@ -827,8 +932,9 @@ the archive writes the website again, when the archive has one.
         const [a] = await runsOf('init', args);
         const where = path.resolve(a.folder || '.');
         await fs.mkdir(where, { recursive: true });
-        if (a.keyLog) throw new Stop(sentence('--key-log: an archive of an existing owner is made by opensheaf-py'));
+        if (a.keyLog) a.keyLogSource = { storage: new DiskStorage(path.resolve(a.keyLog)), dir: '', where: a.keyLog };
         env.exportFolder = exportFolder(where);
+        env.archiveRoot = where;
         await init(new DiskStorage(where), env, a, where);
         return 0;
       },
@@ -930,6 +1036,8 @@ next to the program (a binary made by `deno compile` carries them, with
         }
         return report.counts().error ? 1 : 0;
       },
+
+      <<running the commands of owners and keys>>
     };
 
 ### The entry point
@@ -945,14 +1053,15 @@ next to the program (a binary made by `deno compile` carries them, with
     the archive.
 
     Commands:
-    ${Object.entries(COMMANDS).map(([c, s]) => `  ${c.padEnd(11)}${s.help}`).join('\n')}
+    ${Object.entries(COMMANDS).map(([c, s]) => `  ${c.padEnd(11)}${c.length >= 11 ? " " : ""}${s.help}`).join('\n')}
 
     The website (osheaf.json "index": {"html": ...}) is written again after every
     command that changes the archive. deposit, relicense, relate, describe and
     init also take their options from a YAML or JSON file: --from FILE.
 
-    The other commands of opensheaf-py (owner, key, resolve, mirror, branch,
-    zenodo, arxiv, ...) come in later versions; until then, use opensheaf-py.
+    The other commands of opensheaf-py (resolve, mirror, branch, accept, draft,
+    seal, takedown, zenodo, arxiv) come in later versions; until then, use
+    opensheaf-py.
 
     Warning: OpenSheaf 0.2 is a draft. Until version 1.0, a revision may change
     the format in incompatible ways, and archives may have to be rebuilt.`;
@@ -1014,4 +1123,302 @@ next to the program (a binary made by `deno compile` carries them, with
 
     if (import.meta.main ?? (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))) {
       process.exitCode = await main(process.argv.slice(2));
+    }
+
+The commands of owners and keys
+-------------------------------
+
+The options of `owner`, `key`, `sign` and `help-config` are opensheaf-py's
+(its `cli.py`).
+
+    // in the options of owners and keys:
+    owner: {
+      help: 'make an owner, change its keys, end it, show its key log',
+      actions: {
+        init: { help: 'make an owner: current key, rotation keys exported, key log', positionals: [], options: OWNER_INIT },
+        rotate: { help: 'a new version of the key log: add or retire current keys', positionals: [],
+                  options: { '--add': value('add', { repeat: true }), '--retire': value('retire', { repeat: true }),
+                             ...CHANGE, ...ROTATION_OPTIONS, ...EXPORT, ...level(true) } },
+        expose: { help: 'a new version of the key log exposing stolen or leaked keys', positionals: ['exposed+'],
+                  options: { '--add': value('add', { repeat: true }), ...CHANGE, ...ROTATION_OPTIONS, ...EXPORT, ...level(true) } },
+        end: { help: 'the last version of the key log (section 6.3)', positionals: [],
+               options: { '--successor': value('successor'), '--expose': value('expose', { repeat: true }),
+                          ...ROTATION_OPTIONS, ...level(false) } },
+        show: { help: 'the key log of the owner', positionals: [],
+                options: { '--owner': value('owner'), '--offline': flag('offline') } },
+        pull: { help: 'meet another copy of the key log: extend it, or record a fork', positionals: ['place!'],
+                options: { '--owner': value('owner') } },
+      },
+    },
+    sign: { help: 'sign again a version contested by an exposed key (section 7.1)', positionals: ['label!'],
+            options: { '--version': value('version', { required: true }), '--yes': flag('yes') } },
+    key: {
+      help: 'current keys of this device, key wallets, password managers',
+      actions: {
+        new: { help: 'a new current key for this device; prints its did:key', positionals: [], options: { '--owner': value('owner') } },
+        push: { help: 'put the current keys of this device into the key wallet', positionals: ['did*'],
+                options: { '--plain-current': flag('plainCurrent'), ...WALLET } },
+        pull: { help: "keep on this device the owner's current keys that the wallet holds", positionals: [], options: WALLET },
+        list: { help: 'what the key wallet holds, as a table: owner, kind, key, version, locks (no secrets)', positionals: [],
+                options: WALLET },
+        forget: { help: 'remove keys from this device, and with --from-wallet from the wallet; or passkey locks (--passkey, --rp)',
+                  positionals: ['did*'],
+                  options: { '--from-wallet': flag('fromWallet'), '--used': flag('used'), '--passkey': value('passkey'),
+                             '--rp': value('rp'), '--force': flag('force'), '--yes': flag('yes'), ...WALLET } },
+        export: { help: 'copy a current key to the clipboard, for a password manager', positionals: ['did'],
+                  options: { '--owner': value('owner'), '--clipboard': flag('clipboard'), '--stdout': flag('stdout'),
+                             '--encrypt': flag('encrypt') } },
+        import: { help: 'keep on this device a key copied from a password manager', positionals: [],
+                  options: { '--clipboard': flag('clipboard'), '--stdin': flag('stdin'), '--owner': value('owner') } },
+        enroll: { help: 'let a passkey (Touch ID, in the browser) open the keys of the wallet', positionals: [],
+                  options: { '--new-passkey': flag('newPasskey'), ...WALLET, '--no-browser': flag('noBrowser') } },
+        unlock: { help: 'open the keys of the wallet with the passkey; pull the current keys', positionals: [],
+                  options: { ...WALLET, '--no-browser': flag('noBrowser') } },
+      },
+    },
+    'help-config': { help: 'describe osheaf.json and your own configuration (key wallets)', positionals: [], options: {} },
+
+The groups of options they share:
+
+    // in the groups of options of owners and keys:
+    const EXPORT = { '--export': value('export'), '--no-passphrase': flag('noPassphrase'), '--print': flag('print'),
+                     '--yes': flag('yes') };
+    const level = (fresh) => ({ '--keys': value('keys'), ...(fresh ? { '--plain-current': flag('plainCurrent') } : {}) });
+    const OWNER_INIT = { '--threshold': int('threshold'), '--key': value('key', { repeat: true }), '--rotation': int('rotation'),
+                         '--next-threshold': int('nextThreshold'), '--single-rotation-key': flag('singleRotationKey'),
+                         '--keeper': value('keeper'), ...EXPORT, ...level(true) };
+    const CHANGE = { '--threshold': int('threshold'), '--rotation': int('rotation'), '--next-threshold': int('nextThreshold') };
+    const ROTATION_OPTIONS = { '--rotation-key': value('rotationKey', { repeat: true }), '--owner': value('owner'),
+                               '--message': value('message') };
+    const WALLET = { '--owner': value('owner'), '--wallet': value('wallet') };
+
+The environment of these commands: the clipboard, the wallets, the
+passkey hand-off, reading files and the standard input (module
+`cli/outside.js`, below), and what the environment variables say.
+
+    // in the environment of owners and keys:
+    Object.assign(env, outside(env, given));
+    env.passkeys ??= {
+      enroll: (owner, exclude, o) => enroll(owner, exclude, { ...o, open: env.openBrowser, err: env.err, timeout: env.unlockTimeout }),
+      unlock: (owner, creds, o) => unlock(owner, creds, { ...o, open: env.openBrowser, err: env.err, timeout: env.unlockTimeout }),
+    };
+    env.openBrowser ??= systemBrowser;
+    env.unlockMode ??= process.env.OPENSHEAF_UNLOCK || '';
+    env.passphraseGiven ??= Boolean(process.env.OPENSHEAF_PASSPHRASE);
+    env.signingKeyGiven ??= Boolean(process.env.OPENSHEAF_SIGNING_KEY);
+    env.pullFromWallet ??= owners.pullFromWallet;
+    env.asked ??= {};
+
+Running them. The key commands that may run outside an archive (`list`,
+`import`, `export`, `enroll`, `unlock`) do, unless `--root` names one;
+`owner show` and the key commands leave the website as it is; the others
+write it again.
+
+    // in running the commands of owners and keys:
+    async owner(root, args, env) {
+      const f = await openArchive(root, env);
+      if (args.action === 'pull') {
+        const a = { ...args, source: args.place };
+        const st = await fs.stat(args.place).catch(() => null);
+        const exists = async (p) => Boolean(await fs.stat(p).catch(() => null));
+        if (st?.isDirectory() && (await exists(path.join(args.place, 'inventory.json'))) &&
+            !(await exists(path.join(args.place, 'opensheaf.json')))) {
+          try {
+            a.folderLog = await loadKeyLog(new DiskStorage(path.resolve(args.place)), '', args.place);
+          } catch (error) {
+            if (error instanceof OwnerError) throw new Stop(error.message);
+            throw error;
+          }
+        }
+        await owners.ownerPull(f, a);
+      } else {
+        const run = { init: owners.ownerInitCommand, rotate: owners.ownerRotate, expose: owners.ownerExpose,
+                      end: owners.ownerEnd, show: owners.ownerShow }[args.action];
+        await run(f, args);
+      }
+      if (args.action !== 'show') await present(f);
+      return 0;
+    },
+
+    async sign(root, args, env) {
+      const f = await openArchive(root, env);
+      await owners.signAgain(f, args);
+      await present(f);
+      return 0;
+    },
+
+    async key(root, args, env) {
+      let f = null;
+      if (['list', 'import', 'export', 'enroll', 'unlock'].includes(args.action)) {
+        try {
+          f = await openArchive(root, env);
+        } catch (error) {
+          if (root || !(error instanceof Stop)) throw error;
+        }
+      } else {
+        f = await openArchive(root, env);
+      }
+      const run = { new: owners.keyNew, push: owners.keyPush, pull: owners.keyPull, list: owners.keyList,
+                    forget: owners.keyForget, export: owners.keyExport, import: owners.keyImport,
+                    enroll: owners.keyEnroll, unlock: owners.keyUnlock }[args.action];
+      await run(f, args, env);
+      return 0;
+    },
+
+    async 'help-config'(root, args, env) {
+      env.out(CONFIG_DOC);
+      env.out(CONFIG_HELP);
+      return 0;
+    },
+
+`help-config` describes the configuration of an archive, as
+opensheaf-py's does, then the user's own:
+
+    // in the options of the commands:
+    const CONFIG_DOC = `An archive is a folder with a configuration file osheaf.json:
+
+        {
+          "owner": "<owner name>",           the owner of the archive (section 6), who signs
+                                             its documents and its main catalogue
+          "owners": ["<owner name>", ...],   optional: other owners it hosts
+          "name": "...", "contact": "https://...", "baseUrl": "https://.../",
+          "profiles": ["website"],
+          "storageLayout": "opensheaf-owner-name-storage-layout",   or
+                           "0003-hash-and-id-n-tuple-storage-layout" (section 3.2)
+          "mainCollection": "main",          the label of the main catalogue
+          "curator": {"name": "Family, Given", "givenName": "...", "familyName": "...",
+                      "affiliation": "..."},
+          "depositor": {"name": "Given Family", "address": "https://..."},
+          "index": {"html": {"templates": "templates", "featured": "<label>"}},
+          "keys": {"wallet": "github:OWNER/REPO"}       optional: the GitHub key wallet (a command
+                                             wallet only in ~/.config/opensheaf/config.json)
+        }
+
+    The private keys of the owner are never in the archive (section 15.4): the
+    current key of this device is kept in the keychain (macOS) or in
+    ~/.config/opensheaf/keys/, the rotation keys in files exported once to a
+    folder outside the archive (osheaf owner init --export DIR), unless the owner
+    chooses a lower security level, a key wallet, which keeps them encrypted
+    under a passphrase (--keys github:OWNER/REPO, a private repository, or
+    --keys command); OPENSHEAF_WALLET or ~/.config/opensheaf/config.json override
+    "keys", and only they may configure a command wallet.
+    `;
+
+The outside world
+-----------------
+
+The module `cli/outside.js` gives the core what it reads and runs outside
+the archive:
+
+- the **clipboard**, through `pbcopy` and `pbpaste` (macOS), as
+  opensheaf-py; it is emptied after a minute, by a process of its own that
+  outlives the command, if it still holds what was copied (compared by
+  digest, so that the key is never in its arguments);
+- the **wallets**: the user's configuration file, `OPENSHEAF_WALLET`, the
+  commands of a command wallet run in the shell, the git remotes of the
+  archive, and GitHub's API, at `OPENSHEAF_GITHUB_API` (the tests' own
+  server, or GitHub Enterprise) or `https://api.github.com`, with the
+  token of `GH_TOKEN`, `GITHUB_TOKEN`, or else `gh auth token`;
+- files and the standard input, read as text.
+
+    // in cli/outside.js:
+    import { promises as fs, readFileSync } from 'node:fs';
+    import path from 'node:path';
+    import os from 'node:os';
+    import process from 'node:process';
+    import { spawn, spawnSync } from 'node:child_process';
+    import { Buffer } from 'node:buffer';
+    import { WalletError } from '../core/wallets.js';
+    import { sha256hex } from '../core/write.js';
+    import { utf8 } from '../core/crypto.js';
+
+    export const CLEAR_AFTER = 60;
+
+    function runCommand(cmd, args, input = null) {
+      const r = spawnSync(cmd, args, { input: input ?? undefined, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      return { status: r.error ? 127 : r.status, stdout: r.stdout || '', stderr: r.stderr || '', missing: r.error?.code === 'ENOENT' };
+    }
+
+    export function clipboard({ copy = ['pbcopy'], paste = ['pbpaste'], clearAfter = CLEAR_AFTER } = {}) {
+      return {
+        clearAfter,
+        async copy(text) {
+          const r = runCommand(copy[0], copy.slice(1), text);
+          if (r.missing) throw new WalletError(`no clipboard command ${copy[0]} on this system: use --stdout`);
+          if (r.status !== 0) throw new WalletError('the text could not be copied to the clipboard');
+        },
+        async paste() {
+          const r = runCommand(paste[0], paste.slice(1));
+          if (r.missing) throw new WalletError(`no clipboard command ${paste[0]} on this system: use --stdin`);
+          if (r.status !== 0) throw new WalletError('the clipboard could not be read');
+          return r.stdout;
+        },
+        async clearLater(text) {
+          if (!clearAfter) return;
+          const digest = await sha256hex(utf8(text));
+          const script = `sleep "$1"; if [ "$(${paste.join(' ')} | shasum -a 256 | cut -d ' ' -f 1)" = "$2" ]; then printf '' | ${copy.join(' ')}; fi`;
+          const child = spawn('/bin/sh', ['-c', script, 'clear', String(clearAfter), digest], { detached: true, stdio: 'ignore' });
+          child.on('error', () => {});
+          child.unref();
+        },
+      };
+    }
+
+The wallets' side, and the rest:
+
+    // in cli/outside.js:
+    export function userConfigPath(env = process.env) {
+      const base = env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+      return path.join(base, 'opensheaf', 'config.json');
+    }
+
+    export function userConfig(env = process.env) {
+      const p = userConfigPath(env);
+      let text;
+      try {
+        text = readFileSync(p, 'utf-8');
+      } catch {
+        return {};
+      }
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (error) {
+        throw new WalletError(`${p}: ${error.message}`);
+      }
+      const found = data && typeof data === 'object' ? data.keys : null;
+      return found && typeof found === 'object' && !Array.isArray(found) ? found : {};
+    }
+
+    export function githubToken(env = process.env) {
+      const given = (env.GH_TOKEN || env.GITHUB_TOKEN || '').trim();
+      if (given) return given;
+      const r = runCommand('gh', ['auth', 'token']);
+      return r.status === 0 ? r.stdout.trim() || null : null;
+    }
+
+    export function outside(env, given = {}) {
+      const vars = given.environ || process.env;
+      return {
+        clipboard: given.clipboard || clipboard(),
+        wallets: given.wallets || {
+          userConfig: () => userConfig(vars),
+          userConfigPath: () => userConfigPath(vars),
+          walletEnv: () => vars.OPENSHEAF_WALLET || '',
+          run: async (command, input) => {
+            const r = spawnSync(command, { shell: true, input: input ?? undefined, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+            return { status: r.error ? 127 : r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+          },
+          remotes: async () => (env.archiveRoot ? runCommand('git', ['-C', env.archiveRoot, 'remote', '-v']).stdout : ''),
+          github: { api: vars.OPENSHEAF_GITHUB_API || 'https://api.github.com', fetch: globalThis.fetch.bind(globalThis),
+                    token: async () => githubToken(vars) },
+        },
+        readText: given.readText || ((p) => fs.readFile(p, 'utf-8')),
+        readStdin: given.readStdin || (async () => {
+          const chunks = [];
+          for await (const chunk of process.stdin) chunks.push(chunk);
+          return Buffer.concat(chunks).toString('utf-8');
+        }),
+        write: given.write || ((text) => process.stdout.write(text)),
+      };
     }

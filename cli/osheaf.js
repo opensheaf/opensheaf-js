@@ -4,7 +4,9 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DiskStorage } from './disk.js';
-import { fileKeyStore, exportFolder, passphrases, readLine } from './keystore.js';
+import { keyStore, exportFolder, passphrases, readLine } from './keystore.js';
+import { outside } from './outside.js';
+import { enroll, unlock, systemBrowser } from './unlock.js';
 import { ArchiveFolder, environment, Stop, CONFIG_NAMES, REBUILD, sentence } from '../core/folder.js';
 import { init } from '../core/init.js';
 import { deposit, checkRights } from '../core/deposit.js';
@@ -17,6 +19,9 @@ import * as collections from '../core/collections.js';
 import { present, readableIndex, hasWebsite } from '../core/website.js';
 import { fetchJsonWith } from '../core/keepers.js';
 import { loadEntries, merge, UsageProblem } from '../core/inputs.js';
+import * as owners from '../core/owner.js';
+import { loadKeyLog, OwnerError } from '../core/keylogs.js';
+import { CONFIG_HELP } from '../core/wallets.js';
 
 export const VERSION = '0.1.0';
 
@@ -45,6 +50,17 @@ const DEPOSIT = {
 
 const I_KNOW = { '--i-know': flag('iKnow') };
 const MEMBERS = (more) => ({ positionals: ['collection!', 'uri+'], options: { ...more, '--message': value('message') } });
+
+const EXPORT = { '--export': value('export'), '--no-passphrase': flag('noPassphrase'), '--print': flag('print'),
+                 '--yes': flag('yes') };
+const level = (fresh) => ({ '--keys': value('keys'), ...(fresh ? { '--plain-current': flag('plainCurrent') } : {}) });
+const OWNER_INIT = { '--threshold': int('threshold'), '--key': value('key', { repeat: true }), '--rotation': int('rotation'),
+                     '--next-threshold': int('nextThreshold'), '--single-rotation-key': flag('singleRotationKey'),
+                     '--keeper': value('keeper'), ...EXPORT, ...level(true) };
+const CHANGE = { '--threshold': int('threshold'), '--rotation': int('rotation'), '--next-threshold': int('nextThreshold') };
+const ROTATION_OPTIONS = { '--rotation-key': value('rotationKey', { repeat: true }), '--owner': value('owner'),
+                           '--message': value('message') };
+const WALLET = { '--owner': value('owner'), '--wallet': value('wallet') };
 
 export const COMMANDS = {
   init: {
@@ -122,17 +138,91 @@ export const COMMANDS = {
            options: { '--no-html': flag('noHtml') } },
   verify: { help: 'check the archive (section 14 of the specification)', positionals: [],
             options: { '--remote': flag('remote'), '--json': flag('json') } },
+  owner: {
+    help: 'make an owner, change its keys, end it, show its key log',
+    actions: {
+      init: { help: 'make an owner: current key, rotation keys exported, key log', positionals: [], options: OWNER_INIT },
+      rotate: { help: 'a new version of the key log: add or retire current keys', positionals: [],
+                options: { '--add': value('add', { repeat: true }), '--retire': value('retire', { repeat: true }),
+                           ...CHANGE, ...ROTATION_OPTIONS, ...EXPORT, ...level(true) } },
+      expose: { help: 'a new version of the key log exposing stolen or leaked keys', positionals: ['exposed+'],
+                options: { '--add': value('add', { repeat: true }), ...CHANGE, ...ROTATION_OPTIONS, ...EXPORT, ...level(true) } },
+      end: { help: 'the last version of the key log (section 6.3)', positionals: [],
+             options: { '--successor': value('successor'), '--expose': value('expose', { repeat: true }),
+                        ...ROTATION_OPTIONS, ...level(false) } },
+      show: { help: 'the key log of the owner', positionals: [],
+              options: { '--owner': value('owner'), '--offline': flag('offline') } },
+      pull: { help: 'meet another copy of the key log: extend it, or record a fork', positionals: ['place!'],
+              options: { '--owner': value('owner') } },
+    },
+  },
+  sign: { help: 'sign again a version contested by an exposed key (section 7.1)', positionals: ['label!'],
+          options: { '--version': value('version', { required: true }), '--yes': flag('yes') } },
+  key: {
+    help: 'current keys of this device, key wallets, password managers',
+    actions: {
+      new: { help: 'a new current key for this device; prints its did:key', positionals: [], options: { '--owner': value('owner') } },
+      push: { help: 'put the current keys of this device into the key wallet', positionals: ['did*'],
+              options: { '--plain-current': flag('plainCurrent'), ...WALLET } },
+      pull: { help: "keep on this device the owner's current keys that the wallet holds", positionals: [], options: WALLET },
+      list: { help: 'what the key wallet holds, as a table: owner, kind, key, version, locks (no secrets)', positionals: [],
+              options: WALLET },
+      forget: { help: 'remove keys from this device, and with --from-wallet from the wallet; or passkey locks (--passkey, --rp)',
+                positionals: ['did*'],
+                options: { '--from-wallet': flag('fromWallet'), '--used': flag('used'), '--passkey': value('passkey'),
+                           '--rp': value('rp'), '--force': flag('force'), '--yes': flag('yes'), ...WALLET } },
+      export: { help: 'copy a current key to the clipboard, for a password manager', positionals: ['did'],
+                options: { '--owner': value('owner'), '--clipboard': flag('clipboard'), '--stdout': flag('stdout'),
+                           '--encrypt': flag('encrypt') } },
+      import: { help: 'keep on this device a key copied from a password manager', positionals: [],
+                options: { '--clipboard': flag('clipboard'), '--stdin': flag('stdin'), '--owner': value('owner') } },
+      enroll: { help: 'let a passkey (Touch ID, in the browser) open the keys of the wallet', positionals: [],
+                options: { '--new-passkey': flag('newPasskey'), ...WALLET, '--no-browser': flag('noBrowser') } },
+      unlock: { help: 'open the keys of the wallet with the passkey; pull the current keys', positionals: [],
+                options: { ...WALLET, '--no-browser': flag('noBrowser') } },
+    },
+  },
+  'help-config': { help: 'describe osheaf.json and your own configuration (key wallets)', positionals: [], options: {} },
 };
 
-const LATER = ['resolve', 'mirror', 'branch', 'accept', 'draft', 'seal', 'takedown', 'zenodo', 'arxiv', 'owner',
-               'sign', 'key', 'help-config'];
+const LATER = ['resolve', 'mirror', 'branch', 'accept', 'draft', 'seal', 'takedown', 'zenodo', 'arxiv'];
 
-const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER' };
+const METAVARS = { label: 'LABEL', collection: 'LABEL', uri: 'URI', source: 'SOURCE', folder: 'FOLDER', did: 'DID',
+                   exposed: 'DID', place: 'URL|PATH' };
 
 function positional(p) {
   const m = /^([a-zA-Z]+)([!+*]?)$/.exec(p);
   return { name: m[1], kind: m[2], metavar: METAVARS[m[1]] || m[1].toUpperCase() };
 }
+
+const CONFIG_DOC = `An archive is a folder with a configuration file osheaf.json:
+
+    {
+      "owner": "<owner name>",           the owner of the archive (section 6), who signs
+                                         its documents and its main catalogue
+      "owners": ["<owner name>", ...],   optional: other owners it hosts
+      "name": "...", "contact": "https://...", "baseUrl": "https://.../",
+      "profiles": ["website"],
+      "storageLayout": "opensheaf-owner-name-storage-layout",   or
+                       "0003-hash-and-id-n-tuple-storage-layout" (section 3.2)
+      "mainCollection": "main",          the label of the main catalogue
+      "curator": {"name": "Family, Given", "givenName": "...", "familyName": "...",
+                  "affiliation": "..."},
+      "depositor": {"name": "Given Family", "address": "https://..."},
+      "index": {"html": {"templates": "templates", "featured": "<label>"}},
+      "keys": {"wallet": "github:OWNER/REPO"}       optional: the GitHub key wallet (a command
+                                         wallet only in ~/.config/opensheaf/config.json)
+    }
+
+The private keys of the owner are never in the archive (section 15.4): the
+current key of this device is kept in the keychain (macOS) or in
+~/.config/opensheaf/keys/, the rotation keys in files exported once to a
+folder outside the archive (osheaf owner init --export DIR), unless the owner
+chooses a lower security level, a key wallet, which keeps them encrypted
+under a passphrase (--keys github:OWNER/REPO, a private repository, or
+--keys command); OPENSHEAF_WALLET or ~/.config/opensheaf/config.json override
+"keys", and only they may configure a command wallet.
+`;
 
 export class UsageError extends Error {}
 
@@ -275,8 +365,19 @@ export function makeEnvironment(archiveRoot = null, given = {}) {
     exportFolder: exportFolder(archiveRoot),
     ...given,
   });
-  env.keyStore ??= fileKeyStore({ warn: (t) => env.warn(t) });
+  env.keyStore ??= keyStore({ warn: (t) => env.warn(t), err: (t) => env.err(t) });
   env.passphrase ??= passphrases(process.env, (t) => env.warn(t));
+  Object.assign(env, outside(env, given));
+  env.passkeys ??= {
+    enroll: (owner, exclude, o) => enroll(owner, exclude, { ...o, open: env.openBrowser, err: env.err, timeout: env.unlockTimeout }),
+    unlock: (owner, creds, o) => unlock(owner, creds, { ...o, open: env.openBrowser, err: env.err, timeout: env.unlockTimeout }),
+  };
+  env.openBrowser ??= systemBrowser;
+  env.unlockMode ??= process.env.OPENSHEAF_UNLOCK || '';
+  env.passphraseGiven ??= Boolean(process.env.OPENSHEAF_PASSPHRASE);
+  env.signingKeyGiven ??= Boolean(process.env.OPENSHEAF_SIGNING_KEY);
+  env.pullFromWallet ??= owners.pullFromWallet;
+  env.asked ??= {};
   if (!given.fetch) env.fetch = locatedFetch(() => env.locations || {});
   env.fetchJson ??= fetchJsonWith(env.fetch);
   env.template ??= defaultTemplate;
@@ -288,6 +389,8 @@ async function openArchive(root, env) {
   const f = await ArchiveFolder.open(new DiskStorage(where), env);
   if (f.old) throw new Stop(REBUILD);
   env.locations = f.archive.locations || {};
+  env.archiveRoot = where;
+  env.exportFolder = exportFolder(where);
   return f;
 }
 
@@ -415,8 +518,9 @@ const RUN = {
     const [a] = await runsOf('init', args);
     const where = path.resolve(a.folder || '.');
     await fs.mkdir(where, { recursive: true });
-    if (a.keyLog) throw new Stop(sentence('--key-log: an archive of an existing owner is made by opensheaf-py'));
+    if (a.keyLog) a.keyLogSource = { storage: new DiskStorage(path.resolve(a.keyLog)), dir: '', where: a.keyLog };
     env.exportFolder = exportFolder(where);
+    env.archiveRoot = where;
     await init(new DiskStorage(where), env, a, where);
     return 0;
   },
@@ -509,6 +613,62 @@ const RUN = {
     }
     return report.counts().error ? 1 : 0;
   },
+
+  async owner(root, args, env) {
+    const f = await openArchive(root, env);
+    if (args.action === 'pull') {
+      const a = { ...args, source: args.place };
+      const st = await fs.stat(args.place).catch(() => null);
+      const exists = async (p) => Boolean(await fs.stat(p).catch(() => null));
+      if (st?.isDirectory() && (await exists(path.join(args.place, 'inventory.json'))) &&
+          !(await exists(path.join(args.place, 'opensheaf.json')))) {
+        try {
+          a.folderLog = await loadKeyLog(new DiskStorage(path.resolve(args.place)), '', args.place);
+        } catch (error) {
+          if (error instanceof OwnerError) throw new Stop(error.message);
+          throw error;
+        }
+      }
+      await owners.ownerPull(f, a);
+    } else {
+      const run = { init: owners.ownerInitCommand, rotate: owners.ownerRotate, expose: owners.ownerExpose,
+                    end: owners.ownerEnd, show: owners.ownerShow }[args.action];
+      await run(f, args);
+    }
+    if (args.action !== 'show') await present(f);
+    return 0;
+  },
+
+  async sign(root, args, env) {
+    const f = await openArchive(root, env);
+    await owners.signAgain(f, args);
+    await present(f);
+    return 0;
+  },
+
+  async key(root, args, env) {
+    let f = null;
+    if (['list', 'import', 'export', 'enroll', 'unlock'].includes(args.action)) {
+      try {
+        f = await openArchive(root, env);
+      } catch (error) {
+        if (root || !(error instanceof Stop)) throw error;
+      }
+    } else {
+      f = await openArchive(root, env);
+    }
+    const run = { new: owners.keyNew, push: owners.keyPush, pull: owners.keyPull, list: owners.keyList,
+                  forget: owners.keyForget, export: owners.keyExport, import: owners.keyImport,
+                  enroll: owners.keyEnroll, unlock: owners.keyUnlock }[args.action];
+    await run(f, args, env);
+    return 0;
+  },
+
+  async 'help-config'(root, args, env) {
+    env.out(CONFIG_DOC);
+    env.out(CONFIG_HELP);
+    return 0;
+  },
 };
 
 export const USAGE = `usage: osheaf [-h] [--version] [--root ROOT] COMMAND ...
@@ -521,14 +681,15 @@ the current one that has an osheaf.json. Lines are named by their labels in
 the archive.
 
 Commands:
-${Object.entries(COMMANDS).map(([c, s]) => `  ${c.padEnd(11)}${s.help}`).join('\n')}
+${Object.entries(COMMANDS).map(([c, s]) => `  ${c.padEnd(11)}${c.length >= 11 ? " " : ""}${s.help}`).join('\n')}
 
 The website (osheaf.json "index": {"html": ...}) is written again after every
 command that changes the archive. deposit, relicense, relate, describe and
 init also take their options from a YAML or JSON file: --from FILE.
 
-The other commands of opensheaf-py (owner, key, resolve, mirror, branch,
-zenodo, arxiv, ...) come in later versions; until then, use opensheaf-py.
+The other commands of opensheaf-py (resolve, mirror, branch, accept, draft,
+seal, takedown, zenodo, arxiv) come in later versions; until then, use
+opensheaf-py.
 
 Warning: OpenSheaf 0.2 is a draft. Until version 1.0, a revision may change
 the format in incompatible ways, and archives may have to be rebuilt.`;

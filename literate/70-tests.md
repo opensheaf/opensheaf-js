@@ -11,7 +11,12 @@ The tests are written with `node:test` and `node:assert`, which both
 - `tests/identity.test.js` (chapter [71](71-tests-identity.md)): names,
   keys and signatures against appendix C, and the edge cases of Ed25519;
 - `tests/parity.test.js` (chapter [72](72-tests-parity.md)): the two
-  implementations on each other's archives and key files.
+  implementations on each other's archives, key logs, key files and
+  wallets;
+- `tests/owners.test.js` (chapter [73](73-tests-owners.md)): the commands
+  of owners and keys, wallets, passkeys and key stores, through the
+  command line, with doubles of GitHub, the keychain, the clipboard and
+  the browser.
 
 `deno task test` runs them all (`deno test -A tests/`).
 

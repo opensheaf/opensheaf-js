@@ -340,7 +340,10 @@ change the archive, a reader is made afresh after every change.
 The keys that sign for an owner (opensheaf-py's `signing_keys`): its key
 log must be in the storage root, without errors, and not ended; the
 current keys of its latest version that this device holds must reach
-its threshold.
+its threshold; if they do not, those it lacks are pulled from the wallet
+configured (`env.pullFromWallet`, chapter
+[37](37-owner-commands.md)), unless `OPENSHEAF_SIGNING_KEY` gives the key
+(`env.signingKeyGiven`).
 
     // in the archive folder:
       async signingKeys(owner) {
@@ -351,11 +354,16 @@ its threshold.
         if (errors.length) stop(`the key log of ${who} has errors: ` + errors.join('; '));
         const latest = log.latest();
         if (!latest) stop(`the owner ${who} has ended (section 6.3): nothing is signed for it`);
-        const found = await this.env.keyStore.current(owner, latest.keys.keys);
+        let found = await this.env.keyStore.current(owner, latest.keys.keys);
         const need = latest.keys.threshold;
+        if (found.length < need && !this.env.signingKeyGiven && this.env.pullFromWallet) {
+          found = await this.env.pullFromWallet(this, owner, latest, found);
+        }
         if (found.length < need) {
+          const hint = this.env.keyStore.keptOnDevice() ? 'osheaf key new makes one for this computer'
+            : 'configure a key wallet, from which each command opens them';
           stop(`this computer holds ${found.length} of the current keys of ${who}, and v${latest.number} ` +
-               `of its key log needs ${need} to sign (osheaf key new makes one for this computer)`);
+               `of its key log needs ${need} to sign (${hint})`);
         }
         return { log, latest, signers: found };
       }

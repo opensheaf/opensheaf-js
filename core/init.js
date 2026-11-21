@@ -7,6 +7,8 @@ import { ArchiveFolder, CONFIG_NAME, CONFIG_NAMES, LAYOUTS, exit, stop, short, p
 import { collect } from './collect.js';
 import { writeDiscovery } from './discovery.js';
 import { readableIndex, TEMPLATES } from './website.js';
+import { levelWallet, keepInWallet, walletConfig, keptWhere } from './owner.js';
+import { loadKeyLog, OwnerError } from './keylogs.js';
 
 export const SINGLE_ROTATION_RISK = 'With a single rotation key, its loss leaves the owner unable ever to change ' +
   'its keys or end, and its theft lets the thief take the owner over (sections 6.2 and 15.1).';
@@ -33,7 +35,7 @@ export async function exportAndConfirm(f, rotation, owner, version, args) {
   try {
     for (const key of rotation) {
       const path = await ex.write(args.export, rotationFileName(owner, key),
-                                  await rotationKeyText(key, owner, version, secret, args.cost));
+                                  await rotationKeyText(key, owner, version, secret, args.cost || env.cost));
       if ((await readRotationKey(await ex.read(path), secret)).key.did !== key.did) {
         throw new KeyError(`${path} does not read back`);
       }
@@ -73,15 +75,13 @@ export async function ownerInit(f, args, { done = true } = {}) {
   if (args.keeper && !keeperValid(args.keeper)) {
     stop(`a keeper is an ORCID iD (with its check digit) or https://<domain>/: ${args.keeper}`);
   }
-  if (args.keys) {
-    stop(`--keys ${args.keys}: key wallets come in a later version of opensheaf-js; keep the rotation keys ` +
-         'offline (--export DIR), or make the owner with opensheaf-py');
-  }
-  if (!args.export) {
+  const w = await levelWallet(f, args);
+  if (!w && !args.export) {
     stop('give --export DIR, a folder outside the archive where the rotation keys are written ' +
          '(or keep them in a wallet, a lower security level: --keys github:OWNER/REPO|command)');
   }
-  if (!env.keyStore.keptOnDevice()) {
+  if (w && args.noPassphrase) stop('--no-passphrase: the keys in a wallet are always locked with a passphrase');
+  if (!w && !env.keyStore.keptOnDevice()) {
     stop('OPENSHEAF_KEY_STORE=none keeps no current key on this computer: keep the keys in a ' +
          'wallet (--keys github:OWNER/REPO|command)');
   }
@@ -105,15 +105,24 @@ export async function ownerInit(f, args, { done = true } = {}) {
     if (!(await f.storage.kind(await f.dirOf(log.id)))) break;
   }
   if (nextThreshold === 1) env.warn(SINGLE_ROTATION_RISK);
-  await exportAndConfirm(f, rotation, log.owner, 1, args);
-  const store = await env.keyStore.keep(log.owner, current);
+  if (args.export) await exportAndConfirm(f, rotation, log.owner, 1, args);
+  if (w) await keepInWallet(f, w, log.owner, rotation, 1, args, [[current, 1]]);
+  let store;
+  try {
+    store = await env.keyStore.keep(log.owner, current);
+  } catch (error) {
+    if (error instanceof KeyError || error.code) stop(error.message);
+    throw error;
+  }
   await writeKeyLog(f.storage, await f.dirOf(log.id), log);
   f.changed();
+  const kept = store === 'none' ? `${w.name} only (OPENSHEAF_KEY_STORE=none)` : env.keyStore.storeName(store);
   env.out(`${done ? 'Done: the' : 'The'} owner ${short(log.owner)} is made, with v1 of its key log:`);
   env.out(`  owner          ${log.owner}`);
-  env.out(`  current key    ${current.did}, kept in ${env.keyStore.storeName(store)}`);
+  env.out(`  current key    ${current.did}, kept in ${kept}`);
   for (const did of others) env.out(`  current key    ${did}, of another device`);
-  env.out(rotationLine(nRot, nextThreshold, await env.exportFolder.resolve(args.export)));
+  const resolved = args.export ? await env.exportFolder.resolve(args.export) : null;
+  env.out(rotationLine(nRot, nextThreshold, keptWhere(args, w, resolved)));
   env.warn(ROTATION_KEYS_WARNING);
   return log;
 }
@@ -136,10 +145,6 @@ export async function init(storage, env, args, where) {
   const layout = LAYOUTS[args.layout || 'owner-name'];
   if (!layout) exit(`--layout is one of ${Object.keys(LAYOUTS).join(', ')}`);
   if (Boolean(args.newOwner) === Boolean(args.owner)) stop('init: give --new-owner, or --owner NAME --key-log DIR');
-  if (args.owner) {
-    stop('init --owner NAME --key-log DIR: an archive of an existing owner is made by opensheaf-py ' +
-         '(opensheaf-js 0.1.0 makes new owners only)');
-  }
   if (args.index && args.index !== 'website') {
     stop(`--index ${args.index}: the TeXmacs index is made by opensheaf-py`);
   }
@@ -165,8 +170,28 @@ export async function init(storage, env, args, where) {
   f.archive = { ...cfg };
   f.layout = layout;
   await f.initStorageRoot();
-  const log = await ownerInit(f, args, { done: false });
+  let log;
+  if (args.newOwner) {
+    log = await ownerInit(f, args, { done: false });
+  } else {
+    if (!args.keyLog) stop('init --owner NAME needs --key-log DIR, the folder of its owner object');
+    try {
+      const { storage: from, dir, where: shown } = args.keyLogSource;
+      log = await loadKeyLog(from, dir, shown);
+    } catch (error) {
+      if (error instanceof OwnerError) stop(error.message);
+      throw error;
+    }
+    const { errors } = await log.check();
+    if (log.owner !== args.owner || errors.length) {
+      stop(`${args.keyLog} is not a valid key log of ${short(args.owner)}: ` + errors.join('; '));
+    }
+    if (log.ended) stop(`the owner ${short(log.owner)} has ended (section 6.3)`);
+    await writeKeyLog(storage, await f.dirOf(log.id), log);
+    f.changed();
+  }
   cfg.owner = log.owner;
+  if (args.newOwner && walletConfig(args)) cfg.keys = walletConfig(args);
   await writeText(storage, CONFIG_NAME, jsonText(cfg));
   if (!(await storage.kind('.gitattributes'))) await writeText(storage, '.gitattributes', GITATTRIBUTES);
   for (const name of TEMPLATES) {

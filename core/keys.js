@@ -4,7 +4,12 @@ import { didKey, keyDigest } from './names.js';
 
 export class KeyError extends Error {}
 
-export class PassphraseNeeded extends KeyError {}
+export class PassphraseNeeded extends KeyError {
+  constructor(message, passkeys = []) {
+    super(message);
+    this.passkeys = passkeys;
+  }
+}
 
 const PKCS8_ED25519 = [0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20];
 
@@ -167,7 +172,7 @@ export const KEY_FORMAT = 'opensheaf-key/0.2';
 export const TEXT_FORMAT = 'opensheaf-key-text/0.2';
 export const ENVELOPE = 'envelope-secretbox';
 export const CURRENT = 'current', ROTATION = 'rotation';
-const KINDS = [CURRENT, ROTATION];
+export const KINDS = [CURRENT, ROTATION];
 
 export function rotationFileName(owner, key) {
   return `rotation-${owner.slice(0, 16)}-${key.id}.txt`;
@@ -206,7 +211,68 @@ export async function rotationKeySheet(key, owner, version) {
   ].join('\n') + '\n';
 }
 
-function parseWrap(line) {
+export const PASSKEY_RP = 'unlock.opensheaf.org';
+export const OLD_PASSKEY_RP = 'opensheaf.org';
+const PASSKEY_INFO = utf8('opensheaf wallet passkey v1');
+const PASSKEY_SALT = 'opensheaf wallet unlock v1 ';
+
+export async function hmacSha256(key, data) {
+  const k = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, data));
+}
+
+export async function hkdf(ikm, salt, info, length) {
+  const prk = await hmacSha256(salt.length ? salt : new Uint8Array(32), ikm);
+  const out = [];
+  let block = new Uint8Array();
+  for (let i = 1; out.length < length; i++) {
+    block = await hmacSha256(prk, concat(block, info, new Uint8Array([i])));
+    out.push(...block);
+  }
+  return new Uint8Array(out.slice(0, length));
+}
+
+export async function passkeySalt(owner) {
+  return sha256(utf8(PASSKEY_SALT + owner));
+}
+
+export async function passkeyKek(prfSecret) {
+  return hkdf(prfSecret, new Uint8Array(32), PASSKEY_INFO, 32);
+}
+
+export class Passkey {
+  constructor(cred, salt, { rp = PASSKEY_RP, kek = null, box = null } = {}) {
+    Object.assign(this, { cred, salt: Uint8Array.from(salt), rp, kek, box });
+  }
+
+  async opens(kek) {
+    return this.box !== null && (await unseal(this.box, kek)) !== null;
+  }
+
+  async wrap(dataKey) {
+    return `wrap passkey prf rp=${this.rp} cred=${this.cred} salt=${base64(this.salt)} ` +
+      base64(await seal(dataKey, this.kek));
+  }
+
+  toString() {
+    return `Passkey(${this.rp} ${this.cred})`;
+  }
+}
+
+async function wrapsFor(dataKey, passphrase, passkeys, { opslimit = OPSLIMIT, memlimit = MEMLIMIT } = {}) {
+  const salt = randomBytes(ARGON2ID.saltBytes);
+  const box = await seal(dataKey, await argon2id(passphrase, salt, opslimit, memlimit));
+  const out = [`wrap passphrase argon2id opslimit=${opslimit} memlimit=${memlimit} salt=${base64(salt)} ${base64(box)}`];
+  for (const p of passkeys) out.push(await p.wrap(dataKey));
+  return out;
+}
+
+export async function envelope(seed, passphrase, passkeys = [], cost = {}) {
+  const dataKey = randomBytes(32);
+  return [await wrapsFor(dataKey, passphrase, passkeys, cost), await seal(seed, dataKey)];
+}
+
+export function parseWrap(line) {
   const parts = line.split(/\s+/).filter(Boolean);
   if (parts.length < 4 || parts[0] !== 'wrap') throw new KeyError(`a damaged lock of the key: '${line}'`);
   const out = parameters(parts.slice(3, -1));
@@ -221,25 +287,108 @@ function parseWrap(line) {
   return out;
 }
 
-async function openEnvelope(wraps, data, passphrase) {
+export function wrapsOf(text) {
+  return text.split(/\r\n|\r|\n/).map((l) => l.trim()).filter((l) => l.startsWith('wrap '));
+}
+
+function passkeyOfWrap(w) {
+  return new Passkey(w.cred, w.salt || new Uint8Array(), { rp: w.rp || PASSKEY_RP, box: w.box });
+}
+
+export function passkeysOf(text) {
+  return wrapsOf(text).map(parseWrap).filter((w) => w.method === 'passkey' && w.kind === 'prf' && w.cred)
+    .map(passkeyOfWrap);
+}
+
+export async function dataKey(wraps, passphrase = null, keks = null) {
   const parsed = wraps.map(parseWrap);
-  if (passphrase === null || passphrase === undefined) {
-    throw new PassphraseNeeded('this key is encrypted: a passphrase is needed');
+  for (const w of parsed) {
+    if (w.method === 'passkey' && keks && w.cred in keks) {
+      const opened = await unseal(w.box, keks[w.cred]);
+      if (opened) return opened;
+    }
   }
-  let dataKey = null;
+  if (passphrase === null || passphrase === undefined) {
+    throw new PassphraseNeeded('this key is encrypted: a passphrase is needed',
+                               parsed.filter((w) => w.method === 'passkey' && w.cred).map(passkeyOfWrap));
+  }
   for (const w of parsed) {
     if (w.method !== 'passphrase' || w.kind !== 'argon2id') continue;
-    if (!('opslimit' in w) || !('memlimit' in w)) throw new KeyError('the encryption of the key is damaged');
-    dataKey = await unseal(w.box, await argon2id(passphrase, w.salt || new Uint8Array(), w.opslimit, w.memlimit));
-    if (dataKey) break;
+    if (!('salt' in w) || !('opslimit' in w) || !('memlimit' in w)) throw new KeyError('the encryption of the key is damaged');
+    const opened = await unseal(w.box, await argon2id(passphrase, w.salt, w.opslimit, w.memlimit));
+    if (opened) return opened;
   }
-  if (!dataKey) throw new KeyError('wrong passphrase, or a damaged key');
-  const seed = await unseal(data, dataKey);
+  throw new KeyError('wrong passphrase, or a damaged key');
+}
+
+export async function openEnvelope(wraps, data, passphrase = null, keks = null) {
+  const seed = await unseal(data, await dataKey(wraps, passphrase, keks));
   if (!seed) throw new KeyError('the seed of the key is damaged');
   return seed;
 }
 
-export async function readKey(text, passphrase = null) {
+export async function addPasskey(text, passphrase, passkey, cost = {}) {
+  const lines = text.split(/\r\n|\r|\n/);
+  if (lines[lines.length - 1] === '') lines.pop();
+  const enc = lines.findIndex((x) => x.startsWith('encryption '));
+  const seedAt = lines.findIndex((x) => x.startsWith('seed '));
+  if (enc < 0 || seedAt < 0 || seedAt < enc) throw new KeyError('not a key file');
+  const method = lines[enc].split(/\s+/).filter(Boolean)[1];
+  if (method === ENVELOPE) {
+    const key = await dataKey(wrapsOf(text), passphrase);
+    let last = -1;
+    lines.forEach((x, k) => { if (x.startsWith('wrap ')) last = k; });
+    lines.splice(last + 1, 0, await passkey.wrap(key));
+  } else if (method === 'none') {
+    throw new KeyError('this key is kept unencrypted: there is nothing to unlock');
+  } else {
+    let data;
+    try {
+      data = strictBase64(lines[seedAt].slice(5).trim());
+    } catch {
+      throw new KeyError('the seed of the key is damaged');
+    }
+    const seed = await decryptSeed(lines[enc].slice('encryption '.length), data, passphrase);
+    const [wraps, sealed] = await envelope(seed, passphrase, [passkey], cost);
+    lines.splice(enc, seedAt + 1 - enc, `encryption ${ENVELOPE}`, ...wraps, 'seed ' + base64(sealed));
+  }
+  return lines.join('\n') + '\n';
+}
+
+export function removePasskeys(text, cred = null, rp = null) {
+  if (cred === null && rp === null) throw new KeyError('name the passkey locks to remove, by credential or relying party');
+  const gone = (line) => {
+    if (!line.startsWith('wrap passkey ')) return false;
+    const w = parseWrap(line);
+    return (cred === null || w.cred === cred) && (rp === null || (w.rp || PASSKEY_RP) === rp);
+  };
+  const lines = text.split(/\r\n|\r|\n/);
+  if (lines[lines.length - 1] === '') lines.pop();
+  const kept = lines.filter((x) => !gone(x.trim()));
+  if (!kept.some((x) => x.trim().startsWith('wrap passphrase '))) throw new KeyError('the key would have no passphrase lock left');
+  return kept.join('\n') + '\n';
+}
+
+export async function keyFileText(key, owner, kind, version = null, passphrase = null, { passkeys = [], cost = {} } = {}) {
+  if (!KINDS.includes(kind)) throw new KeyError(`a key is ${KINDS.join(' or ')}`);
+  const head = [KEY_FORMAT, `kind ${kind}`];
+  if (passphrase === null || passphrase === undefined) return fileText(head, key, owner, version, null, cost);
+  const [wraps, data] = await envelope(key.seed, passphrase, passkeys, cost);
+  const lines = [...head, `owner ${owner}`, ...(version ? [`version v${version}`] : [])];
+  lines.push(`key ${key.did}`, `digest ${key.digest}`, `encryption ${ENVELOPE}`, ...wraps, 'seed ' + base64(data));
+  return lines.join('\n') + '\n';
+}
+
+export async function keyText(key, owner, kind = CURRENT, passphrase = null, cost = {}) {
+  const [encryption, data] = await encryptSeed(key.seed, passphrase, cost);
+  const groups = base32(data).toUpperCase().match(/.{1,4}/g).join(' ');
+  const lines = [TEXT_FORMAT, `kind ${kind}`, `owner ${owner}`, `key ${key.did}`];
+  if (passphrase !== null && passphrase !== undefined) lines.push(`encryption ${encryption}`);
+  lines.push(`seed ${groups}`, `check ${await sheetCheck(data)}`);
+  return lines.join('\n') + '\n';
+}
+
+export async function readKey(text, passphrase = null, keks = null) {
   const lines = text.split(/\r\n|\r|\n/);
   if (lines[lines.length - 1] === '') lines.pop();
   const formats = [ROTATION_FORMAT, KEY_FORMAT, TEXT_FORMAT];
@@ -272,7 +421,7 @@ export async function readKey(text, passphrase = null) {
   let seed;
   if ((fields.encryption ?? '').split(' ')[0] === ENVELOPE) {
     const wraps = lines.slice(Math.max(start, 0)).map((l) => l.trim()).filter((l) => l.startsWith('wrap '));
-    seed = await openEnvelope(wraps, data, passphrase);
+    seed = await openEnvelope(wraps, data, passphrase, keks);
   } else {
     seed = await decryptSeed(fields.encryption ?? 'none', data, passphrase);
   }

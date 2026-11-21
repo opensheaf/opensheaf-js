@@ -12,6 +12,10 @@ import { readRotationKey } from '../core/keys.js';
 import { keyDigest } from '../core/names.js';
 import zlib from 'node:zlib';
 import { tarGz } from './fixtures.js';
+import { DiskStorage } from '../cli/disk.js';
+import { GitHubWallet } from '../core/wallets.js';
+import { browserEnvironment, signers, checkWallet, walletEntries, passphraseConfirmed, checkPassphrase, keyToPush, pushKey,
+         enrollPlan, openWithPassphrase, enrollPasskey, walletLocks, openLocks } from '../web/manager.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, '..', 'cli', 'osheaf.js');
@@ -708,6 +712,82 @@ test('one wallet for both: keys put by either, read by the other', { skip }, asy
     ok(s.py(['owner', 'rotate', '--keys', 'github:me/keys'], { cwd: jsArch, more }), 'py rotate with keys put by js');
     clean(s, arch, more);
     clean(s, jsArch, more);
+  } finally {
+    w.stop();
+    await s.done();
+  }
+});
+
+const PY_OPENS = `import sys
+from opensheaf import keys
+prf = bytes.fromhex(sys.argv[2])
+for path in sys.argv[3:]:
+    rk = keys.read_key(open(path).read(), keks={sys.argv[1]: keys.passkey_kek(prf)})
+    print(rk.kind, rk.key.did)
+`;
+
+test('a key wallet set up by the Manager is read by both, and the Manager enrolls keys put by opensheaf-py', { skip },
+     async () => {
+  const s = await sandbox();
+  const w = await wallets(s);
+  try {
+    const more = w.more;
+    const gh = { api: more.OPENSHEAF_GITHUB_API, fetch: globalThis.fetch.bind(globalThis), token: async () => 'a-token' };
+    const env = browserEnvironment({ assets: { templates: {} } });
+    const cred = 'Y3JlZGVudGlhbC1vZi10aGUtdGVzdHM', prf = new Uint8Array(32).fill(5);
+    const store = (owner) => path.join(s.root, 'xdg', 'opensheaf', 'keys', owner);
+    const pyOpens = (owner, kids) => ok(s.run([path.join(path.dirname(PY), 'python3')],
+      ['-c', PY_OPENS, cred, Buffer.from(prf).toString('hex'),
+       ...kids.map((k) => path.join(w.state, 'contents', 'me', 'keys', owner, `${k}.key.enc`))]), 'py opens').stdout;
+    ok(s.py(await initArgs('arch', path.join(s.root, 'keys'))), 'py init');
+    const arch = path.join(s.root, 'arch');
+    const owner = JSON.parse(await readFile(path.join(arch, 'osheaf.json'), 'utf-8')).owner;
+    const { dids, versions } = await signers(new DiskStorage(arch), env);
+    const [file] = await readdir(store(owner));
+    await assert.rejects(checkWallet(new GitHubWallet('me/open', gh, [])), /not a private repository/);
+    const wallet = new GitHubWallet('me/keys', gh, []);
+    await checkWallet(wallet);
+    assert.equal(passphraseConfirmed(await walletEntries(wallet, owner)), true);
+    const key = await keyToPush(await readFile(path.join(store(owner), file), 'utf-8'), { owner, dids });
+    assert.equal(await pushKey(wallet, owner, key, versions[key.did], 'correct horse'), true);
+    key.seed.fill(0);
+    const plan = await enrollPlan(wallet, owner);
+    await openWithPassphrase(plan, 'correct horse', wallet.name);
+    await enrollPasskey(wallet, plan, 'correct horse', cred, Uint8Array.from(prf));
+    assert.equal(pyOpens(owner, [file.replace(/\.key$/, '')]), `current ${dids[0]}\n`);
+    await both(s, arch, ['key', 'list', '--wallet', 'github:me/keys'], { more });
+    assert.match(ok(s.py(['key', 'list', '--wallet', 'github:me/keys'], { cwd: arch, more }), 'py list').stdout,
+                 /passkey \(unlock\.opensheaf\.org\)/);
+    for (const [who, run] of [['py', s.py], ['js', s.js]]) {
+      const elsewhere = { ...more, XDG_CONFIG_HOME: path.join(s.root, `xdg-${who}`) };
+      assert.match(ok(run(['key', 'pull', '--wallet', 'github:me/keys'], { cwd: arch, more: elsewhere }), `${who} pull`).stdout,
+                   /Pulled 1 current key/);
+    }
+    // the other way round: keys put by opensheaf-py, enrolled and unlocked by the Manager
+    ok(s.py(['init', path.join(s.root, 'arch2'), '--name', 'Papers', '--base-url', 'https://example.org/p2/', '--curator',
+             'Doe, Jane', '--new-owner', '--keys', 'github:me/keys', '--yes'], { more }), 'py init --keys');
+    const arch2 = path.join(s.root, 'arch2');
+    const owner2 = JSON.parse(await readFile(path.join(arch2, 'osheaf.json'), 'utf-8')).owner;
+    const signing2 = await signers(new DiskStorage(arch2), env);
+    const entries = await walletEntries(wallet, owner2);
+    assert.equal(entries.length, 4);
+    assert.equal(passphraseConfirmed(entries), false);
+    await assert.rejects(checkPassphrase(entries, 'wrong horse', owner2, wallet.name), /not the passphrase/);
+    await checkPassphrase(entries, 'correct horse', owner2, wallet.name);
+    const plan2 = await enrollPlan(wallet, owner2);
+    assert.equal(plan2.todo.length, 4);
+    await openWithPassphrase(plan2, 'correct horse', wallet.name);
+    await enrollPasskey(wallet, plan2, 'correct horse', cred, Uint8Array.from(prf));
+    assert.equal(pyOpens(owner2, plan2.todo.map((e) => e.kid)).split('\n').filter(Boolean).length, 4);
+    const [unlocked] = await openLocks(await walletLocks(wallet, owner2, signing2.dids), owner2, cred, Uint8Array.from(prf));
+    assert.equal(unlocked.did, signing2.dids[0]);
+    const [file2] = await readdir(store(owner2));
+    const again = await keyToPush(await readFile(path.join(store(owner2), file2), 'utf-8'),
+                                  { owner: owner2, dids: signing2.dids });
+    assert.equal(await pushKey(wallet, owner2, again, 1, 'correct horse'), false);
+    again.seed.fill(0);
+    ok(s.py(['owner', 'rotate', '--keys', 'github:me/keys'], { cwd: arch2, more }), 'py rotate with keys the Manager enrolled');
+    clean(s, arch2, more);
   } finally {
     w.stop();
     await s.done();

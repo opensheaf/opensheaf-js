@@ -11,7 +11,7 @@
 > and collections, keeps owners and their keys (wallets and passkeys
 > included), resolves, mirrors, branches and takes down lines, keeps
 > drafts, imports papers from arXiv, deposits them on Zenodo, verifies
-> archives, and gives the [Manager](https://opensheaf.org/manager/) its
+> archives, and gives the [Manager](https://manager.opensheaf.org/) its
 > core, with which it writes archives held on GitHub from a browser; for
 > TeXmacs sources without their PDF, use
 > [opensheaf-py](https://github.com/opensheaf/opensheaf-py).

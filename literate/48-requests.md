@@ -4,7 +4,7 @@ The requests of a page
 An archive made from the [archive
 template](https://github.com/opensheaf/archive-template) is kept by
 forms: the issue forms of its repository, and the
-[Manager](https://opensheaf.org/manager/), whose forms have the same
+[Manager](https://manager.opensheaf.org/), whose forms have the same
 fields. Until this phase, every form became a **request** that the
 archive's workflow carried out with opensheaf-py, through the template's
 script `.github/scripts/osheaf_issue.py`: it reads the fields, checks

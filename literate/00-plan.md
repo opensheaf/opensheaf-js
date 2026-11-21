@@ -205,7 +205,7 @@ The phases
    the Git Data API (chapter [47](47-github-storage.md)); the requests of
    the forms carried out as the archive template's script carries them
    out (chapter [48](48-requests.md)); the core the
-   [Manager](https://opensheaf.org/manager/) imports, with the owner's
+   [Manager](https://manager.opensheaf.org/) imports, with the owner's
    current keys opened from its key wallet by a passkey, through a popup
    of `unlock.opensheaf.org`, and kept in the page as WebCrypto keys
    that cannot be exported (chapter [49](49-manager.md)). See "Phase 6:
@@ -549,7 +549,9 @@ Phase 6: results and notes
 --------------------------
 
 The decision asked for at the end of phase 5 was made: the Manager stays
-where it is published (`https://opensheaf.org/manager/`) and hands off
+where it is published (`https://opensheaf.org/manager/` then; since
+21 November 2026 on an origin of its own, `https://manager.opensheaf.org/`,
+the only one the unlock page answers) and hands off
 to `unlock.opensheaf.org` in a popup, by window messages, with the
 cryptography of the command line's hand-off and the mode `popup` in its
 authenticated data (chapter [36](36-passkeys.md)). Keys made for one

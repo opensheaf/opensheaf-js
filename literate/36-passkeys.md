@@ -245,7 +245,9 @@ origin of what it receives and naming the origin of what it sends:
 
 1. the Manager opens `https://unlock.opensheaf.org/#mode=popup&origin=O`,
    `O` being its own origin, which the page accepts only if it is on its
-   list (`https://opensheaf.org`);
+   list (`https://manager.opensheaf.org`: the Manager has an origin of its
+   own, so that no other page of the project's sites, such as the archives
+   served under `https://opensheaf.org/`, may open the page);
 2. the page tells its opener that it is ready, with the target origin
    `O`: a page of another origin that opened it hears nothing;
 3. the Manager answers, to the origin of the unlock page only, with the
@@ -264,27 +266,43 @@ origin of what it receives and naming the origin of what it sends:
    then tells the page it may close. The secret stays in the memory of
    the Manager's page; it is never written to its storage.
 
+To set up a key wallet from the browser (chapter [49](49-manager.md)),
+the Manager opens the page with the mode `popup-enroll` instead: the
+request names the passkeys the owner has already, possibly none, which
+the page excludes, as it does for `osheaf key enroll`; the page creates a
+passkey, derives its secret and seals it with the mode `popup-enroll` in
+the authenticated data, so that an answer of one mode is never taken for
+another. The answer must name a new credential.
+
 These are the Manager's side of it, written with web standards only like
 the rest of `core/passkey.js`; the page's side is in the repository
 [opensheaf/unlock](https://github.com/opensheaf/unlock). A vector shared
-with that repository's tests fixes the bytes of an answer of a popup.
+with that repository's tests fixes the bytes of an answer of a popup, in
+both modes.
 
     // in the popup of the Manager:
-    export const POPUP = 'popup';
+    export const POPUP = 'popup', POPUP_ENROLL = 'popup-enroll';
     export const UNLOCK_ORIGIN = new URL(UNLOCK_PAGE).origin;
     export const POPUP_MESSAGES = { ready: 'opensheaf-unlock-ready', request: 'opensheaf-unlock-request',
                                     answer: 'opensheaf-unlock-answer', done: 'opensheaf-unlock-done' };
 
-    export function popupUrl(origin) {
-      return UNLOCK_PAGE + '#' + new URLSearchParams({ mode: POPUP, origin }).toString();
+    function popupMode(mode) {
+      if (mode !== POPUP && mode !== POPUP_ENROLL) throw new UnlockFailed(`not a mode of the popup: ${mode}`);
+      return mode;
     }
 
-    export async function popupRequest(owner, creds, pair = null, state = null) {
+    export function popupUrl(origin, mode = POPUP) {
+      return UNLOCK_PAGE + '#' + new URLSearchParams({ mode: popupMode(mode), origin }).toString();
+    }
+
+    export async function popupRequest(owner, creds, pair = null, state = null, mode = POPUP) {
       if (!OWNER_NAME.test(owner || '')) throw new UnlockFailed(`not an owner name: ${owner}`);
-      if (!creds.length) throw new UnlockFailed('no passkey is enrolled for the keys of this owner (osheaf key enroll)');
+      if (!creds.length && popupMode(mode) === POPUP) {
+        throw new UnlockFailed('no passkey is enrolled for the keys of this owner (osheaf key enroll)');
+      }
       pair ||= await newKeyPair();
       state ||= randomState();
-      return { owner, creds: [...creds], state, pair, code: await confirmationCode(state, pair.publicKey),
+      return { owner, mode, creds: [...creds], state, pair, code: await confirmationCode(state, pair.publicKey),
                message: { type: POPUP_MESSAGES.request, state, pk: b64url(pair.publicKey), owner, cred: creds.join(',') } };
     }
 
@@ -295,8 +313,9 @@ with that repository's tests fixes the bytes of an answer of a popup.
 
 The answer of the page: the state of the request, then either an error,
 or the sealed secret and the credential that made it. It is opened only
-with the code of the request typed by the person, and only from one of
-the passkeys asked for.
+with the code of the request typed by the person, with the mode of the
+request, and only from one of the passkeys asked for; or, for a passkey
+just created, from a credential that is not one of those excluded.
 
     // in the popup of the Manager:
     export async function openPopupAnswer(request, data, typed) {
@@ -313,9 +332,13 @@ the passkeys asked for.
       try {
         const [epk, ct, tag] = [fromB64url(data.epk), fromB64url(data.ct), fromB64url(data.tag)];
         fromB64url(data.cred);
-        secret = await unseal(request.pair, epk, ct, tag, request.state, POPUP, request.owner, data.cred);
+        secret = await unseal(request.pair, epk, ct, tag, request.state, request.mode || POPUP, request.owner, data.cred);
       } catch {
         throw new UnlockFailed('the page sent a damaged answer');
+      }
+      if (request.mode === POPUP_ENROLL) {
+        if (request.creds.includes(data.cred)) throw new UnlockFailed('the page sent no new credential');
+        return answerOf({ cred: data.cred, secret });
       }
       return answerOf({ cred: data.cred, secret }, request.creds);
     }

@@ -20,9 +20,11 @@ import { loadSchemas } from '../core/schema.js';
 import { utf8 } from '../core/crypto.js';
 import { KeeperUnreachable } from '../core/keepers.js';
 import { keyPairOf, seal, popupRequest, openPopupAnswer, popupUrl, b64url, UnlockFailed } from '../core/passkey.js';
-import { keyFileText, keyText, Passkey, passkeySalt, passkeyKek } from '../core/keys.js';
+import { keyFileText, keyText, Passkey, passkeySalt, passkeyKek, readKey, passkeysOf } from '../core/keys.js';
+import { GitHubWallet } from '../core/wallets.js';
 import { browserEnvironment, schemasOf, directWrite, keyFromText, walletLocks, openLocks, signers,
-         prefetched } from '../web/manager.js';
+         prefetched, checkWallet, walletEntries, passphraseConfirmed, checkPassphrase, keyToPush, pushKey,
+         enrollPlan, openWithPassphrase, enrollPasskey } from '../web/manager.js';
 
 const REPO = 'jane/papers';
 
@@ -444,7 +446,7 @@ test('the requests carried out by the template\'s script and by this program giv
 const VECTOR = { owner: 'a'.repeat(52), state: 'popup-state-of-the-tests', cred: 'Y3JlZGVudGlhbC1vZi10aGUtdGVzdHM',
                  pk: 'E75P6uryBMf9M1j8nAByGIHRdCeBKCJ-xnTzf3_pe20', epk: 'V9tLNZ8jrl4Ubk4lEgVnBHIlBjSMFQwUdT0Mkz0E1CE',
                  ct: '5G1AcynkQgGMF4zDTK5jAHzpINvJJpVIKW_a172XDTY', tag: 'x9nebDAtOsMhfeqtGvRgbjU2r828_nAI4qzFA4JSt6U',
-                 code: '329 875' };
+                 code: '329 875', enrollTag: 'lTxj4rxHKf2zYq2Z6qJP-tfFeHEIEhvDgxiGvgR9zCI' };
 
 test('the popup of the Manager: the hand-off of the page, opened with the code of the request', async () => {
   const mine = await keyPairOf(new Uint8Array(32).fill(7)), page = await keyPairOf(new Uint8Array(32).fill(9));
@@ -466,7 +468,31 @@ test('the popup of the Manager: the hand-off of the page, opened with the code o
   await assert.rejects(openPopupAnswer(req, { ...answer, epk: b64url(e2), ct: b64url(c2), tag: b64url(t2) }, '329875'),
                        /damaged answer/);
   await assert.rejects(popupRequest(VECTOR.owner, []), UnlockFailed);
-  assert.equal(popupUrl('https://opensheaf.org'), 'https://unlock.opensheaf.org/#mode=popup&origin=https%3A%2F%2Fopensheaf.org');
+  assert.equal(popupUrl('https://manager.opensheaf.org'),
+               'https://unlock.opensheaf.org/#mode=popup&origin=https%3A%2F%2Fmanager.opensheaf.org');
+});
+
+test('the popup that creates a passkey: its own mode, a new credential', async () => {
+  const mine = await keyPairOf(new Uint8Array(32).fill(7)), page = await keyPairOf(new Uint8Array(32).fill(9));
+  const secret = new Uint8Array(32).map((_, i) => i);
+  assert.equal(popupUrl('https://manager.opensheaf.org', 'popup-enroll'),
+               'https://unlock.opensheaf.org/#mode=popup-enroll&origin=https%3A%2F%2Fmanager.opensheaf.org');
+  assert.throws(() => popupUrl('https://manager.opensheaf.org', 'enroll'), UnlockFailed);
+  const req = await popupRequest(VECTOR.owner, [], mine, VECTOR.state, 'popup-enroll');
+  assert.equal(req.message.cred, '');
+  assert.equal(req.code, VECTOR.code);
+  const [epk, ct, tag] = await seal(secret, mine.publicKey, VECTOR.state, 'popup-enroll', VECTOR.owner, VECTOR.cred, page);
+  assert.deepEqual([b64url(epk), b64url(ct), b64url(tag)], [VECTOR.epk, VECTOR.ct, VECTOR.enrollTag]);
+  const answer = { type: 'opensheaf-unlock-answer', state: VECTOR.state, epk: VECTOR.epk, ct: VECTOR.ct, tag: VECTOR.enrollTag,
+                   cred: VECTOR.cred };
+  assert.deepEqual(await openPopupAnswer(req, answer, '329 875'), [VECTOR.cred, secret]);
+  // an answer of the popup that unlocks is not one that enrolls, nor the other way round
+  await assert.rejects(openPopupAnswer(req, { ...answer, tag: VECTOR.tag }, '329875'), /damaged answer/);
+  const unlocking = await popupRequest(VECTOR.owner, [VECTOR.cred], mine, VECTOR.state);
+  await assert.rejects(openPopupAnswer(unlocking, answer, '329875'), /damaged answer/);
+  // a credential the request excludes is not a new passkey
+  const excluding = await popupRequest(VECTOR.owner, [VECTOR.cred], mine, VECTOR.state, 'popup-enroll');
+  await assert.rejects(openPopupAnswer(excluding, answer, '329875'), /no new credential/);
 });
 
 test('keys of a wallet opened by the secret of a passkey, kept unexportable', async () => {
@@ -490,6 +516,89 @@ test('keys of a wallet opened by the secret of a passkey, kept unexportable', as
   assert.equal(opened.signing.extractable, false);
   assert.deepEqual(await opened.sign(utf8('a message')), await key.sign(utf8('a message')));
   await assert.rejects(openLocks(locks, owner, cred, new Uint8Array(32).fill(6)));
+});
+
+test('a key wallet set up from the page: checked, the current key pushed, a passkey enrolled', async () => {
+  const env = requestEnvironment();
+  const m = new MemoryStorage();
+  const cost = { opslimit: 1, memlimit: 8192 };
+  await init(m, env, { name: 'Papers of Jane Doe', baseUrl: 'https://example.org/papers/', curator: 'Doe, Jane',
+                       newOwner: true, export: '/keys', yes: true, cost }, '/archive');
+  const { owner, dids, versions } = await signers(m, browserEnvironment({ assets: { templates: {} } }));
+  assert.deepEqual(Object.values(versions), [1]);
+  const [key] = await env.keyStore.current(owner, dids);
+  const g = fakeGitHub();
+  g.create('jane/opensheaf-keys', {}, { visibility: 'private' });
+  g.create('jane/open-keys', {}, { visibility: 'public' });
+  g.create('jane/read-only', {}, { visibility: 'private', push: false });
+  g.create(REPO, {}, { visibility: 'private' });
+  const gh = { api: g.api, fetch: g.fetch, token: async () => g.token };
+  const wallet = (repo) => new GitHubWallet(repo, gh, [REPO]);
+  await assert.rejects(checkWallet(wallet('jane/open-keys')), /not a private repository/);
+  await assert.rejects(checkWallet(wallet('jane/read-only')), /cannot write/);
+  await assert.rejects(checkWallet(wallet(REPO)), /repository of the archive/);
+  await assert.rejects(checkWallet(wallet('jane/nothing')), /install the OpenSheaf app/);
+  const w = wallet('jane/opensheaf-keys');
+  await checkWallet(w);
+  let entries = await walletEntries(w, owner);
+  assert.deepEqual(entries, []);
+  assert.equal(passphraseConfirmed(entries), true);
+  const line = btoa(String.fromCharCode(...key.seed)) + '\n';
+  const other = await exampleKey('another key');
+  await assert.rejects(keyToPush(btoa(String.fromCharCode(...other.seed)), { owner, dids }), /not a current key/);
+  await assert.rejects(keyToPush(await keyText(key, 'b'.repeat(52), 'current'), { owner, dids }), /of the owner b{52}/);
+  await assert.rejects(keyToPush(await keyText(key, owner, 'current', 'a passphrase', cost), { owner, dids }), /locked/);
+  await assert.rejects(keyToPush('not a key', { owner, dids }), /not a key file/);
+  const given = await keyToPush(line, { owner, dids });
+  assert.equal(given.did, key.did);
+  const head = g.head('jane/opensheaf-keys');
+  assert.equal(await pushKey(w, owner, given, versions[given.did], 'correct horse', { cost }), true);
+  given.seed.fill(0);
+  const path = `${owner}/${key.id}.key.enc`;
+  const pushed = text(g.files('jane/opensheaf-keys').get(path));
+  assert.match(pushed, new RegExp(`^opensheaf-key/0\\.2\nkind current\nowner ${owner}\nversion v1\nkey ${key.did}\n`));
+  assert.match(g.objects.get(g.head('jane/opensheaf-keys')).message, new RegExp(`^opensheaf: current key ${key.id} of ${owner}$`));
+  assert.notEqual(g.head('jane/opensheaf-keys'), head);
+  assert.equal((await readKey(pushed, 'correct horse')).key.did, key.did);
+  assert.equal(await pushKey(w, owner, await keyToPush(line, { owner, dids }), 1, 'another', { cost }), false);
+  assert.equal(text(g.files('jane/opensheaf-keys').get(path)), pushed);
+  entries = await walletEntries(w, owner);
+  assert.equal(passphraseConfirmed(entries), false);
+  await assert.rejects(checkPassphrase(entries, 'wrong horse', owner, w.name), /not the passphrase of the keys/);
+  await checkPassphrase(entries, 'correct horse', owner, w.name);
+  // the passkey: none yet, so a new one, excluding none
+  const plan = await enrollPlan(w, owner);
+  assert.deepEqual([plan.fresh, plan.known, plan.todo.map((e) => e.kid)], [true, [], [key.id]]);
+  await assert.rejects(openWithPassphrase(plan, 'wrong horse', w.name), /nothing was changed/);
+  await openWithPassphrase(plan, 'correct horse', w.name);
+  const cred = 'Y3JlZGVudGlhbC1vZi10aGUtdGVzdHM', prf = new Uint8Array(32).fill(5);
+  const done = await enrollPasskey(w, plan, 'correct horse', cred, Uint8Array.from(prf), { cost });
+  assert.deepEqual(done, [['current', key.did]]);
+  const enrolled = text(g.files('jane/opensheaf-keys').get(path));
+  assert.equal(enrolled.split('\n').filter((l) => l.startsWith('wrap passkey prf rp=unlock.opensheaf.org cred=' + cred)).length, 1);
+  assert.equal(passkeysOf(enrolled).length, 1);
+  assert.equal((await readKey(enrolled, 'correct horse')).key.did, key.did);
+  // unlocked as the Manager unlocks: the locks of the wallet, the passkey's secret
+  const locks = await walletLocks(w, owner, dids);
+  assert.deepEqual(locks.map((l) => [l.did, l.creds]), [[key.did, [cred]]]);
+  const [opened] = await openLocks(locks, owner, cred, Uint8Array.from(prf));
+  assert.deepEqual(await opened.sign(utf8('a message')), await key.sign(utf8('a message')));
+  // enrolled already: nothing to do; a new passkey only if asked for
+  const again = await enrollPlan(w, owner);
+  assert.deepEqual([again.fresh, again.known, again.todo], [false, [cred], []]);
+  const fresh = await enrollPlan(w, owner, { newPasskey: true });
+  assert.equal(fresh.fresh, true);
+  await assert.rejects(enrollPasskey(w, fresh, 'correct horse', cred, prf, { cost }), /no new passkey/);
+  // a key put later, without the passkey: the passkey enrolled is used for it, and must open what it is enrolled for
+  const later = await exampleKey('a later key');
+  await w.write(owner, later.id, 'current', await keyFileText(later, owner, 'current', 2, 'correct horse', { cost }));
+  const plan2 = await enrollPlan(w, owner);
+  assert.deepEqual([plan2.fresh, plan2.todo.map((e) => e.kid)], [false, [later.id]]);
+  await assert.rejects(enrollPasskey(w, plan2, 'correct horse', cred, new Uint8Array(32).fill(6), { cost }),
+                       /does not open the keys it is enrolled for/);
+  await enrollPasskey(w, plan2, 'correct horse', cred, Uint8Array.from(prf), { cost });
+  const laterText = text(g.files('jane/opensheaf-keys').get(`${owner}/${later.id}.key.enc`));
+  assert.equal((await readKey(laterText, null, { [cred]: await passkeyKek(prf) })).key.did, later.did);
 });
 
 test('a request written directly: one commit, signed in the page', async () => {

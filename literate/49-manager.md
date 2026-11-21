@@ -1,7 +1,7 @@
 The Manager's core
 ==================
 
-The [Manager](https://opensheaf.org/manager/) (repository
+The [Manager](https://manager.opensheaf.org/) (repository
 [opensheaf/manager](https://github.com/opensheaf/manager)) is a page that
 keeps an archive held on GitHub. With this phase it writes to the
 archive itself: it reads the archive from the head of its branch
@@ -26,16 +26,17 @@ was made from.
     import { environment, ArchiveFolder } from '../core/folder.js';
     import { loadSchemas } from '../core/schema.js';
     import { fetchJsonWith } from '../core/keepers.js';
-    import { Key, readKey, passkeysOf, passkeySalt, passkeyKek, PASSKEY_RP, KeyError } from '../core/keys.js';
-    import { describeEntry } from '../core/wallets.js';
+    import { Key, readKey, passkeysOf, passkeySalt, passkeyKek, Passkey, wrapsOf, PASSKEY_RP, KeyError, PassphraseNeeded,
+             CURRENT } from '../core/keys.js';
+    import { describeEntry, putKey, addPasskey, readAny, WalletError } from '../core/wallets.js';
     import { sameBytes, unbase64 } from '../core/crypto.js';
     import { oneCommit } from '../core/github.js';
     import { carryOut } from '../core/requests.js';
 
     export { GitHub, GitHubStorage, GitHubError, CommitConflict, oneCommit, gitBlobSha, GITHUB_API } from '../core/github.js';
     export { carryOut, Problem, OPERATIONS, WORKFLOW_ONLY, NEW_PAPER, NEW_VERSION } from '../core/requests.js';
-    export { popupUrl, popupRequest, openPopupAnswer, sameCode, confirmationCode, POPUP, POPUP_MESSAGES, UNLOCK_ORIGIN,
-             UnlockFailed } from '../core/passkey.js';
+    export { popupUrl, popupRequest, openPopupAnswer, sameCode, confirmationCode, POPUP, POPUP_ENROLL, POPUP_MESSAGES,
+             UNLOCK_ORIGIN, UnlockFailed } from '../core/passkey.js';
     export { Key, readKey, KeyError, PASSKEY_RP } from '../core/keys.js';
     export { GitHubWallet, WalletError } from '../core/wallets.js';
     export { ArchiveFolder, Stop } from '../core/folder.js';
@@ -43,6 +44,8 @@ was made from.
     <<the environment of a page>>
 
     <<the keys that sign>>
+
+    <<setting up a key wallet>>
 
     <<a request written directly>>
 
@@ -88,7 +91,9 @@ The keys that sign
 ------------------
 
 The current keys of the owner of the archive that may sign now: those of
-the latest version of its key log, which a version needs `threshold` of.
+the latest version of its key log, which a version needs `threshold` of;
+and, for each, the first version of the log that lists it, which a key
+file of a wallet records (`version`, as `osheaf key push` writes it).
 
     // in the keys that sign:
     export async function signers(storage, env) {
@@ -96,8 +101,12 @@ the latest version of its key log, which a version needs `threshold` of.
       const owner = f.archive.owner;
       const log = await f.keyLog(owner);
       const latest = log?.latest();
-      if (!latest) return { owner, dids: [], threshold: 0 };
-      return { owner, dids: [...latest.keys.keys], threshold: latest.keys.threshold };
+      if (!latest) return { owner, dids: [], threshold: 0, versions: {} };
+      const versions = {};
+      for (const did of latest.keys.keys) {
+        versions[did] = log.side().find((v) => v.keys && (v.keys.keys || []).includes(did))?.number ?? null;
+      }
+      return { owner, dids: [...latest.keys.keys], threshold: latest.keys.threshold, versions };
     }
 
 The locks of those keys in a wallet: each entry of the owner that holds
@@ -162,6 +171,224 @@ same way.
       }
       const rk = await readKey(text, passphrase);
       return { owner: rk.owner, kind: rk.kind, key: await sealedKey(rk.key) };
+    }
+
+Setting up a key wallet
+-----------------------
+
+An owner whose current key is on one computer only, in the key store of
+`osheaf` (`~/.config/opensheaf/keys/OWNER/K.key`, or the system's
+credential store), sets up its key wallet from the Manager in three
+steps, each the work of a command of chapter [37](37-owner-commands.md),
+with the same files, so that `osheaf key pull`, `key list`, `key enroll`
+and `key unlock` of either program take what the page wrote, and the
+page what they wrote:
+
+1. the wallet: a private repository the person creates on GitHub and
+   installs the OpenSheaf app on; the page checks that it can be read and
+   written, that it is private, and that it is not the archive's
+   repository, as `osheaf key push` checks it;
+2. the current key, as `osheaf key push`: the person gives the key file
+   of the key store (one line, the seed in base64) or the text of `osheaf
+   key export` in clear; it must be a current key of the owner that the
+   latest version of its key log lists. It is locked with the passphrase,
+   asked twice, or once when the wallet holds keys of the owner locked
+   already, and then checked to open one of them, as
+   `osheaf key push` asks it; a key that the wallet holds already is left
+   as it is. The seed is wiped once the file is written;
+3. the passkey, as `osheaf key enroll`: every key of the owner locked
+   with a passphrase is opened with it first; a new passkey is created by
+   the popup of the unlock page in the mode `popup-enroll` (chapter
+   [36](36-passkeys.md)) when none of the owner's keys opens with a
+   passkey yet, or else the passkey already enrolled is used, through the
+   popup in the mode `popup`, for the keys it does not open yet; each of
+   those keys gets one more wrap, checked to open with the passkey alone,
+   written and read back.
+
+`osheaf key enroll` asks a new passkey once more, to check that it gives
+the same secret twice; the page does not (the unlock page derives the
+secret with an assertion, as an unlock does, and each wrap is checked to
+open with it).
+
+The wallet is a `GitHubWallet` of chapter [35](35-wallets.md) with the
+page's `fetch` and token. Its check here asks one more thing than
+`osheaf key push` does: that the sign-in may write to it (the page's
+token is that of the GitHub app, whose installation must include the
+wallet).
+
+    // in setting up a key wallet:
+    export async function checkWallet(wallet) {
+      wallet.checkName();
+      const info = await wallet.api('GET', `repos/${wallet.repo}`);
+      if (info === null) {
+        throw new WalletError(`no repository ${wallet.repo} that this sign-in can reach: create it, private, and install ` +
+                              'the OpenSheaf app on it');
+      }
+      if (info.private !== true || info.visibility !== 'private') {
+        throw new WalletError(`${wallet.repo} is not a private repository: a wallet must be private`);
+      }
+      if (wallet.forbidden.has(String(info.full_name ?? wallet.repo).toLowerCase())) {
+        throw new WalletError(`${wallet.repo} is a repository of the archive, which is public: a wallet is a repository of its own`);
+      }
+      if (info.permissions && info.permissions.push !== true) {
+        throw new WalletError(`this sign-in cannot write to ${wallet.repo}`);
+      }
+      wallet.checked = true;
+      return info;
+    }
+
+What the wallet holds of the owner: each key file, by its key's name.
+
+    // in setting up a key wallet:
+    export async function walletEntries(wallet, owner) {
+      const out = [];
+      for (const [o, kid] of await wallet.entries(owner)) {
+        const text = await readAny(wallet, o, kid);
+        if (text) out.push({ kid, text, fields: describeEntry(text) });
+      }
+      return out;
+    }
+
+The passphrase: asked twice when no key of the owner in the wallet is
+locked yet, once otherwise, and then checked against the first of them
+(`walletPassphrase` of chapter [37](37-owner-commands.md)).
+
+    // in setting up a key wallet:
+    export function passphraseConfirmed(entries) {
+      return !entries.some((e) => wrapsOf(e.text).length);
+    }
+
+    export async function checkPassphrase(entries, passphrase, owner, walletName) {
+      const locked = entries.filter((e) => wrapsOf(e.text).length);
+      if (!locked.length) return;
+      try {
+        await readKey(locked[0].text, passphrase);
+      } catch (error) {
+        if (error instanceof KeyError) {
+          throw new WalletError(`${error.message}: this is not the passphrase of the keys of ${owner} in ${walletName}`);
+        }
+        throw error;
+      }
+    }
+
+The key given: the line of a key store, of the archive's owner, or the
+text of `osheaf key export`, which names its owner; a current key of the
+latest version of the key log in either case. Its seed is wiped if it is
+refused.
+
+    // in setting up a key wallet:
+    export async function keyToPush(text, { owner, dids }) {
+      const line = String(text ?? '').trim();
+      let key, of = owner;
+      if (/^[A-Za-z0-9+/]{43}=$/.test(line)) {
+        key = await Key.fromSeed(unbase64(line));
+      } else {
+        let rk;
+        try {
+          rk = await readKey(String(text ?? ''));
+        } catch (error) {
+          if (error instanceof PassphraseNeeded) {
+            throw new KeyError('this key is locked with a passphrase: give the key file of osheaf\'s key store, or the ' +
+                               'text of osheaf key export without --encrypt');
+          }
+          if (error instanceof KeyError) {
+            throw new KeyError(`not a key file of osheaf (${error.message}): give the file OWNER/K.key of its key store, ` +
+                               'or the text of osheaf key export');
+          }
+          throw error;
+        }
+        if (rk.kind !== CURRENT) {
+          rk.key.seed?.fill(0);
+          throw new KeyError(`this is a ${rk.kind} key: only a current key is put in the wallet here`);
+        }
+        key = rk.key;
+        of = rk.owner;
+      }
+      if (of !== owner || !dids.includes(key.did)) {
+        key.seed.fill(0);
+        throw new KeyError(of !== owner ? `this key is of the owner ${of}, not of the archive's owner ${owner}`
+          : `${key.did} is not a current key of the latest version of the owner's key log`);
+      }
+      return key;
+    }
+
+The key put in the wallet as `osheaf key push` puts it, unless it is
+there already; whether it was put.
+
+    // in setting up a key wallet:
+    export async function pushKey(wallet, owner, key, version, passphrase, { cost = {} } = {}) {
+      if ((await wallet.read(owner, key.id, CURRENT)) !== null) return false;
+      await putKey(wallet, owner, key, CURRENT, version, passphrase, [], cost);
+      return true;
+    }
+
+What enrolling does, before any passkey is asked: the keys locked with a
+passphrase; the passkeys of this owner (its PRF salt, the relying party
+of the unlock page) that open some of them; whether a new passkey is
+made; and the keys that get a wrap.
+
+    // in setting up a key wallet:
+    const encrypted = (text) => text.split(/\r\n|\r|\n/).some((x) => {
+      const p = x.split(/\s+/).filter(Boolean);
+      return x.startsWith('encryption ') && p[1] !== 'none';
+    });
+
+    export async function enrollPlan(wallet, owner, { newPasskey = false, entries = null } = {}) {
+      entries = (entries || await walletEntries(wallet, owner)).filter((e) => encrypted(e.text));
+      if (!entries.length) throw new WalletError(`the wallet ${wallet.name} holds no key of ${owner} locked with a passphrase`);
+      const salt = await passkeySalt(owner);
+      const ours = (text) => passkeysOf(text).filter((p) => sameBytes(p.salt, salt) && p.rp === PASSKEY_RP).map((p) => p.cred);
+      const known = [...new Set(entries.flatMap((e) => ours(e.text)))];
+      const fresh = Boolean(newPasskey) || !known.length;
+      const todo = fresh ? entries : entries.filter((e) => !passkeysOf(e.text).some((p) => known.includes(p.cred)));
+      return { owner, salt, entries, known, fresh, todo };
+    }
+
+Every key to change is opened with the passphrase first, so that a wrong
+passphrase changes nothing; then the passkey's secret is taken, and the
+wraps added. A passkey enrolled already must open a key it is enrolled
+for.
+
+    // in setting up a key wallet:
+    export async function openWithPassphrase(plan, passphrase, walletName) {
+      for (const e of plan.todo) {
+        try {
+          await readKey(e.text, passphrase);
+        } catch (error) {
+          if (error instanceof KeyError) throw new WalletError(`${walletName} ${e.kid}: ${error.message}: nothing was changed`);
+          throw error;
+        }
+      }
+    }
+
+    export async function enrollPasskey(wallet, plan, passphrase, cred, prf, { cost = {}, progress = () => {} } = {}) {
+      if (plan.fresh && plan.known.includes(cred)) throw new WalletError('the page sent no new passkey: nothing was changed');
+      const kek = await passkeyKek(prf);
+      try {
+        if (!plan.fresh) {
+          let opens = false;
+          for (const e of plan.entries) {
+            if (!passkeysOf(e.text).some((p) => p.cred === cred)) continue;
+            try {
+              await readKey(e.text, null, { [cred]: kek });
+              opens = true;
+              break;
+            } catch (error) {
+              if (!(error instanceof KeyError)) throw error;
+            }
+          }
+          if (!opens) throw new WalletError('the passkey used does not open the keys it is enrolled for: nothing was changed');
+        }
+        const passkey = new Passkey(cred, plan.salt, { kek });
+        const done = [];
+        for (const e of plan.todo) {
+          done.push(await addPasskey(wallet, plan.owner, e.kid, passphrase, passkey, cost));
+          progress(done.length, plan.todo.length);
+        }
+        return done;
+      } finally {
+        kek.fill(0);
+      }
     }
 
 A request written directly

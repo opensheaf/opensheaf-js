@@ -68,8 +68,8 @@ export function fakeGitHub({ token = 'fake-token-of-the-tests', api = 'https://a
     return g.put('commit', enc.encode(text), { tree, parents, message });
   };
 
-  g.create = (repo, files, { branch = 'main' } = {}) => {
-    repos.set(repo, { branch, refs: new Map() });
+  g.create = (repo, files, { branch = 'main', visibility = 'public', push = true } = {}) => {
+    repos.set(repo, { branch, refs: new Map(), visibility, push });
     const flat = new Map();
     for (const [p, v] of Object.entries(files)) {
       const [bytes, mode] = Array.isArray(v) ? v : [v, '100644'];
@@ -124,8 +124,12 @@ export function fakeGitHub({ token = 'fake-token-of-the-tests', api = 'https://a
     const r = m && repos.get(m[1]);
     if (!r) return json(404, { message: 'Not Found' });
     const rest = m[2] || '';
-    if (!rest) return json(200, { full_name: m[1], default_branch: r.branch, private: false });
+    if (!rest) {
+      return json(200, { full_name: m[1], default_branch: r.branch, private: r.visibility !== 'public',
+                         visibility: r.visibility, permissions: { pull: true, push: r.push } });
+    }
     let x;
+    if ((x = /^contents(?:\/(.*))?$/.exec(rest))) return contents(m[1], r, decodeURIComponent(x[1] || ''), method, body);
     if ((x = /^git\/ref\/heads\/(.+)$/.exec(rest)) && method === 'GET') {
       const sha = r.refs.get(decodeURIComponent(x[1]));
       return sha ? json(200, { ref: `refs/heads/${x[1]}`, object: { type: 'commit', sha } }) : json(404, { message: 'Not Found' });
@@ -193,6 +197,35 @@ export function fakeGitHub({ token = 'fake-token-of-the-tests', api = 'https://a
       return json(200, { ref: `refs/heads/${branch}`, object: { type: 'commit', sha: body.sha } });
     }
     return json(404, { message: 'Not Found' });
+  };
+
+  const contents = (repo, r, p, method, body) => {
+    const files = g.files(repo);
+    const old = files.get(p);
+    if (method === 'GET') {
+      if (old) return json(200, { type: 'file', name: p.split('/').pop(), path: p, sha: gitName('blob', old), content: b64(old) });
+      const names = new Map();
+      for (const f of files.keys()) {
+        if (p && !f.startsWith(p + '/')) continue;
+        const rest = p ? f.slice(p.length + 1) : f, k = rest.indexOf('/');
+        names.set(k < 0 ? rest : rest.slice(0, k), k < 0 ? 'file' : 'dir');
+      }
+      if (!names.size) return json(404, { message: p ? 'Not Found' : 'This repository is empty.' });
+      return json(200, [...names].sort().map(([name, type]) => ({ name, type, path: p ? `${p}/${name}` : name })));
+    }
+    if (!r.push) return json(403, { message: 'Resource not accessible by integration' });
+    if (method === 'PUT') {
+      if (old && body.sha !== gitName('blob', old)) return json(409, { message: `${p} does not match ${body.sha}` });
+      if (!old && body.sha) return json(422, { message: '"sha" was supplied but the file does not exist' });
+      g.push(repo, { [p]: new Uint8Array(Buffer.from(body.content, 'base64')) }, body.message);
+      return json(old ? 200 : 201, { content: { path: p }, commit: { sha: g.head(repo) } });
+    }
+    if (method === 'DELETE') {
+      if (!old || body.sha !== gitName('blob', old)) return json(404, { message: 'Not Found' });
+      g.push(repo, { [p]: null }, body.message);
+      return json(200, { commit: { sha: g.head(repo) } });
+    }
+    return json(405, { message: 'Method not allowed' });
   };
 
   return g;

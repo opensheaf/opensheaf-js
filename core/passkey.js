@@ -149,21 +149,28 @@ export function answerOf(result, creds = []) {
   return [cred, secret];
 }
 
-export const POPUP = 'popup';
+export const POPUP = 'popup', POPUP_ENROLL = 'popup-enroll';
 export const UNLOCK_ORIGIN = new URL(UNLOCK_PAGE).origin;
 export const POPUP_MESSAGES = { ready: 'opensheaf-unlock-ready', request: 'opensheaf-unlock-request',
                                 answer: 'opensheaf-unlock-answer', done: 'opensheaf-unlock-done' };
 
-export function popupUrl(origin) {
-  return UNLOCK_PAGE + '#' + new URLSearchParams({ mode: POPUP, origin }).toString();
+function popupMode(mode) {
+  if (mode !== POPUP && mode !== POPUP_ENROLL) throw new UnlockFailed(`not a mode of the popup: ${mode}`);
+  return mode;
 }
 
-export async function popupRequest(owner, creds, pair = null, state = null) {
+export function popupUrl(origin, mode = POPUP) {
+  return UNLOCK_PAGE + '#' + new URLSearchParams({ mode: popupMode(mode), origin }).toString();
+}
+
+export async function popupRequest(owner, creds, pair = null, state = null, mode = POPUP) {
   if (!OWNER_NAME.test(owner || '')) throw new UnlockFailed(`not an owner name: ${owner}`);
-  if (!creds.length) throw new UnlockFailed('no passkey is enrolled for the keys of this owner (osheaf key enroll)');
+  if (!creds.length && popupMode(mode) === POPUP) {
+    throw new UnlockFailed('no passkey is enrolled for the keys of this owner (osheaf key enroll)');
+  }
   pair ||= await newKeyPair();
   state ||= randomState();
-  return { owner, creds: [...creds], state, pair, code: await confirmationCode(state, pair.publicKey),
+  return { owner, mode, creds: [...creds], state, pair, code: await confirmationCode(state, pair.publicKey),
            message: { type: POPUP_MESSAGES.request, state, pk: b64url(pair.publicKey), owner, cred: creds.join(',') } };
 }
 
@@ -186,9 +193,13 @@ export async function openPopupAnswer(request, data, typed) {
   try {
     const [epk, ct, tag] = [fromB64url(data.epk), fromB64url(data.ct), fromB64url(data.tag)];
     fromB64url(data.cred);
-    secret = await unseal(request.pair, epk, ct, tag, request.state, POPUP, request.owner, data.cred);
+    secret = await unseal(request.pair, epk, ct, tag, request.state, request.mode || POPUP, request.owner, data.cred);
   } catch {
     throw new UnlockFailed('the page sent a damaged answer');
+  }
+  if (request.mode === POPUP_ENROLL) {
+    if (request.creds.includes(data.cred)) throw new UnlockFailed('the page sent no new credential');
+    return answerOf({ cred: data.cred, secret });
   }
   return answerOf({ cred: data.cred, secret }, request.creds);
 }

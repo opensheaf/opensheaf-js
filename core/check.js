@@ -179,7 +179,7 @@ export async function lookForKeys(storage) {
       }
       if (entry.kind !== 'file') continue;
       let looks = ROTATION_NAME.test(entry.name) || (entry.name.endsWith('.key') && entry.name !== '.key');
-      if (!looks) {
+      if (!looks && !((await storage.size?.(path)) >= 4096)) {
         const bytes = await storage.read(path);
         if (bytes && bytes.length < 4096) {
           const text = Array.from(bytes, (b) => (b < 128 ? String.fromCharCode(b) : '�')).join('');

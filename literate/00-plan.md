@@ -55,6 +55,8 @@ core/   web-standard ES modules: no Deno.*, no node: modules
   keylogs, wallets, passkey, owner                owners, keys, wallets, passkeys
   mirror, branch, drafts, takedown                across archives
   arxiv, zenodo                                   services (the command line gives the network)
+  github, requests                                an archive on GitHub, one commit per request
+web/    manager: what the Manager imports, bundled for browsers by tools/bundle.js
 cli/    the command line: node: modules, which Deno has too
   disk       an archive folder on a disk
   keystore   current keys (files, the macOS keychain), exported keys, passphrases
@@ -152,8 +154,11 @@ Module map
 | [42](42-takedown.md) | `core/takedown.js` | `takedown`, tombstones, the return of a line | opensheaf-py 25 |
 | [43](43-arxiv.md)–[45](45-arxiv-import.md) | `core/arxiv.js` | `arxiv fetch|import`: downloads, metadata, e-prints, signed lines | opensheaf-py 40, 41, 42 |
 | [46](46-zenodo.md) | `core/zenodo.js` | `zenodo`: a version staged and signed, uploads, publication, the sandbox | opensheaf-py 50 |
+| [47](47-github-storage.md) | `core/github.js` | a storage over GitHub: the tree of a branch, blobs, one commit | new |
+| [48](48-requests.md) | `core/requests.js` | the requests of the forms, carried out | the archive template's `osheaf_issue.py` |
+| [49](49-manager.md) | `web/manager.js`, `tools/bundle.js` | the Manager's core: keys unlocked by a passkey, direct writes, the bundle | new |
 | [40](40-cli.md) | `cli/*.js` | the command line | opensheaf-py 60 |
-| [70](70-tests.md)–[75](75-tests-services.md) | `tests/*.test.js` | the tests | |
+| [70](70-tests.md)–[76](76-tests-github.md) | `tests/*.test.js` | the tests | |
 
 The chapters 05 to 17 are the Explorer's, copied with their reasoning;
 where they speak of "the explorer", they speak of the reader of archives
@@ -195,10 +200,16 @@ The phases
    so a browser cannot call them); `addVersion` split into building a
    version and installing it, with the lock of a Zenodo deposit. See
    "Phase 5: results and notes" below.
-6. **The Manager**: a browser application that keeps an archive held on
-   GitHub, with a storage over the Git Data API (one commit per command),
-   the current keys in the browser (WebCrypto, non-extractable), the
-   rotation keys unlocked by a passkey.
+6. **The Manager** (done): a storage over GitHub's API, the head of a
+   branch read through its tree and every request one commit through
+   the Git Data API (chapter [47](47-github-storage.md)); the requests of
+   the forms carried out as the archive template's script carries them
+   out (chapter [48](48-requests.md)); the core the
+   [Manager](https://opensheaf.org/manager/) imports, with the owner's
+   current keys opened from its key wallet by a passkey, through a popup
+   of `unlock.opensheaf.org`, and kept in the page as WebCrypto keys
+   that cannot be exported (chapter [49](49-manager.md)). See "Phase 6:
+   results and notes" below.
 7. **The Explorer on the core**: the Explorer imports `core/` from this
    repository instead of its own copy.
 
@@ -533,6 +544,71 @@ Notes for phase 6 (the Manager), from this phase:
   folders of the storage; a Zenodo deposit leaves `zenodo-staging/` only
   while it is incomplete, and the Manager, which does not deposit, needs
   only to respect its lock, which `addVersion` reads.
+
+Phase 6: results and notes
+--------------------------
+
+The decision asked for at the end of phase 5 was made: the Manager stays
+where it is published (`https://opensheaf.org/manager/`) and hands off
+to `unlock.opensheaf.org` in a popup, by window messages, with the
+cryptography of the command line's hand-off and the mode `popup` in its
+authenticated data (chapter [36](36-passkeys.md)). Keys made for one
+browser were not chosen: the keys that sign are the owner's current keys
+in its key wallet, which the passkey opens.
+
+What the tests show (chapter [76](76-tests-github.md)), against a double
+of GitHub's API whose objects are git's:
+
+- the storage over GitHub behaves as the storage in memory; a command is
+  one commit on top of the head read, a folder moved costs no upload, a
+  file written again with its bytes is no change, modes are kept; a
+  branch moved meanwhile refuses the commit, and the command is run
+  again on the new head; trees too large for one answer, the mirror
+  (taken only when what it serves is the blob) and prefetching work;
+- the same requests (new papers and new versions, sources in a zip,
+  notices, licences, a withdrawal, a new collection inside another and
+  featured, members added, vetted and removed) carried out on a folder
+  and on the double's repository leave the same files, byte for byte,
+  and the same commit messages;
+- the same requests carried out by the archive template's script with
+  opensheaf-py and by `carryOut` give the same files (new works by their
+  labels, pins of inventories aside), the same commit messages, and the
+  same answers, refusals included;
+- the popup's answer is the vector the unlock page's tests compute; a
+  key opened from a wallet by a passkey's secret signs as the key, and
+  cannot be exported.
+
+And live, against a throwaway archive on GitHub
+(`opensheaf/opensheaf-manager-test`), with the Manager's own code run by
+Node (its `tools/live-test.mjs`, a key from a file in place of the
+passkey): a notice was committed 11 s after the start (2 s to read the
+head, 3 s to prefetch about 160 small files, 1.5 s to carry it out and
+sign, 4.5 s to upload 21 files and commit), and GitHub Pages served it
+27 s later; a new paper in a collection, 18 s and 24 s. The archive's
+workflow took about 25 s for a request, then Pages about 27 s. The
+commits pass `osheaf verify` of opensheaf-py, and the archive's own
+verification workflow.
+
+Where the Manager differs from the workflow:
+
+- **The verification** of a request trusts the content files to match
+  their inventories (`digests: false`): they are git blobs, named by
+  their content, and the content of papers is never read. The search for
+  private keys reads only the files under 4096 bytes, whose sizes the
+  tree gives (a seventh method of a storage, `size`).
+- **Attachments** are files only: the links of an issue form, which the
+  script downloads, are not followed.
+- **YAML** of the collections' files is written by the `yaml` package as
+  PyYAML writes it for the texts the forms give; a tab, or a text that
+  YAML 1.1 reads as a float without a dot (`1e3`), would be quoted
+  otherwise.
+- **`setup` and `arxiv`** stay with the workflow: the setup makes the
+  archive with an owner made on the author's computer, and arXiv sends
+  no CORS headers.
+- **The rate of GitHub's API**: a request uploads each new file as a blob
+  (a deposit, some forty), and GitHub limits the creation of content
+  (eighty requests a minute); a page that writes many requests in a row
+  may be slowed down.
 
 What stays in Python for now
 ----------------------------

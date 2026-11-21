@@ -50,6 +50,8 @@ listener is the command line's, in `cli/unlock.js`.
 
     <<the answers of the page>>
 
+    <<the popup of the Manager>>
+
 The page and its address
 ------------------------
 
@@ -229,6 +231,93 @@ passkeys it asked for; a new credential when enrolling.
       if (secret.length !== 32) throw new UnlockFailed('the page sent a secret that is not 32 bytes');
       if (creds.length && cred !== null && !creds.includes(cred)) throw new UnlockFailed('the page used another passkey than those asked for');
       return [cred, secret];
+    }
+
+The popup of the Manager
+------------------------
+
+The Manager (chapter [49](49-manager.md)) is a page, not a command: it
+cannot listen on `127.0.0.1`, and it cannot use the passkeys of
+`unlock.opensheaf.org` itself, since a passkey is bound to its relying
+party. It opens the page in a window of its own (a popup) instead, and
+the two talk by window messages (`postMessage`), each checking the
+origin of what it receives and naming the origin of what it sends:
+
+1. the Manager opens `https://unlock.opensheaf.org/#mode=popup&origin=O`,
+   `O` being its own origin, which the page accepts only if it is on its
+   list (`https://opensheaf.org`);
+2. the page tells its opener that it is ready, with the target origin
+   `O`: a page of another origin that opened it hears nothing;
+3. the Manager answers, to the origin of the unlock page only, with the
+   request: a random `state`, its one-time X25519 public key `pk`, the
+   owner and the credentials that may answer, as the command line puts
+   them in the address. The page takes a request only from its opener
+   and from the origin `O`;
+4. the page shows the code of six digits and asks for the passkey; it
+   seals the secret exactly as for the command line (the same key
+   agreement, the same HKDF, the same encrypt-then-MAC), with the mode
+   `popup` in the authenticated data, so that an answer made for a
+   popup is never taken as an answer for the command line, nor the other
+   way round; and posts it back to `O`;
+5. the person types the code the page shows into the Manager, which
+   opens the answer only if the code is that of its own request, and
+   then tells the page it may close. The secret stays in the memory of
+   the Manager's page; it is never written to its storage.
+
+These are the Manager's side of it, written with web standards only like
+the rest of `core/passkey.js`; the page's side is in the repository
+[opensheaf/unlock](https://github.com/opensheaf/unlock). A vector shared
+with that repository's tests fixes the bytes of an answer of a popup.
+
+    // in the popup of the Manager:
+    export const POPUP = 'popup';
+    export const UNLOCK_ORIGIN = new URL(UNLOCK_PAGE).origin;
+    export const POPUP_MESSAGES = { ready: 'opensheaf-unlock-ready', request: 'opensheaf-unlock-request',
+                                    answer: 'opensheaf-unlock-answer', done: 'opensheaf-unlock-done' };
+
+    export function popupUrl(origin) {
+      return UNLOCK_PAGE + '#' + new URLSearchParams({ mode: POPUP, origin }).toString();
+    }
+
+    export async function popupRequest(owner, creds, pair = null, state = null) {
+      if (!OWNER_NAME.test(owner || '')) throw new UnlockFailed(`not an owner name: ${owner}`);
+      if (!creds.length) throw new UnlockFailed('no passkey is enrolled for the keys of this owner (osheaf key enroll)');
+      pair ||= await newKeyPair();
+      state ||= randomState();
+      return { owner, creds: [...creds], state, pair, code: await confirmationCode(state, pair.publicKey),
+               message: { type: POPUP_MESSAGES.request, state, pk: b64url(pair.publicKey), owner, cred: creds.join(',') } };
+    }
+
+    export function sameCode(typed, code) {
+      const digits = (t) => utf8(String(t ?? '').replace(/[^0-9]/g, ''));
+      return digits(typed).length === 6 && sameSecret(digits(typed), digits(code));
+    }
+
+The answer of the page: the state of the request, then either an error,
+or the sealed secret and the credential that made it. It is opened only
+with the code of the request typed by the person, and only from one of
+the passkeys asked for.
+
+    // in the popup of the Manager:
+    export async function openPopupAnswer(request, data, typed) {
+      if (!data || data.type !== POPUP_MESSAGES.answer || typeof data.state !== 'string' ||
+          !sameSecret(utf8(data.state), utf8(request.state))) {
+        throw new UnlockFailed('this is not the answer to this request');
+      }
+      if (typeof data.error === 'string') throw failure({ error: data.error });
+      if (!sameCode(typed, request.code)) {
+        throw new UnlockFailed('the code typed is not the code of this request: close the window of the passkey, and ' +
+                               'unlock again');
+      }
+      let secret;
+      try {
+        const [epk, ct, tag] = [fromB64url(data.epk), fromB64url(data.ct), fromB64url(data.tag)];
+        fromB64url(data.cred);
+        secret = await unseal(request.pair, epk, ct, tag, request.state, POPUP, request.owner, data.cred);
+      } catch {
+        throw new UnlockFailed('the page sent a damaged answer');
+      }
+      return answerOf({ cred: data.cred, secret }, request.creds);
     }
 
 The listener

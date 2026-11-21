@@ -265,7 +265,10 @@ suspect by its name (a rotation key file as exported, `rotation-<16>-<16>.txt`,
 or any `.key`), or, if it is small, by its content: the first line of a
 rotation key file or of its printed sheet, or 32 bytes in base64, the
 form of a seed in a key store. The folders `.git` and the staging folders
-are not searched; symbolic links are not followed.
+are not searched; symbolic links are not followed. A storage that knows
+the size of a file without reading it (the storage over GitHub of
+chapter [47](47-github-storage.md), from its tree) has a method `size`,
+and a file of 4096 bytes or more is then not read at all.
 
     // in files that look like private keys:
     const ROTATION_NAME = /^rotation-[a-z2-7]{16}-[a-z2-7]{16}\.txt$/;
@@ -282,7 +285,7 @@ are not searched; symbolic links are not followed.
           }
           if (entry.kind !== 'file') continue;
           let looks = ROTATION_NAME.test(entry.name) || (entry.name.endsWith('.key') && entry.name !== '.key');
-          if (!looks) {
+          if (!looks && !((await storage.size?.(path)) >= 4096)) {
             const bytes = await storage.read(path);
             if (bytes && bytes.length < 4096) {
               const text = Array.from(bytes, (b) => (b < 128 ? String.fromCharCode(b) : '�')).join('');

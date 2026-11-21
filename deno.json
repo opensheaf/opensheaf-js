@@ -11,6 +11,7 @@
     "test": "deno test -A tests/",
     "tangle": "literate tangle",
     "check": "literate tangle --check",
-    "compile": "deno compile -A --include schemas --include templates --output dist/osheaf cli/osheaf.js"
+    "compile": "deno compile -A --include schemas --include templates --output dist/osheaf cli/osheaf.js",
+    "bundle": "deno run -A tools/bundle.js"
   }
 }

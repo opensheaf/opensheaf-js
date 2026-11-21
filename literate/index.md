@@ -4,9 +4,11 @@ opensheaf-js, a literate program
 > [!WARNING]
 > **Draft.** OpenSheaf 0.2 is a draft specification: until version 1.0, a
 > revision may change the format in incompatible ways, and these tools
-> follow the latest draft. opensheaf-js is in its fifth phase: it has the
-> commands of `osheaf`, arXiv and Zenodo included; TeXmacs sources without
-> their PDF are typeset by [opensheaf-py](https://opensheaf.org/opensheaf-py/).
+> follow the latest draft. opensheaf-js is in its sixth phase: it has the
+> commands of `osheaf`, arXiv and Zenodo included, and the core of the
+> Manager, which writes archives held on GitHub from a browser; TeXmacs
+> sources without their PDF are typeset by
+> [opensheaf-py](https://opensheaf.org/opensheaf-py/).
 
 This is the source of [opensheaf-js](https://github.com/opensheaf/opensheaf-js),
 the tools of [OpenSheaf](https://opensheaf.org) (the `osheaf` command) in
@@ -87,7 +89,7 @@ Keeping an archive
 ------------------
 
 14. [Storage: an archive as files](20-storage.md): on a disk, in memory,
-    over GitHub later; and a storage read over `fetch`.
+    over GitHub (chapter 47); and a storage read over `fetch`.
 15. [Keys: signing, and key files](21-keys.md): Ed25519 with WebCrypto,
     rotation key files in clear and under a passphrase, envelopes that a
     passphrase or a passkey opens, texts for password managers.
@@ -145,22 +147,37 @@ Services
 39. [Zenodo: DOIs for document versions](46-zenodo.md): a version built
     and signed before Zenodo publishes it, `sources.zip`, the sandbox.
 
+The Manager
+-----------
+
+40. [A storage over GitHub](47-github-storage.md): the head of a branch
+    read through its tree, blobs checked by their git names, a mirror,
+    and every command one commit, never forced.
+41. [The requests of a page](48-requests.md): the archive template's
+    script, which carries out the forms, in JavaScript.
+42. [The Manager's core](49-manager.md): the keys a passkey unlocks,
+    kept unexportable, a request written directly, the bundle.
+
 The command line
 ----------------
 
-40. [The command line](40-cli.md): a folder on a disk, the keys of this
+43. [The command line](40-cli.md): a folder on a disk, the keys of this
     device (files, the macOS keychain), the clipboard, the listener of
     the passkey hand-off, the tokens of Zenodo, the commands.
 
 The tests
 ---------
 
-41. [The tests](70-tests.md): storages, files, key files, an archive in
+44. [The tests](70-tests.md): storages, files, key files, an archive in
     memory, owners, wallets and passkeys.
-42. [The tests of names, keys and signatures](71-tests-identity.md),
+45. [The tests of names, keys and signatures](71-tests-identity.md),
     against appendix C and the edge cases of Ed25519.
-43. [The tests of parity with opensheaf-py](72-tests-parity.md).
-44. [The tests across archives](74-tests-across.md): resolution, mirrors,
+46. [The tests of parity with opensheaf-py](72-tests-parity.md).
+47. [The tests across archives](74-tests-across.md): resolution, mirrors,
     branches, drafts and takedowns, by both programs.
-45. [The tests of the services](75-tests-services.md): arXiv and Zenodo,
+48. [The tests of the services](75-tests-services.md): arXiv and Zenodo,
     against doubles, by both programs.
+49. [The tests of GitHub and the requests](76-tests-github.md): the
+    storage against a double of GitHub, the same requests on a disk and
+    on GitHub, by the template's script and by this program, and the
+    Manager's core.

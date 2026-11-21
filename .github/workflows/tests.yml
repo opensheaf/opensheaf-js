@@ -5,6 +5,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with: {repository: opensheaf/archive-template, path: archive-template}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -16,8 +18,12 @@ jobs:
         run: literate tangle --check
       - name: opensheaf-py, the reference, for the tests of parity
         run: pip install "opensheaf[validate] @ git+https://github.com/opensheaf/opensheaf-py"
-      - name: the tests (core, appendix C, parity with opensheaf-py)
+      - name: the tests (core, appendix C, parity with opensheaf-py, the template's requests)
+        env:
+          OSHEAF_ISSUE: ${{ github.workspace }}/archive-template/.github/scripts/osheaf_issue.py
         run: deno test -A tests/
+      - name: the bundle of the Manager
+        run: deno task bundle
       - name: the binary
         run: |
           deno task compile
@@ -31,7 +37,7 @@ jobs:
           node-version: "24"
       - run: npm ci
       - name: the tests of the core under Node
-        run: node --test tests/core.test.js tests/identity.test.js tests/owners.test.js tests/services.test.js
+        run: node --test tests/core.test.js tests/identity.test.js tests/owners.test.js tests/services.test.js tests/github.test.js
       - run: node cli/osheaf.js --version
   weave:
     runs-on: ubuntu-latest

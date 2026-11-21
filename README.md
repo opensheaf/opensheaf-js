@@ -6,12 +6,14 @@
 > [!WARNING]
 > **Draft.** OpenSheaf 0.2 is a draft specification. Until version 1.0, any
 > revision may change the format in incompatible ways, and archives made now
-> may have to be rebuilt. opensheaf-js is at its fifth phase: it makes
+> may have to be rebuilt. opensheaf-js is at its sixth phase: it makes
 > archives and their websites, deposits papers, keeps their descriptions
 > and collections, keeps owners and their keys (wallets and passkeys
 > included), resolves, mirrors, branches and takes down lines, keeps
-> drafts, imports papers from arXiv, deposits them on Zenodo, and
-> verifies archives; for TeXmacs sources without their PDF, use
+> drafts, imports papers from arXiv, deposits them on Zenodo, verifies
+> archives, and gives the [Manager](https://opensheaf.org/manager/) its
+> core, with which it writes archives held on GitHub from a browser; for
+> TeXmacs sources without their PDF, use
 > [opensheaf-py](https://github.com/opensheaf/opensheaf-py).
 
 The tools of [OpenSheaf](https://opensheaf.org) archives (the `osheaf`
@@ -32,7 +34,7 @@ and the phases.
 
 ## Status
 
-Phases 1 to 5 (version 0.1.0):
+Phases 1 to 6 (version 0.1.0):
 
 - `osheaf init DIR --new-owner --export KEYS`: an archive and a new owner
   (rotation keys exported, in clear with `--no-passphrase` or under a
@@ -80,7 +82,15 @@ Phases 1 to 5 (version 0.1.0):
   document version, the version recording it built and signed before
   Zenodo publishes it (on the sandbox, a copy of the line is used); the
   token is `ZENODO_TOKEN` (`ZENODO_SANDBOX_TOKEN`), or, on macOS, the
-  keychain item `zenodo-token` (`zenodo-sandbox-token`).
+  keychain item `zenodo-token` (`zenodo-sandbox-token`);
+- for the [Manager](https://github.com/opensheaf/manager), in browsers: a
+  storage over GitHub's API (the head of a branch read through its tree,
+  every request one commit through the Git Data API, never forced), the
+  requests of the archive template's forms carried out as its workflow
+  carries them out, and the owner's current keys opened from its key
+  wallet by a passkey, through a popup of `unlock.opensheaf.org`, kept in
+  the page unexportable; `deno task bundle` makes of it the one file the
+  Manager loads, `dist/opensheaf-manager.js`.
 
 Every command that changes an archive writes its website again. The files
 written are those opensheaf-py writes, byte for byte (the times of
@@ -101,7 +111,8 @@ index are in opensheaf-py; the differences known are listed in the plan
 ([phase 2](literate/00-plan.md#phase-2-results-and-notes),
 [phase 3](literate/00-plan.md#phase-3-results-and-notes),
 [phase 4](literate/00-plan.md#phase-4-results-and-notes),
-[phase 5](literate/00-plan.md#phase-5-results-and-notes)).
+[phase 5](literate/00-plan.md#phase-5-results-and-notes),
+[phase 6](literate/00-plan.md#phase-6-results-and-notes)).
 
 ## Running
 

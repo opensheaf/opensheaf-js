@@ -13,8 +13,15 @@ chapters and overwritten by the next tangle:
 
 - `core/*.js` (the core: web standards only)
 - `cli/*.js` (the command line)
-- `tests/*.js` (the tests, their fixtures and the double of arXiv and
-  Zenodo)
+- `tests/*.js` (the tests, their fixtures and the doubles of arXiv,
+  Zenodo and GitHub)
+- `web/*.js` (what the Manager imports, chapter 49) and `tools/*.js` (the
+  script of the bundle)
+
+`dist/` (ignored by git) holds what is built from them: `deno task
+compile` makes the binary, `deno task bundle` makes
+`dist/opensheaf-manager.js`, the bundle the Manager (opensheaf/manager)
+keeps a copy of, in `vendor/`, with the commit it was made from.
 
 `literate tangle --list` gives the current list, with the chapter of each
 file. `literate tangle --where FILE:LINE` gives the line of the chapter a
@@ -33,7 +40,10 @@ To make a change:
    opensheaf-py's `osheaf` on the `PATH`, or `OSHEAF_PY=/path/to/osheaf`;
    without it they are skipped. Under Node: `npm ci && node --test
    tests/core.test.js tests/identity.test.js tests/owners.test.js
-   tests/services.test.js`.
+   tests/services.test.js tests/github.test.js`. The test of the requests
+   against the archive template's script needs that script
+   (`OSHEAF_ISSUE=.../archive-template/.github/scripts/osheaf_issue.py`,
+   or the template's clone next to this one).
 
 ## Rules
 
@@ -57,6 +67,7 @@ To make a change:
   and a temporary `XDG_CONFIG_HOME`. Never reach arXiv or Zenodo
   (production or sandbox) in tests, nor read a real Zenodo token: doubles
   on the loopback address, fake tokens, every API address the double's.
+  GitHub is reached in tests only through its double (chapter 76).
 - **The chapters 05 to 17 are the Explorer's** (opensheaf/explorer),
   copied with their prose. Keep them in step with the Explorer until it
   imports the core from here (phase 7 of chapter 00).

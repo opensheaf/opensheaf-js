@@ -4,7 +4,7 @@ Storage: an archive as files
 An OpenSheaf archive is a folder of plain files (section 3). The tools
 read and write it in three places: a folder on a disk, for the command
 line; a repository on GitHub, written through its API, for the Manager in
-a browser (a later phase); and memory, for the tests. The chapters that
+a browser (chapter [47](47-github-storage.md)); and memory, for the tests. The chapters that
 keep an archive (from chapter [22](22-writing.md) on) never touch a disk
 or a network themselves: they go through a **storage**, a small object
 with six methods, and the same code then keeps an archive wherever it is.

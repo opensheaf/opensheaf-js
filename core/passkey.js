@@ -148,3 +148,47 @@ export function answerOf(result, creds = []) {
   if (creds.length && cred !== null && !creds.includes(cred)) throw new UnlockFailed('the page used another passkey than those asked for');
   return [cred, secret];
 }
+
+export const POPUP = 'popup';
+export const UNLOCK_ORIGIN = new URL(UNLOCK_PAGE).origin;
+export const POPUP_MESSAGES = { ready: 'opensheaf-unlock-ready', request: 'opensheaf-unlock-request',
+                                answer: 'opensheaf-unlock-answer', done: 'opensheaf-unlock-done' };
+
+export function popupUrl(origin) {
+  return UNLOCK_PAGE + '#' + new URLSearchParams({ mode: POPUP, origin }).toString();
+}
+
+export async function popupRequest(owner, creds, pair = null, state = null) {
+  if (!OWNER_NAME.test(owner || '')) throw new UnlockFailed(`not an owner name: ${owner}`);
+  if (!creds.length) throw new UnlockFailed('no passkey is enrolled for the keys of this owner (osheaf key enroll)');
+  pair ||= await newKeyPair();
+  state ||= randomState();
+  return { owner, creds: [...creds], state, pair, code: await confirmationCode(state, pair.publicKey),
+           message: { type: POPUP_MESSAGES.request, state, pk: b64url(pair.publicKey), owner, cred: creds.join(',') } };
+}
+
+export function sameCode(typed, code) {
+  const digits = (t) => utf8(String(t ?? '').replace(/[^0-9]/g, ''));
+  return digits(typed).length === 6 && sameSecret(digits(typed), digits(code));
+}
+
+export async function openPopupAnswer(request, data, typed) {
+  if (!data || data.type !== POPUP_MESSAGES.answer || typeof data.state !== 'string' ||
+      !sameSecret(utf8(data.state), utf8(request.state))) {
+    throw new UnlockFailed('this is not the answer to this request');
+  }
+  if (typeof data.error === 'string') throw failure({ error: data.error });
+  if (!sameCode(typed, request.code)) {
+    throw new UnlockFailed('the code typed is not the code of this request: close the window of the passkey, and ' +
+                           'unlock again');
+  }
+  let secret;
+  try {
+    const [epk, ct, tag] = [fromB64url(data.epk), fromB64url(data.ct), fromB64url(data.tag)];
+    fromB64url(data.cred);
+    secret = await unseal(request.pair, epk, ct, tag, request.state, POPUP, request.owner, data.cred);
+  } catch {
+    throw new UnlockFailed('the page sent a damaged answer');
+  }
+  return answerOf({ cred: data.cred, secret }, request.creds);
+}

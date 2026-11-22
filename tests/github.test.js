@@ -21,6 +21,7 @@ import { utf8 } from '../core/crypto.js';
 import { KeeperUnreachable } from '../core/keepers.js';
 import { keyPairOf, seal, popupRequest, openPopupAnswer, openPopupAnswers, popupUrl, b64url, UnlockFailed } from '../core/passkey.js';
 import { ArchiveFolder } from '../core/folder.js';
+import { notice } from '../core/describe.js';
 import { ownerInitCommand } from '../core/owner.js';
 import { keyFileText, keyText, Passkey, passkeySalt, passkeyKek, readKey, passkeysOf } from '../core/keys.js';
 import { GitHubWallet } from '../core/wallets.js';
@@ -987,6 +988,45 @@ test('acting for another owner: a new version of its line goes into a branch', a
   const stranger = await carryOut(m, env, 'deposit', again, files(7), { owner: 'c'.repeat(51) + 'a' });
   assert.match(stranger.message, /not an owner this archive hosts/);
   assert.deepEqual((await verifyFolder(m, { schemas })).findings.filter((x) => x.level === 'error'), []);
+});
+
+test('a request renews the catalogue of the acting owner only, even beside a stale one', async () => {
+  const env = requestEnvironment();
+  const m = new MemoryStorage();
+  const cost = { opslimit: 1, memlimit: 8192 };
+  await init(m, env, { name: 'Papers of a group', baseUrl: 'https://example.org/papers/', curator: 'Doe, Jane',
+                       newOwner: true, export: '/keys', yes: true, cost }, '/archive');
+  const files = (n) => ({ 'PDF of this version': [{ name: 'paper.pdf', bytes: PDF(n) }], Sources: [{ name: 'paper.tex', bytes: TEX }] });
+  const paper = (label) => ({ 'This deposit': NEW_PAPER, Label: label, Title: 'A paper', Authors: 'Doe, Jane',
+                              Licence: 'CC BY 4.0 (cc-by-4.0)' });
+  assert.ok((await carryOut(m, env, 'deposit', paper('first'), files(1), { schemas })).ok);
+  await ownerInitCommand(await ArchiveFolder.open(m, env), { export: '/keys-b', yes: true, cost });
+  const cfg = JSON.parse(text(await m.read('osheaf.json')));
+  const [a, b] = [cfg.owner, cfg.owners[0]];
+  assert.ok((await carryOut(m, env, 'deposit', paper('second'), files(2), { schemas, owner: b })).ok);
+  const head = async (o) => {
+    const f = await ArchiveFolder.open(m, env);
+    return (await f.inventory(await f.dirOf(f.catalogues.get(o)))).head;
+  };
+  const stale = async (label) => {
+    const f = await ArchiveFolder.open(m, env);
+    await notice(f, { label, about: 1, text: 'Outside the requests.', file: null, replaces: null, message: 'Notice' });
+  };
+  const said = (l) => ({ Label: l, 'Document version it is about': '1', 'Text of the notice': 'A typo.' });
+
+  await stale('first');
+  const [a1, b1] = [await head(a), await head(b)];
+  const r1 = await carryOut(m, env, 'notice', said('second'), {}, { schemas, owner: b });
+  assert.ok(r1.ok, r1.message);
+  assert.equal(await head(a), a1);
+  assert.notEqual(await head(b), b1);
+
+  await stale('second');
+  const b2 = await head(b);
+  const r2 = await carryOut(m, env, 'notice', said('first'), {}, { schemas });
+  assert.ok(r2.ok, r2.message);
+  assert.notEqual(await head(a), a1);
+  assert.equal(await head(b), b2);
 });
 
 test('a request written directly: one commit, signed in the page', async () => {

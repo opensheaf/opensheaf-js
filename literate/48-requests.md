@@ -1114,7 +1114,13 @@ Carrying a request out
 The request on a storage, with an environment of the core (chapter
 [23](23-folder.md)) whose key store holds the current keys that sign:
 the operation, the reason given (`Why (optional)`) added to the subject,
-`osheaf collect`, the collection changed synced and the collections
+`osheaf collect --owner` for the acting owner (the archive's default
+owner when none is given, as for the template's script, which runs
+`osheaf collect --owner` with the `owner` of `osheaf.json`): a change by
+one owner touches that owner's catalogue only, and no owner signs for
+another (section 8.1 of the specification), even when another owner's
+catalogue is stale, its members' format having grown since it was
+written; the collection changed synced and the collections
 above it brought up to date, `osheaf index`, and `osheaf verify`. The
 verification reads every file of the archive with `digests` (as the
 script's `osheaf verify` does); without, it trusts the content files to
@@ -1164,7 +1170,7 @@ the form.
         let [cid, message, title, done] = await op(r, form, origin);
         const why = field(form, 'Why (optional)');
         if (why) message += `: ${why}`;
-        await osheaf(r, (f) => collect(f, {}));
+        await osheaf(r, (f) => collect(f, { owner: owner || f.archive.owner }));
         if (cid) {
           await sync(r, cid, message);
           await propagate(r, cid, message);

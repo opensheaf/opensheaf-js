@@ -923,7 +923,7 @@ export async function carryOut(storage, env, operation, fields, files = {}, { or
     let [cid, message, title, done] = await op(r, form, origin);
     const why = field(form, 'Why (optional)');
     if (why) message += `: ${why}`;
-    await osheaf(r, (f) => collect(f, {}));
+    await osheaf(r, (f) => collect(f, { owner: owner || f.archive.owner }));
     if (cid) {
       await sync(r, cid, message);
       await propagate(r, cid, message);

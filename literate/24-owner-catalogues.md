@@ -1,16 +1,29 @@
-The main catalogue
-==================
+The owner catalogues
+====================
 
-Every archive has a main catalogue (section 8.1): a collection, signed by
-the owner of the archive, that lists its documents, each pinned to its
-latest signed version and following its line. `osheaf init` makes its
-first version, with no members; `osheaf collect` adds a version when a
-document has a new signed version, as opensheaf-py's `collect` does (its
-chapter
-[15-main-collection](https://opensheaf.org/opensheaf-py/15-main-collection.html)),
+Each owner an archive hosts has there an *owner catalogue* of its own
+(section 8.1): a collection, signed by that owner, that lists its
+documents in the archive, each pinned to its latest signed version and
+following its line, branches of its own included (section 9), never the
+copies the archive holds of others' lines. Version 0.2 had at first one
+*main catalogue* per archive, a line of the archive's owner listing the
+lines of every owner it hosts, so that a deposit by another owner needed a
+new version signed by the archive's owner; since #72 a change by an owner
+touches its own catalogue only, and no owner signs for another.
+
+An owner catalogue is sealed when the owner is set up in the archive:
+`osheaf init` seals that of the archive's first owner (labelled `main`),
+`osheaf owner init` that of another. The discovery document names each
+with its owner in `owners` (section 3.1), and the folder reads them from
+there (`catalogues`, chapter [23](23-folder.md)). `osheaf collect` adds a
+version to each owner catalogue whose documents have a new signed version,
+or, with `--owner`, to that one owner's, as opensheaf-py's `collect` does
+(its chapter
+[15-owner-catalogues](https://opensheaf.org/opensheaf-py/15-owner-catalogues.html)),
 with the same members in the same order and the same descriptions. A
-curated main catalogue (`order` `manual`) is changed by `osheaf
-collection`, which comes in a later phase.
+curated owner catalogue (`order` `manual`) is changed by `osheaf
+collection` (chapter [30](30-collections.md)), and `collect` leaves it
+alone.
 
 The module is `core/collect.js`.
 
@@ -19,7 +32,8 @@ The module is `core/collect.js`.
     import { same } from './schema.js';
     import { joinPath } from './storage.js';
     import { jsonBytes, sha512hex } from './write.js';
-    import { OBJ, OBJ_FORMAT, GENESIS, SPEC, plural } from './folder.js';
+    import { OBJ, OBJ_FORMAT, GENESIS, SPEC, CATALOGUE_LABEL, plural, short, exit } from './folder.js';
+    import { objectId } from './names.js';
     import { writeDiscovery } from './discovery.js';
     import { displayName, RIGHTS } from './deposit.js';
 
@@ -27,19 +41,19 @@ The module is `core/collect.js`.
 
     <<the order of the members>>
 
-    <<a new version of the main catalogue>>
+    <<new versions of the owner catalogues>>
 
 The documents
 -------------
 
-The documents of the main catalogue are the lines of documents of the
-owners the archive hosts; each is listed at its latest signed version,
+The documents of an owner are its lines of documents in the archive
+(without an owner, those of every owner the archive hosts); each is listed at its latest signed version,
 with the citation of its current document version as of that version. A
 line with no signed version is left out, with a warning.
 
     // in the documents of the archive:
-    export async function documents(f) {
-      const out = [], mine = f.archiveOwners();
+    export async function documents(f, owner = null) {
+      const out = [], mine = owner ? [owner] : f.archiveOwners();
       for (const { id, dir, inv } of await f.objects()) {
         if (!inv || typeof id !== 'string' || id.startsWith('sheaf:draft:')) continue;
         const head = await f.readObjectJson(dir, inv, OBJ);
@@ -90,22 +104,34 @@ while.
 The comparisons of strings here are those of JavaScript, by UTF-16 code
 units: dates and names are ASCII, where they agree with Python's.
 
-A new version
--------------
+New versions
+------------
 
-The members are made from the documents; if they are those of the head of
-the catalogue, nothing is done. Otherwise a new version is added, signed:
-`members.json`, a DataCite description of the catalogue (the archive as a
-collection, its curator as creator, CC0), and its genesis record, made
-when the catalogue is first sealed.
+`collect` goes through the owners the archive hosts, or the one given
+(which must be one of them), and for each makes the members of its
+catalogue from its documents; if they are those of the head of the
+catalogue, nothing is done. Otherwise a new version is added, signed by
+that owner: `members.json`, a DataCite description of the catalogue (the
+archive as a collection, its curator as creator, CC0; the title of an
+owner other than the archive's first followed by its label or short
+name), and its genesis record, made when the catalogue is first sealed.
+The catalogue of the archive's first owner gets the label `main` when it
+is sealed, if that label is free; the others none.
 
-    // in a new version of the main catalogue:
-    export async function collect(f, { curated = false, iKnow = false } = {}) {
+    // in new versions of the owner catalogues:
+    export async function collect(f, { owner = null, curated = false, iKnow = false } = {}) {
       await f.initStorageRoot();
-      const label = f.archive.mainCollection;
-      const collId = f.labels.get(label) ?? null;
+      if (owner && !f.archiveOwners().includes(owner)) exit(`${owner} is not an owner this archive hosts`);
+      let last = null;
+      for (const o of owner ? [owner] : f.archiveOwners()) last = (await collectOwner(f, o, { curated, iKnow })) ?? last;
+      return last;
+    }
+
+    export async function collectOwner(f, owner, { curated = false, iKnow = false } = {}) {
+      const collId = f.catalogues.get(owner) ?? null;
       const collDir = collId ? await f.dirOf(collId) : null;
       const cinv = collDir ? await f.inventory(collDir) : null;
+      let label = (collId ? f.labelOf(collId) : null) || short(owner);
       if (cinv && (await f.readObjectJson(collDir, cinv, 'members.json'))?.order === 'manual') {
         f.env.out(`${label} is curated (order manual): use osheaf collection add|sync|update`);
         return null;
@@ -113,7 +139,7 @@ when the catalogue is first sealed.
       const isCurated = cinv === null && Boolean(curated);
       const order = isCurated ? 'manual' : ORDER;
       let members = [];
-      for (const { dir, signed, obj, dc } of await documents(f)) {
+      for (const { dir, signed, obj, dc } of await documents(f, owner)) {
         const cite = { title: dc.titles[0].title, creators: dc.creators.map(displayName), year: dc.publicationYear };
         if (dateOf(dc, 'Issued')) cite.issued = dateOf(dc, 'Issued');
         const m = { kind: 'document', name: obj.name, owner: obj.owner, at: [f.archive.baseUrl], version: signed,
@@ -135,13 +161,16 @@ when the catalogue is first sealed.
         version = (await f.readObjectJson(collDir, cinv, OBJ)).documentVersion + 1;
         issued = dateOf(await f.readObjectJson(collDir, cinv, 'datacite.json'), 'Issued') || today;
       }
-      const owner = f.archive.owner;
       let genesis, id = collId;
       if (id === null) {
         ({ genesis, id } = await f.seal('collection', owner));
+        if (owner === f.archive.owner && !f.labels.has(CATALOGUE_LABEL)) f.labels.set(CATALOGUE_LABEL, id);
       } else {
         genesis = await f.readLogical(collDir, cinv, GENESIS);
       }
+      f.catalogues.set(owner, id);
+      let title = f.archive.name;
+      if (owner !== f.archive.owner) title += ', ' + (f.labelOf(objectId(owner, owner)) || short(owner));
       const cur = f.archive.curator;
       const creator = { name: cur.name, nameType: 'Personal', familyName: cur.familyName };
       if (cur.givenName) creator.givenName = cur.givenName;
@@ -149,7 +178,7 @@ when the catalogue is first sealed.
       const files = new Map([
         ['members.json', jsonBytes({ format: 'opensheaf-collection/0.2', type: 'catalogue', order, members })],
         ['datacite.json', jsonBytes({
-          titles: [{ title: f.archive.name }],
+          titles: [{ title }],
           creators: [creator],
           publisher: { name: f.archive.name },
           publicationYear: Number(issued.slice(0, 4)),
@@ -157,7 +186,7 @@ when the catalogue is first sealed.
           version: String(version),
           url: f.archive.baseUrl,
           dates: [{ date: issued, dateType: 'Issued' }, { date: today, dateType: 'Available' }],
-          descriptions: [{ description: 'The documents deposited in this archive, newest first.',
+          descriptions: [{ description: 'The documents of one owner deposited in this archive, newest first.',
                            descriptionType: 'Abstract' }],
           rightsList: [{ ...RIGHTS['cc0-1.0'] }],
         })],
@@ -165,11 +194,11 @@ when the catalogue is first sealed.
       ]);
       const obj = { format: OBJ_FORMAT, specification: SPEC, kind: 'collection', name: id.split(':')[1], owner,
                     documentVersion: version, status: 'active' };
-      f.labels.set(label, id);
+      label = f.labelOf(id) || id;
       const inv = await f.addVersion(id, files, obj, `Collection version ${version}: ${members.length} documents`,
                                      { acknowledged: iKnow });
       await writeDiscovery(f);
-      f.env.out(`Done: the main catalogue ${label} is at ${inv.head}, with ` +
+      f.env.out(`Done: the owner catalogue ${label} of ${short(owner)} is at ${inv.head}, with ` +
                 `${members.length ? plural(members.length, 'member') : 'no members'}.`);
       return inv;
     }

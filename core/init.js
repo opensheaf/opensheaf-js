@@ -160,7 +160,6 @@ export async function init(storage, env, args, where) {
     baseUrl: args.baseUrl.endsWith('/') ? args.baseUrl : args.baseUrl + '/',
     profiles: ['website'],
     storageLayout: layout,
-    mainCollection: 'main',
     curator: { name: given ? `${family}, ${given}` : family, givenName: given, familyName: family,
                affiliation: args.affiliation || '' },
     depositor: { name: `${given} ${family}`.trim(), address: args.contact || args.baseUrl },

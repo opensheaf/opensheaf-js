@@ -377,7 +377,8 @@ that does not exist passed over; `key wallet` lists, adds and removes
 hints; `key wallets` lists the person's wallets and the archive's, with
 the owners each holds, and changes the configuration file, keeping what
 else it holds; the earlier form, one wallet for the archive, is a hint for
-every owner that `--remove` leaves alone.
+every owner that `--remove` leaves alone. The second owner's catalogue is
+sealed by `owner init`, and named with it in `owners`.
 
     // in tests of wallets:
     test('the wallets of each owner', async () => {
@@ -388,6 +389,9 @@ every owner that `--remove` leaves alone.
         await box.ok([...a.r, 'owner', 'init', '--keys', 'github:me/other', '--yes']);
         const cfgOf = async () => JSON.parse(await readFile(path.join(a.dir, 'osheaf.json'), 'utf-8'));
         const second = (await cfgOf()).owners[0];
+        const disc = JSON.parse(await readFile(path.join(a.dir, 'opensheaf.json'), 'utf-8'));
+        assert.deepEqual(disc.owners.map((e) => e.owner), [a.owner, second]);
+        assert.equal(disc.owners[1].catalogue.split(':')[2], second);
         assert.deepEqual((await cfgOf()).keys, { [a.owner]: { wallets: ['github:me/keys'] },
                                                  [second]: { wallets: ['github:me/other'] } });
         assert.match((await box.ok([...a.r, 'key', 'list', '--owner', second])).out, /The wallet github:me\/other holds 4 keys of/);

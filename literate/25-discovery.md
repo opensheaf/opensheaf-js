@@ -49,7 +49,13 @@ One entry per object of the storage root, drafts apart: its identifier,
 kind, name, owner, head, the digest of its root inventory (from the
 checksum file), its status, and its label in the archive if it has one.
 The extensions declared are those named by the heads of objects and by
-the key logs in force; the owners, the archive's own first.
+the key logs in force; the owners, the archive's own first, each with its
+owner catalogue (section 8.1), in the order in which the index presents
+them. The first drafts of 0.2 had `mainCollection`, the one catalogue of
+the archive, which `owners`, naming each owner with its catalogue, has
+replaced (#72); an owner whose catalogue is not made yet (between its key
+log and its catalogue, when it is set up) is left out of `owners` until
+it is.
 
     // in the discovery document:
     export const INDEXES = { names: 2, owners: 2, sha512: 2 };
@@ -85,8 +91,9 @@ the key logs in force; the owners, the archive's own first.
       const a = f.archive;
       const doc = { format: 'opensheaf-archive/0.2', specification: SPEC, name: a.name, contact: a.contact,
                     storageRoot: 'ocfl/', storageLayout: f.layout };
-      if (f.labels.has(a.mainCollection)) doc.mainCollection = f.labels.get(a.mainCollection);
-      Object.assign(doc, { profiles: a.profiles, extensions: [...used].sort(compareText), owners: f.archiveOwners(),
+      const hosted = f.archiveOwners().filter((o) => f.catalogues.has(o))
+        .map((o) => ({ owner: o, catalogue: f.catalogues.get(o) }));
+      Object.assign(doc, { profiles: a.profiles, extensions: [...used].sort(compareText), owners: hosted,
                            indexes: { ...INDEXES }, objects: objs });
       if (drafts.length) doc.drafts = drafts;
       if (f.tombstones.length) doc.tombstones = f.tombstones;

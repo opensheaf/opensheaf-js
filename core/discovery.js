@@ -45,8 +45,9 @@ export async function discovery(f) {
   const a = f.archive;
   const doc = { format: 'opensheaf-archive/0.2', specification: SPEC, name: a.name, contact: a.contact,
                 storageRoot: 'ocfl/', storageLayout: f.layout };
-  if (f.labels.has(a.mainCollection)) doc.mainCollection = f.labels.get(a.mainCollection);
-  Object.assign(doc, { profiles: a.profiles, extensions: [...used].sort(compareText), owners: f.archiveOwners(),
+  const hosted = f.archiveOwners().filter((o) => f.catalogues.has(o))
+    .map((o) => ({ owner: o, catalogue: f.catalogues.get(o) }));
+  Object.assign(doc, { profiles: a.profiles, extensions: [...used].sort(compareText), owners: hosted,
                        indexes: { ...INDEXES }, objects: objs });
   if (drafts.length) doc.drafts = drafts;
   if (f.tombstones.length) doc.tombstones = f.tombstones;

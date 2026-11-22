@@ -134,7 +134,7 @@ Module map
 | [21](21-keys.md) | `core/keys.js` | keys, signing, rotation key files | opensheaf-py 07 |
 | [22](22-writing.md) | `core/write.js` | JSON, genesis records, inventories, signature files, key logs | opensheaf-py 05, 06, 08, 10 |
 | [23](23-folder.md) | `core/folder.js` | the archive kept: configuration, objects, signing, versions | opensheaf-py 10 |
-| [24](24-main-catalogue.md) | `core/collect.js` | the main catalogue | opensheaf-py 15 |
+| [24](24-owner-catalogues.md) | `core/collect.js` | the owner catalogues | opensheaf-py 15 |
 | [25](25-discovery.md) | `core/discovery.js` | the discovery document and the indexes | opensheaf-py 16 |
 | [26](26-deposit.md) | `core/deposit.js` | deposits | opensheaf-py 13 |
 | [27](27-init.md) | `core/init.js` | new owners, new archives | opensheaf-py 18, 19 |

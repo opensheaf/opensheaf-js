@@ -180,7 +180,7 @@ test('init, deposit, collect, verify, in memory', async () => {
   const { storage, env, f } = await newArchive();
   const cfg = await readJson(storage, 'osheaf.json');
   assert.deepEqual(Object.keys(cfg), ['owner', 'name', 'contact', 'baseUrl', 'profiles', 'storageLayout',
-                                      'mainCollection', 'curator', 'depositor', 'index']);
+                                      'curator', 'depositor', 'index']);
   assert.deepEqual(cfg.profiles, ['website']);
   assert.equal(await storage.kind('templates/paper.html'), 'file');
   assert.equal(await storage.kind('index.html'), 'file');
@@ -190,6 +190,8 @@ test('init, deposit, collect, verify, in memory', async () => {
   const disc = await readJson(storage, 'opensheaf.json');
   assert.deepEqual(disc.objects.map((o) => [o.kind, o.head, o.label ?? null]).sort(),
                    [['collection', 'v1', 'main'], ['owner', 'v1', null]]);
+  assert.deepEqual(disc.owners, [{ owner: cfg.owner, catalogue: f.labels.get('main') }]);
+  assert.equal('mainCollection' in disc, false);
   await deposit(f, paper('first', { abstract: '  An abstract.  ', keyword: ['x'], rights: 'cc-by-4.0' }));
   await deposit(f, { ...paper('first', { new: false }), pdf: { name: 'v2.pdf', bytes: utf8('%PDF-1.4 two') } });
   await collect(f);

@@ -6,7 +6,7 @@ import { Http } from './http.js';
 import { pathOf } from './paths.js';
 import { sha512hex } from './write.js';
 import { compareText, joinPath } from './storage.js';
-import { GENESIS, OBJ, CONFIG_NAME, plural, exit } from './folder.js';
+import { GENESIS, OBJ, CONFIG_NAME, plural, exit, short } from './folder.js';
 import { readJson, writeText } from './storage.js';
 import { LABEL } from './names.js';
 import { writeDiscovery } from './discovery.js';
@@ -491,7 +491,8 @@ async function writeHome(site, members, featured, fline, fmembers) {
   let lead = 'Papers with their sources, every version, fixed by digests and signed by their owners. An ' +
     '<a href="https://opensheaf.org">OpenSheaf</a> archive: programs start from ' +
     '<a href="opensheaf.json">opensheaf.json</a>.';
-  const mainId = f.labels.get(f.archive.mainCollection);
+  const cats = f.archiveOwners().filter((o) => f.catalogues.has(o)).map((o) => f.catalogues.get(o));
+  const mainId = cats.length === 1 ? cats[0] : null;
   const cline = featured ? fline : mainId ? (site.lines.get(mainId) ||
     await site.held({ name: mainId.split(':')[1], owner: mainId.split(':')[2] })) : null;
   const cmem = cline ? ((await cline.json('members.json', cline.signed)) || {}) : {};
@@ -740,17 +741,24 @@ async function ownerPage(site, owner, log, lines) {
     lines: items.length ? items.join('\n') : '<li class="empty">No lines with a page here.</li>' });
 }
 
-export async function mainMembers(f) {
-  const mainId = f.labels.get(f.archive.mainCollection);
-  const dir = mainId ? await f.dirOf(mainId) : null;
-  const inv = dir ? await f.inventory(dir) : null;
-  if (inv === null) return null;
-  const ver = await f.latestSigned(mainId);
-  if (ver === null) {
-    f.env.err('warning: the main catalogue has no signed version (section 7.3): nothing is presented');
-    return null;
+export async function catalogueMembers(f) {
+  const out = [];
+  let signed = false;
+  for (const owner of f.archiveOwners()) {
+    const cid = f.catalogues.get(owner);
+    const dir = cid ? await f.dirOf(cid) : null;
+    const inv = dir ? await f.inventory(dir) : null;
+    if (inv === null) continue;
+    const ver = await f.latestSigned(cid);
+    if (ver === null) {
+      f.env.err(`warning: the owner catalogue of ${short(owner)} has no signed version (section 7.3): ` +
+                'none of its members is presented');
+      continue;
+    }
+    signed = true;
+    out.push(...(await f.readObjectJson(dir, inv, 'members.json', ver)).members);
   }
-  return (await f.readObjectJson(dir, inv, 'members.json', ver)).members;
+  return signed ? out : null;
 }
 
 export function hasWebsite(f) {
@@ -763,7 +771,7 @@ export async function readableIndex(f, options = {}) {
                'opensheaf-py to write it and its landing pages again');
     return;
   }
-  const members = await mainMembers(f);
+  const members = await catalogueMembers(f);
   if (members === null) return;
   const html = f.index.html && typeof f.index.html === 'object' ? f.index.html : {};
   const featured = html.featured || null;
@@ -822,16 +830,13 @@ export async function labelCommand(f, args) {
       env.out(`${fresh}: unchanged`);
       return;
     }
-    if (f.labels.has(fresh) || fresh === cfg.mainCollection) {
-      exit(`${fresh} is the label of another line already: ${f.labels.get(fresh) ?? 'the main catalogue'}`);
-    }
+    if (f.labels.has(fresh)) exit(`${fresh} is the label of another line already: ${f.labels.get(fresh)}`);
     if (fresh.length > 32) env.err(`warning: ${fresh} is longer than 32 characters (it appears in every URL of the website)`);
   } else if (old === null) {
     env.out(`${id}: has no label`);
     return;
-  } else if (old === cfg.mainCollection || old === featured) {
-    exit(`${old} names the ${old === cfg.mainCollection ? 'main catalogue' : 'featured collection'} in ` +
-         `${CONFIG_NAME}: give it another label instead`);
+  } else if (old === featured) {
+    exit(`${old} names the featured collection in ${CONFIG_NAME}: give it another label instead`);
   }
   const dir = await f.dirOf(id);
   const kind = ((await f.readObjectJson(dir, await f.inventory(dir), OBJ)) || {}).kind;
@@ -849,7 +854,6 @@ export async function labelCommand(f, args) {
   const sorted = Object.entries(former).sort((a, b) => compareText(a[0], b[0]));
   if (sorted.length) cfg.formerAddresses = Object.fromEntries(sorted);
   else delete cfg.formerAddresses;
-  if (old && cfg.mainCollection === old) cfg.mainCollection = fresh;
   if (old && featured === old) cfg.index.html.featured = fresh;
   await f.writeConfig(cfg);
   f.changed();

@@ -111,12 +111,13 @@ export async function presentationFindings(f, disc) {
   const note = website ? '' : ' (the archive does not declare the profile website)';
   const report = (place, message) => out.push(finding(level, place, message + (website ? '' : note)));
   let members = [];
-  const mainId = f.labels.get(f.archive.mainCollection);
-  if (mainId) {
-    const dir = await f.dirOf(mainId);
+  for (const owner of f.archiveOwners()) {
+    const cid = f.catalogues.get(owner);
+    if (!cid) continue;
+    const dir = await f.dirOf(cid);
     const inv = await f.inventory(dir);
-    const ver = inv ? await f.latestSigned(mainId).catch(() => null) : null;
-    if (ver) members = (await f.readObjectJson(dir, inv, 'members.json', ver))?.members || [];
+    const ver = inv ? await f.latestSigned(cid).catch(() => null) : null;
+    if (ver) members = members.concat((await f.readObjectJson(dir, inv, 'members.json', ver))?.members || []);
   }
   const page = home ? new TextDecoder().decode(home) : null;
   if (page === null && website) out.push(finding(level, 'index.html', 'the home page is missing (appendix A.3)'));

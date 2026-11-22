@@ -317,7 +317,7 @@ async function isCurated(f, label, id) {
   const head = inv ? await f.readObjectJson(dir, inv, OBJ) : {};
   if (head?.kind !== 'collection' || !f.archiveOwners().includes(head.owner)) return false;
   const mem = (await f.readObjectJson(dir, inv, 'members.json')) || {};
-  return !(label === f.archive.mainCollection && mem.order !== 'manual');
+  return !([...f.catalogues.values()].includes(id) && mem.order !== 'manual');
 }
 
 async function followMember(f, r, label, m) {

@@ -2,7 +2,7 @@ The website
 ===========
 
 An archive of the profile `website` (appendix A.3) is served as a website:
-a home page presenting the latest signed version of the main catalogue, a
+a home page presenting the latest signed versions of the owner catalogues, a
 landing page for each line at `paper/<label>/` (its full `sheaf:` URI, its
 owner and keeper, every signed document version of its history with its
 status, notices, files and pin, the withdrawal if any, and the metadata
@@ -37,7 +37,7 @@ website only, and warns.
     import { pathOf } from './paths.js';
     import { sha512hex } from './write.js';
     import { compareText, joinPath } from './storage.js';
-    import { GENESIS, OBJ, CONFIG_NAME, plural, exit } from './folder.js';
+    import { GENESIS, OBJ, CONFIG_NAME, plural, exit, short } from './folder.js';
     import { readJson, writeText } from './storage.js';
     import { LABEL } from './names.js';
     import { writeDiscovery } from './discovery.js';
@@ -395,7 +395,7 @@ Writing the pages
 `render` writes `index.html`, a landing page for every line presented,
 the owner pages, `style.css` and `sitemap.xml`, and removes the landing
 pages and owner pages of lines no longer presented. The lines presented
-are the members of the main catalogue held here, those of the featured
+are the members of the owner catalogues held here, those of the featured
 collection, the members of the collections among them, followed once, and
 every labelled line with a signed version that is a document or a
 collection. It returns the number of landing pages.
@@ -583,9 +583,11 @@ out of the sitemap (opensheaf-py's `redirect_page`).
       }
     }
 
-The home page lists the members of the main catalogue, after those of the
-featured collection, if any; its lead paragraph presents the archive, or
-the featured or curated collection by its description.
+The home page lists the members of the owner catalogues, in the order of
+the owners, after those of the featured collection, if any; its lead
+paragraph presents the archive, or the featured collection, or the one
+owner catalogue of an archive with one, curated (order `manual`), by its
+description.
 
     // in writing the pages:
     async function writeHome(site, members, featured, fline, fmembers) {
@@ -604,7 +606,8 @@ the featured or curated collection by its description.
       let lead = 'Papers with their sources, every version, fixed by digests and signed by their owners. An ' +
         '<a href="https://opensheaf.org">OpenSheaf</a> archive: programs start from ' +
         '<a href="opensheaf.json">opensheaf.json</a>.';
-      const mainId = f.labels.get(f.archive.mainCollection);
+      const cats = f.archiveOwners().filter((o) => f.catalogues.has(o)).map((o) => f.catalogues.get(o));
+      const mainId = cats.length === 1 ? cats[0] : null;
       const cline = featured ? fline : mainId ? (site.lines.get(mainId) ||
         await site.held({ name: mainId.split(':')[1], owner: mainId.split(':')[2] })) : null;
       const cmem = cline ? ((await cline.json('members.json', cline.signed)) || {}) : {};
@@ -885,25 +888,36 @@ lists its lines that have a page here.
 The website after a change
 --------------------------
 
-The members presented are those of the latest signed version of the main
-catalogue. `osheaf index` writes the discovery document, the indexes and
+The members presented are those of the owner catalogues, in the order of
+the owners (appendix A.3), each read from the latest signed version of its
+catalogue, not from its head (section 7.3). An owner catalogue without a
+signed version presents none of its members, and the command says so; an
+archive none of whose catalogues has a signed version presents nothing.
+`osheaf index` writes the discovery document, the indexes and
 the website; every command that changes the archive writes the website
 again (`present`), and a failure there leaves the change made and says to
 run `osheaf index`. A featured collection must be a collection of the
 archive.
 
     // in the website after a change:
-    export async function mainMembers(f) {
-      const mainId = f.labels.get(f.archive.mainCollection);
-      const dir = mainId ? await f.dirOf(mainId) : null;
-      const inv = dir ? await f.inventory(dir) : null;
-      if (inv === null) return null;
-      const ver = await f.latestSigned(mainId);
-      if (ver === null) {
-        f.env.err('warning: the main catalogue has no signed version (section 7.3): nothing is presented');
-        return null;
+    export async function catalogueMembers(f) {
+      const out = [];
+      let signed = false;
+      for (const owner of f.archiveOwners()) {
+        const cid = f.catalogues.get(owner);
+        const dir = cid ? await f.dirOf(cid) : null;
+        const inv = dir ? await f.inventory(dir) : null;
+        if (inv === null) continue;
+        const ver = await f.latestSigned(cid);
+        if (ver === null) {
+          f.env.err(`warning: the owner catalogue of ${short(owner)} has no signed version (section 7.3): ` +
+                    'none of its members is presented');
+          continue;
+        }
+        signed = true;
+        out.push(...(await f.readObjectJson(dir, inv, 'members.json', ver)).members);
       }
-      return (await f.readObjectJson(dir, inv, 'members.json', ver)).members;
+      return signed ? out : null;
     }
 
     export function hasWebsite(f) {
@@ -916,7 +930,7 @@ archive.
                    'opensheaf-py to write it and its landing pages again');
         return;
       }
-      const members = await mainMembers(f);
+      const members = await catalogueMembers(f);
       if (members === null) return;
       const html = f.index.html && typeof f.index.html === 'object' ? f.index.html : {};
       const featured = html.featured || null;
@@ -951,8 +965,10 @@ Changing a label
 [10](https://opensheaf.org/opensheaf-py/10-archive.html)): a line held
 here, named by its label or identifier, or an owner object (`--owner`),
 gets a label, a new one, or none (`--unset`). The label has the form of
-section 3.1 and is not another line's; the main catalogue and the featured
-collection are renamed in `osheaf.json` with it, and cannot lose it. The
+section 3.1 and is not another line's; the featured collection is renamed
+in `osheaf.json` with it, and cannot lose it. The owner catalogues are
+named by their identifiers in the discovery document, and their labels are
+free. The
 discovery document and the indexes are written again, and the website by
 the command line after the command. A document or a collection whose page
 moves leaves its old address in `formerAddresses` of `osheaf.json`, where
@@ -992,16 +1008,13 @@ same kind is left at each of its former addresses.
           env.out(`${fresh}: unchanged`);
           return;
         }
-        if (f.labels.has(fresh) || fresh === cfg.mainCollection) {
-          exit(`${fresh} is the label of another line already: ${f.labels.get(fresh) ?? 'the main catalogue'}`);
-        }
+        if (f.labels.has(fresh)) exit(`${fresh} is the label of another line already: ${f.labels.get(fresh)}`);
         if (fresh.length > 32) env.err(`warning: ${fresh} is longer than 32 characters (it appears in every URL of the website)`);
       } else if (old === null) {
         env.out(`${id}: has no label`);
         return;
-      } else if (old === cfg.mainCollection || old === featured) {
-        exit(`${old} names the ${old === cfg.mainCollection ? 'main catalogue' : 'featured collection'} in ` +
-             `${CONFIG_NAME}: give it another label instead`);
+      } else if (old === featured) {
+        exit(`${old} names the featured collection in ${CONFIG_NAME}: give it another label instead`);
       }
       const dir = await f.dirOf(id);
       const kind = ((await f.readObjectJson(dir, await f.inventory(dir), OBJ)) || {}).kind;
@@ -1019,7 +1032,6 @@ same kind is left at each of its former addresses.
       const sorted = Object.entries(former).sort((a, b) => compareText(a[0], b[0]));
       if (sorted.length) cfg.formerAddresses = Object.fromEntries(sorted);
       else delete cfg.formerAddresses;
-      if (old && cfg.mainCollection === old) cfg.mainCollection = fresh;
       if (old && featured === old) cfg.index.html.featured = fresh;
       await f.writeConfig(cfg);
       f.changed();

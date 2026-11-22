@@ -1,14 +1,15 @@
-// Generated from literate/24-main-catalogue.md by opensheaf-literate: edit the document, not this file.
+// Generated from literate/24-owner-catalogues.md by opensheaf-literate: edit the document, not this file.
 import { currentVersion, dateOf } from './versions.js';
 import { same } from './schema.js';
 import { joinPath } from './storage.js';
 import { jsonBytes, sha512hex } from './write.js';
-import { OBJ, OBJ_FORMAT, GENESIS, SPEC, plural } from './folder.js';
+import { OBJ, OBJ_FORMAT, GENESIS, SPEC, CATALOGUE_LABEL, plural, short, exit } from './folder.js';
+import { objectId } from './names.js';
 import { writeDiscovery } from './discovery.js';
 import { displayName, RIGHTS } from './deposit.js';
 
-export async function documents(f) {
-  const out = [], mine = f.archiveOwners();
+export async function documents(f, owner = null) {
+  const out = [], mine = owner ? [owner] : f.archiveOwners();
   for (const { id, dir, inv } of await f.objects()) {
     if (!inv || typeof id !== 'string' || id.startsWith('sheaf:draft:')) continue;
     const head = await f.readObjectJson(dir, inv, OBJ);
@@ -44,12 +45,19 @@ export function memberOrder(members, order = ORDER) {
   return [...dated, ...members.filter((m) => !key(m).some(Boolean)).sort(line)];
 }
 
-export async function collect(f, { curated = false, iKnow = false } = {}) {
+export async function collect(f, { owner = null, curated = false, iKnow = false } = {}) {
   await f.initStorageRoot();
-  const label = f.archive.mainCollection;
-  const collId = f.labels.get(label) ?? null;
+  if (owner && !f.archiveOwners().includes(owner)) exit(`${owner} is not an owner this archive hosts`);
+  let last = null;
+  for (const o of owner ? [owner] : f.archiveOwners()) last = (await collectOwner(f, o, { curated, iKnow })) ?? last;
+  return last;
+}
+
+export async function collectOwner(f, owner, { curated = false, iKnow = false } = {}) {
+  const collId = f.catalogues.get(owner) ?? null;
   const collDir = collId ? await f.dirOf(collId) : null;
   const cinv = collDir ? await f.inventory(collDir) : null;
+  let label = (collId ? f.labelOf(collId) : null) || short(owner);
   if (cinv && (await f.readObjectJson(collDir, cinv, 'members.json'))?.order === 'manual') {
     f.env.out(`${label} is curated (order manual): use osheaf collection add|sync|update`);
     return null;
@@ -57,7 +65,7 @@ export async function collect(f, { curated = false, iKnow = false } = {}) {
   const isCurated = cinv === null && Boolean(curated);
   const order = isCurated ? 'manual' : ORDER;
   let members = [];
-  for (const { dir, signed, obj, dc } of await documents(f)) {
+  for (const { dir, signed, obj, dc } of await documents(f, owner)) {
     const cite = { title: dc.titles[0].title, creators: dc.creators.map(displayName), year: dc.publicationYear };
     if (dateOf(dc, 'Issued')) cite.issued = dateOf(dc, 'Issued');
     const m = { kind: 'document', name: obj.name, owner: obj.owner, at: [f.archive.baseUrl], version: signed,
@@ -79,13 +87,16 @@ export async function collect(f, { curated = false, iKnow = false } = {}) {
     version = (await f.readObjectJson(collDir, cinv, OBJ)).documentVersion + 1;
     issued = dateOf(await f.readObjectJson(collDir, cinv, 'datacite.json'), 'Issued') || today;
   }
-  const owner = f.archive.owner;
   let genesis, id = collId;
   if (id === null) {
     ({ genesis, id } = await f.seal('collection', owner));
+    if (owner === f.archive.owner && !f.labels.has(CATALOGUE_LABEL)) f.labels.set(CATALOGUE_LABEL, id);
   } else {
     genesis = await f.readLogical(collDir, cinv, GENESIS);
   }
+  f.catalogues.set(owner, id);
+  let title = f.archive.name;
+  if (owner !== f.archive.owner) title += ', ' + (f.labelOf(objectId(owner, owner)) || short(owner));
   const cur = f.archive.curator;
   const creator = { name: cur.name, nameType: 'Personal', familyName: cur.familyName };
   if (cur.givenName) creator.givenName = cur.givenName;
@@ -93,7 +104,7 @@ export async function collect(f, { curated = false, iKnow = false } = {}) {
   const files = new Map([
     ['members.json', jsonBytes({ format: 'opensheaf-collection/0.2', type: 'catalogue', order, members })],
     ['datacite.json', jsonBytes({
-      titles: [{ title: f.archive.name }],
+      titles: [{ title }],
       creators: [creator],
       publisher: { name: f.archive.name },
       publicationYear: Number(issued.slice(0, 4)),
@@ -101,7 +112,7 @@ export async function collect(f, { curated = false, iKnow = false } = {}) {
       version: String(version),
       url: f.archive.baseUrl,
       dates: [{ date: issued, dateType: 'Issued' }, { date: today, dateType: 'Available' }],
-      descriptions: [{ description: 'The documents deposited in this archive, newest first.',
+      descriptions: [{ description: 'The documents of one owner deposited in this archive, newest first.',
                        descriptionType: 'Abstract' }],
       rightsList: [{ ...RIGHTS['cc0-1.0'] }],
     })],
@@ -109,11 +120,11 @@ export async function collect(f, { curated = false, iKnow = false } = {}) {
   ]);
   const obj = { format: OBJ_FORMAT, specification: SPEC, kind: 'collection', name: id.split(':')[1], owner,
                 documentVersion: version, status: 'active' };
-  f.labels.set(label, id);
+  label = f.labelOf(id) || id;
   const inv = await f.addVersion(id, files, obj, `Collection version ${version}: ${members.length} documents`,
                                  { acknowledged: iKnow });
   await writeDiscovery(f);
-  f.env.out(`Done: the main catalogue ${label} is at ${inv.head}, with ` +
+  f.env.out(`Done: the owner catalogue ${label} of ${short(owner)} is at ${inv.head}, with ` +
             `${members.length ? plural(members.length, 'member') : 'no members'}.`);
   return inv;
 }

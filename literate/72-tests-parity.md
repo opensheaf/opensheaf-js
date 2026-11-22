@@ -9,7 +9,7 @@ own (`OPENSHEAF_KEY_STORE=file` under a temporary `XDG_CONFIG_HOME`),
 never the user's:
 
 1. an archive made by this program (`init`, a paper deposited, a second
-   version, the main catalogue collected) passes `osheaf verify` of
+   version, the owner catalogue collected) passes `osheaf verify` of
    opensheaf-py with no error and no warning, and the two verifications
    give the same findings;
 2. an archive made by opensheaf-py passes this program's verification,
@@ -323,10 +323,10 @@ are read here, and are those its key log commits to.
 
 An archive made by opensheaf-py, with one paper, is copied twice; the
 same second version is deposited by opensheaf-py in one copy and by this
-program in the other, and the main catalogue collected in each. The files
+program in the other, and the owner catalogue collected in each. The files
 of the new version must be the same: the descriptions byte for byte, the
 inventory once the time of the version is set aside, the same signature
-files; and the same members of the main catalogue.
+files; and the same members of the owner catalogue.
 
     // in parity: the same deposit by both:
     test('the same deposit by both gives the same files', { skip }, async () => {
@@ -1389,12 +1389,12 @@ Labels
 ------
 
 An archive of opensheaf-py with two papers, a TeXmacs-like HTML version
-of the first in `site/`, and its main catalogue. Each command is run by
+of the first in `site/`, and its owner catalogue. Each command is run by
 both on copies of the same archive, and every file is compared after it:
 a paper relabelled (its page moved, the old address leading there, the
-HTML version moved with its image), relabelled again, the main catalogue
-relabelled (renamed in `osheaf.json`), the owner labelled and unlabelled,
-a label removed, the refusals, and the paper taken down with its old
+HTML version moved with its image), relabelled again, the owner catalogue
+relabelled (named by its identifier in the discovery document), the owner
+labelled and unlabelled, a label removed, the refusals, and the paper taken down with its old
 addresses.
 
     // in parity: labels:
@@ -1433,9 +1433,10 @@ addresses.
         assert.match(files.get('paper/one/index.html').toString(), /url=\.\.\/premier\//);
         assert.match(files.get('site/one/one.html').toString(), /url=\.\.\/premier\/premier\.html/);
         assert.equal(files.get('site/premier/one-1.png').toString(), 'png');
-        assert.equal(JSON.parse(files.get('osheaf.json')).mainCollection, 'papers');
-        for (const bad of [['label', 'premier', 'papers'], ['label', 'premier', 'Bad'], ['label', 'papers', '--unset'],
-                           ['label', 'premier']]) {
+        const disc = JSON.parse(files.get('opensheaf.json'));
+        assert.equal(disc.owners[0].catalogue, disc.objects.find((o) => o.label === 'papers').id);
+        assert.equal('mainCollection' in JSON.parse(files.get('osheaf.json')), false);
+        for (const bad of [['label', 'premier', 'papers'], ['label', 'premier', 'Bad'], ['label', 'premier']]) {
           await both(s, base, bad, { status: 1 });
         }
         const r = await both(s, base, ['takedown', 'premier', '--reason', 'At the request of the holder of the rights.', '--yes']);

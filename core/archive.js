@@ -82,7 +82,8 @@ export class Archive {
   }
 
   owners() {
-    return (Array.isArray(this.disc.owners) ? this.disc.owners : []).filter((o) => typeof o === 'string');
+    return (Array.isArray(this.disc.owners) ? this.disc.owners : [])
+      .filter((e) => isObject(e) && typeof e.owner === 'string');
   }
 
   labelOf(id) {

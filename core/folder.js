@@ -62,7 +62,8 @@ export const OBJ = 'object.json', OBJ_FORMAT = 'opensheaf-object/0.2', GENESIS =
 export const LAYOUTS = { 'owner-name': OWNER_NAME_LAYOUT, hashed: HASHED_LAYOUT };
 export const LAYOUT_TEXT = 'Lines at <owner>/<name>/, drafts at draft/<id>/: the owner-name layout of the ' +
   'OpenSheaf specification 0.2, section 3.2\n';
-export const REQUIRED = ['owner', 'name', 'baseUrl', 'mainCollection', 'curator', 'depositor'];
+export const REQUIRED = ['owner', 'name', 'baseUrl', 'curator', 'depositor'];
+export const CATALOGUE_LABEL = 'main';
 export const REBUILD = 'this archive is of specification 0.1, which these tools no longer read: rebuild it under ' +
   'specification 0.2 (section 16.1)';
 
@@ -73,6 +74,10 @@ export async function readConfig(storage) {
     if (await storage.kind(n)) exit(`${n}: opensheaf-js reads osheaf.json only (opensheaf-py also reads YAML)`);
   }
   exit(`no ${CONFIG_NAME} or osheaf.yaml in the archive folder`);
+}
+
+function settingsOf(cfg) {
+  return Object.fromEntries(Object.entries(cfg).filter(([k]) => !['texmacs', 'index', 'mainCollection'].includes(k)));
 }
 
 export class ArchiveFolder {
@@ -88,6 +93,7 @@ export class ArchiveFolder {
     this.archive = {};
     this.index = {};
     this.labels = new Map();
+    this.catalogues = new Map();
     this.tombstones = [];
     this.layout = OWNER_NAME_LAYOUT;
     this.old = false;
@@ -99,7 +105,7 @@ export class ArchiveFolder {
     const disc = (await readJson(this.storage, 'opensheaf.json')) || {};
     this.old = 'archiveId' in cfg || disc.specification === '0.1';
     this.layout = cfg.storageLayout || OWNER_NAME_LAYOUT;
-    this.archive = Object.fromEntries(Object.entries(cfg).filter(([k]) => k !== 'texmacs' && k !== 'index'));
+    this.archive = settingsOf(cfg);
     if (this.old) return this;
     const missing = REQUIRED.filter((k) => !(k in cfg));
     if (missing.length) exit(`${CONFIG_NAME} lacks ${missing.join(', ')}`);
@@ -110,6 +116,11 @@ export class ArchiveFolder {
     this.archive.contact ??= this.archive.baseUrl;
     this.index = cfg.index || {};
     this.labels = new Map((disc.objects || []).filter((o) => o.label).map((o) => [o.label, o.id]));
+    this.catalogues = new Map((disc.owners || []).filter((e) => e && typeof e === 'object' && e.owner && e.catalogue)
+      .map((e) => [e.owner, e.catalogue]));
+    if (disc.mainCollection && !this.catalogues.has(this.archive.owner)) {
+      this.catalogues.set(this.archive.owner, disc.mainCollection);
+    }
     this.tombstones = [...(disc.tombstones || [])];
     return this;
   }
@@ -130,7 +141,7 @@ export class ArchiveFolder {
 
   async writeConfig(cfg) {
     await this.storage.write(CONFIG_NAME, jsonBytes(cfg));
-    this.archive = Object.fromEntries(Object.entries(cfg).filter(([k]) => k !== 'texmacs' && k !== 'index'));
+    this.archive = settingsOf(cfg);
     this.archive.profiles ??= [];
     this.archive.contact ??= this.archive.baseUrl;
     this.index = cfg.index || {};

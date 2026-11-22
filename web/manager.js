@@ -515,7 +515,7 @@ export async function labelOwner(storage, env, owner, label) {
   const f = await ArchiveFolder.open(storage, env);
   const id = objectId(owner, owner);
   const taken = f.labels.get(label);
-  if ((taken && taken !== id) || label === f.archive.mainCollection) {
+  if (taken && taken !== id) {
     throw new OwnerError(`\`${label}\` is already taken in this archive`);
   }
   for (const [l, i] of [...f.labels]) if (i === id) f.labels.delete(l);

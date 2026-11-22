@@ -78,7 +78,7 @@ const WALLET = { '--owner': value('owner'), '--wallet': value('wallet') };
 
 export const COMMANDS = {
   init: {
-    help: 'create an archive (osheaf.json, storage root, owner, main catalogue)',
+    help: 'create an archive (osheaf.json, storage root, owner, owner catalogue)',
     positionals: ['folder'],
     options: {
       '--name': value('name'), '--base-url': value('baseUrl'), '--curator': value('curator'),
@@ -127,8 +127,8 @@ export const COMMANDS = {
                '--extra-source': value('extraSource', { repeat: true }), '--source-format': value('sourceFormat'),
                '--message': value('message'), ...I_KNOW },
   },
-  collect: { help: 'new version of the main catalogue when needed', positionals: [],
-             options: { '--i-know': flag('iKnow') } },
+  collect: { help: 'new versions of the owner catalogues when needed', positionals: [],
+             options: { '--owner': value('owner'), '--i-know': flag('iKnow') } },
   collection: {
     help: 'catalogues and selections, with members of any archive',
     actions: {
@@ -262,13 +262,13 @@ const CONFIG_DOC = `An archive is a folder with a configuration file osheaf.json
 
     {
       "owner": "<owner name>",           the owner of the archive (section 6), who signs
-                                         its documents and its main catalogue
-      "owners": ["<owner name>", ...],   optional: other owners it hosts
+                                         its documents and its owner catalogue
+      "owners": ["<owner name>", ...],   optional: other owners it hosts, each with its own
+                                         owner catalogue (section 8.1)
       "name": "...", "contact": "https://...", "baseUrl": "https://.../",
       "profiles": ["website"],
       "storageLayout": "opensheaf-owner-name-storage-layout",   or
                        "0003-hash-and-id-n-tuple-storage-layout" (section 3.2)
-      "mainCollection": "main",          the label of the main catalogue
       "curator": {"name": "Family, Given", "givenName": "...", "familyName": "...",
                   "affiliation": "..."},
       "depositor": {"name": "Given Family", "address": "https://..."},
@@ -670,7 +670,7 @@ const RUN = {
 
   async collect(root, args, env) {
     const f = await openArchive(root, env);
-    await collect(f, { iKnow: args.iKnow });
+    await collect(f, { owner: args.owner || null, iKnow: args.iKnow });
     await present(f);
     return 0;
   },

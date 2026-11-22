@@ -292,6 +292,9 @@ test('the wallets of each owner', async () => {
     await box.ok([...a.r, 'owner', 'init', '--keys', 'github:me/other', '--yes']);
     const cfgOf = async () => JSON.parse(await readFile(path.join(a.dir, 'osheaf.json'), 'utf-8'));
     const second = (await cfgOf()).owners[0];
+    const disc = JSON.parse(await readFile(path.join(a.dir, 'opensheaf.json'), 'utf-8'));
+    assert.deepEqual(disc.owners.map((e) => e.owner), [a.owner, second]);
+    assert.equal(disc.owners[1].catalogue.split(':')[2], second);
     assert.deepEqual((await cfgOf()).keys, { [a.owner]: { wallets: ['github:me/keys'] },
                                              [second]: { wallets: ['github:me/other'] } });
     assert.match((await box.ok([...a.r, 'key', 'list', '--owner', second])).out, /The wallet github:me\/other holds 4 keys of/);

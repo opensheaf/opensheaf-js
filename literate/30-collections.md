@@ -277,7 +277,7 @@ changed, nothing is written.
       return done;
     }
 
-`memberOrder` (chapter [24](24-main-catalogue.md)) sorts by the order the
+`memberOrder` (chapter [24](24-owner-catalogues.md)) sorts by the order the
 collection declares, `issued-desc` or `issued-asc`.
 
 The commands
@@ -399,7 +399,7 @@ Following and statuses
 catalogue to the latest signed version of its line that extends it
 (section 8.3), and tells, for a selection, the document versions not
 vetted. Without labels, it updates every collection of the archive's
-owners but a main catalogue that `osheaf collect` makes.
+owners but the owner catalogues that `osheaf collect` keeps.
 
     // in following and statuses:
     export async function update(f, a) {
@@ -431,7 +431,7 @@ owners but a main catalogue that `osheaf collect` makes.
       const head = inv ? await f.readObjectJson(dir, inv, OBJ) : {};
       if (head?.kind !== 'collection' || !f.archiveOwners().includes(head.owner)) return false;
       const mem = (await f.readObjectJson(dir, inv, 'members.json')) || {};
-      return !(label === f.archive.mainCollection && mem.order !== 'manual');
+      return !([...f.catalogues.values()].includes(id) && mem.order !== 'manual');
     }
 
     async function followMember(f, r, label, m) {

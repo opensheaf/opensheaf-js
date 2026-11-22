@@ -217,7 +217,7 @@ passes every other address to `fallback` (the real `fetch`, when
 members of other archives are to be resolved), or fails as a network
 does. The origin is the base URL of the archive, from `osheaf.json`, so
 that the addresses the archive gives itself (the `at` of the members of
-its main catalogue) are read from the storage too.
+its owner catalogues) are read from the storage too.
 
 The answers are `Response` objects, which browsers, Deno and Node all
 have. A path that is not safe, or that names a folder, is not found.

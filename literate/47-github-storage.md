@@ -31,7 +31,7 @@ The design
 A command reads many small files (inventories, key logs, signature files,
 the head versions of the lines for the website) and writes a few dozen:
 the files of a new version, built in a staging folder and moved into
-place (chapter [23](23-folder.md)), the main catalogue, the discovery
+place (chapter [23](23-folder.md)), the owner catalogues, the discovery
 document, the pages of the website. Written file by file, through the
 contents API, each would be a commit of its own, and a command stopped
 half way would leave an archive half changed. So the storage is an

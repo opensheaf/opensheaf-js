@@ -15,7 +15,8 @@ init` do (its chapters
 2. the configuration `osheaf.json`, the storage root, and the
    `.gitattributes` that keeps git from changing the archive's bytes
    (OpenSheaf archives in git, section 4.1);
-3. the main catalogue, sealed and signed, with no members;
+3. the owner's owner catalogue (section 8.1), labelled `main`, sealed and
+   signed, with no members;
 4. the discovery document and the indexes;
 5. the website (profile `website`, chapter [31](31-website.md)): the
    templates copied into `templates/`, where the curator edits them, and
@@ -240,7 +241,6 @@ owner-name layout of section 3.2 unless `--layout hashed`.
         baseUrl: args.baseUrl.endsWith('/') ? args.baseUrl : args.baseUrl + '/',
         profiles: ['website'],
         storageLayout: layout,
-        mainCollection: 'main',
         curator: { name: given ? `${family}, ${given}` : family, givenName: given, familyName: family,
                    affiliation: args.affiliation || '' },
         depositor: { name: `${given} ${family}`.trim(), address: args.contact || args.baseUrl },

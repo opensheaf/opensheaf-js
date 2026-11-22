@@ -132,8 +132,9 @@ The configuration
 
 `osheaf.json` (opensheaf-py's `help-config` describes it): the owner of
 the archive and the other owners it hosts, its name, contact and base
-URL, its profiles, storage layout and main catalogue, its curator and
-depositor, and the configuration of its index. Six of them are required.
+URL, its profiles and storage layout, its curator and depositor, and the
+configuration of its index. Five of them are required; the label of the
+owner catalogue of the archive's first owner is fixed, `main`.
 An archive of specification 0.1 is recognised (an `archiveId` in its
 configuration, or `specification` 0.1 in its discovery document) and
 told to be rebuilt. opensheaf-py also reads `osheaf.yaml`; this program
@@ -147,7 +148,8 @@ reads JSON only, and says so.
     export const LAYOUTS = { 'owner-name': OWNER_NAME_LAYOUT, hashed: HASHED_LAYOUT };
     export const LAYOUT_TEXT = 'Lines at <owner>/<name>/, drafts at draft/<id>/: the owner-name layout of the ' +
       'OpenSheaf specification 0.2, section 3.2\n';
-    export const REQUIRED = ['owner', 'name', 'baseUrl', 'mainCollection', 'curator', 'depositor'];
+    export const REQUIRED = ['owner', 'name', 'baseUrl', 'curator', 'depositor'];
+    export const CATALOGUE_LABEL = 'main';
     export const REBUILD = 'this archive is of specification 0.1, which these tools no longer read: rebuild it under ' +
       'specification 0.2 (section 16.1)';
 
@@ -164,12 +166,21 @@ The archive folder
 ------------------
 
 An archive is opened from its storage: the configuration and the
-discovery document, from which the labels of lines and the tombstones
-are read, as opensheaf-py's `configure` reads them. `writeConfig` writes
+discovery document, from which the labels of lines, the owner catalogues
+(`catalogues`, each owner hosted to its catalogue, section 8.1) and the
+tombstones are read, as opensheaf-py's `configure` reads them. A discovery
+document written before #72, with `mainCollection` and the owners as bare
+names, gives its main catalogue to the archive's first owner, so that a
+draft archive made then keeps working until it is rebuilt; a
+configuration's `mainCollection` is ignored. `writeConfig` writes
 `osheaf.json` back, as Python's `json.dumps(..., indent=2)` writes it, and
 the settings of this run with it (opensheaf-py's `write_config`).
 
     // in the archive folder:
+    function settingsOf(cfg) {
+      return Object.fromEntries(Object.entries(cfg).filter(([k]) => !['texmacs', 'index', 'mainCollection'].includes(k)));
+    }
+
     export class ArchiveFolder {
       static async open(storage, env = environment()) {
         const folder = new ArchiveFolder(storage, env);
@@ -183,6 +194,7 @@ the settings of this run with it (opensheaf-py's `write_config`).
         this.archive = {};
         this.index = {};
         this.labels = new Map();
+        this.catalogues = new Map();
         this.tombstones = [];
         this.layout = OWNER_NAME_LAYOUT;
         this.old = false;
@@ -194,7 +206,7 @@ the settings of this run with it (opensheaf-py's `write_config`).
         const disc = (await readJson(this.storage, 'opensheaf.json')) || {};
         this.old = 'archiveId' in cfg || disc.specification === '0.1';
         this.layout = cfg.storageLayout || OWNER_NAME_LAYOUT;
-        this.archive = Object.fromEntries(Object.entries(cfg).filter(([k]) => k !== 'texmacs' && k !== 'index'));
+        this.archive = settingsOf(cfg);
         if (this.old) return this;
         const missing = REQUIRED.filter((k) => !(k in cfg));
         if (missing.length) exit(`${CONFIG_NAME} lacks ${missing.join(', ')}`);
@@ -205,6 +217,11 @@ the settings of this run with it (opensheaf-py's `write_config`).
         this.archive.contact ??= this.archive.baseUrl;
         this.index = cfg.index || {};
         this.labels = new Map((disc.objects || []).filter((o) => o.label).map((o) => [o.label, o.id]));
+        this.catalogues = new Map((disc.owners || []).filter((e) => e && typeof e === 'object' && e.owner && e.catalogue)
+          .map((e) => [e.owner, e.catalogue]));
+        if (disc.mainCollection && !this.catalogues.has(this.archive.owner)) {
+          this.catalogues.set(this.archive.owner, disc.mainCollection);
+        }
         this.tombstones = [...(disc.tombstones || [])];
         return this;
       }
@@ -225,7 +242,7 @@ the settings of this run with it (opensheaf-py's `write_config`).
 
       async writeConfig(cfg) {
         await this.storage.write(CONFIG_NAME, jsonBytes(cfg));
-        this.archive = Object.fromEntries(Object.entries(cfg).filter(([k]) => k !== 'texmacs' && k !== 'index'));
+        this.archive = settingsOf(cfg);
         this.archive.profiles ??= [];
         this.archive.contact ??= this.archive.baseUrl;
         this.index = cfg.index || {};

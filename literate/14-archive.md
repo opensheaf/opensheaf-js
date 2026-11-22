@@ -147,7 +147,9 @@ verification.
 
 The entries of the discovery document, as far as they can be used: the
 objects with a valid identifier (section 4), the drafts it shows, its
-tombstones, the owners it hosts, and the labels it gives (section 3.1),
+tombstones, the owners it hosts, each with its owner catalogue (section
+8.1), in the order in which the archive presents them, and the labels it
+gives (section 3.1),
 which the explorer uses in its addresses and as names of objects, as
 `osheaf` does in its findings.
 
@@ -172,7 +174,8 @@ which the explorer uses in its addresses and as names of objects, as
       }
 
       owners() {
-        return (Array.isArray(this.disc.owners) ? this.disc.owners : []).filter((o) => typeof o === 'string');
+        return (Array.isArray(this.disc.owners) ? this.disc.owners : [])
+          .filter((e) => isObject(e) && typeof e.owner === 'string');
       }
 
       labelOf(id) {

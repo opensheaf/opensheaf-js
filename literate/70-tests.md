@@ -259,7 +259,7 @@ An archive in memory
 
 The whole first path, in memory: an archive made with a new owner, whose
 rotation keys are exported under a passphrase and read back; a paper
-deposited, a second version, the main catalogue collected; and the
+deposited, a second version, the owner catalogue collected; and the
 verification, which finds nothing wrong. Then what must fail: a label
 taken, a version without its PDF or with a file that is not one, a key
 that does not sign, a content file changed behind the archive's back.
@@ -269,7 +269,7 @@ that does not sign, a content file changed behind the archive's back.
       const { storage, env, f } = await newArchive();
       const cfg = await readJson(storage, 'osheaf.json');
       assert.deepEqual(Object.keys(cfg), ['owner', 'name', 'contact', 'baseUrl', 'profiles', 'storageLayout',
-                                          'mainCollection', 'curator', 'depositor', 'index']);
+                                          'curator', 'depositor', 'index']);
       assert.deepEqual(cfg.profiles, ['website']);
       assert.equal(await storage.kind('templates/paper.html'), 'file');
       assert.equal(await storage.kind('index.html'), 'file');
@@ -279,6 +279,8 @@ that does not sign, a content file changed behind the archive's back.
       const disc = await readJson(storage, 'opensheaf.json');
       assert.deepEqual(disc.objects.map((o) => [o.kind, o.head, o.label ?? null]).sort(),
                        [['collection', 'v1', 'main'], ['owner', 'v1', null]]);
+      assert.deepEqual(disc.owners, [{ owner: cfg.owner, catalogue: f.labels.get('main') }]);
+      assert.equal('mainCollection' in disc, false);
       await deposit(f, paper('first', { abstract: '  An abstract.  ', keyword: ['x'], rights: 'cc-by-4.0' }));
       await deposit(f, { ...paper('first', { new: false }), pdf: { name: 'v2.pdf', bytes: utf8('%PDF-1.4 two') } });
       await collect(f);

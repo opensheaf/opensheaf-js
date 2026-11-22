@@ -182,6 +182,12 @@ it), and a file of the head version of a line.
       return new Map((disc.objects || []).filter((o) => o.label).map((o) => [o.label, o]));
     }
 
+    async function catalogues(r) {
+      const disc = (await readJson(r.storage, 'opensheaf.json')) || {};
+      const ids = new Set((disc.owners || []).filter((e) => e && typeof e === 'object').map((e) => e.catalogue));
+      return new Set([...(await labels(r))].filter(([, o]) => ids.has(o.id)).map(([label]) => label));
+    }
+
     async function labelOf(r, name, owner) {
       for (const [label, o] of await labels(r)) if (o.name === name && o.owner === owner) return label;
       return null;
@@ -772,7 +778,7 @@ collection changed is then synced by the end of the request.
 
     async function newCollectionOp(r, form, origin) {
       const label = labelField(form, 'Label of the new collection', 32);
-      if ((await exists(r, listPath(label))) || (await labels(r)).has(label) || label === (await settings(r)).mainCollection) {
+      if ((await exists(r, listPath(label))) || (await labels(r)).has(label) || (await catalogues(r)).has(label)) {
         throw new Problem(`\`${label}\` is already taken in this archive.`);
       }
       const title = field(form, 'Title of the collection', true);
@@ -804,7 +810,7 @@ collection changed is then synced by the end of the request.
       const revisions = versions(form, 'Versions you vet (selection)');
       for (const m of data.members) if ((await entryKey(r, m)) === key) throw new Problem(`${text} is already a member of \`${cid}\`.`);
       const own = entry.label;
-      if (own && (own === (await settings(r)).mainCollection || own === cid ||
+      if (own && ((await catalogues(r)).has(own) || own === cid ||
                   ((await exists(r, listPath(own))) && (await descendants(r, own)).has(cid)))) {
         throw new Problem(`\`${own}\` cannot be a member of itself, or of a collection inside it.`);
       }
@@ -965,7 +971,7 @@ label made from it, and featured on the home page.
       if (purpose === 'selection' || purpose === 'catalogue') {
         let label = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
           .replace(/^-+|-+$/g, '') || 'collection';
-        if (label === (await settings(r)).mainCollection) label += '-collection';
+        if ((await catalogues(r)).has(label)) label += '-collection';
         await makeCollection(r, label, title, purpose, field(form, 'Description'), `The collection is set up (${origin})`);
         await feature(r, label);
         done = `the archive was set up, owned by \`${owner}\`, with the collection \`${label}\` featured on its home page`;

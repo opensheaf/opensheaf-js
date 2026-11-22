@@ -51,6 +51,7 @@ The module is `core/owner.js`.
     import { CONTESTED, fileName as signatureFileName, WITNESSES } from './signatures.js';
     import { signatureFile, sha512hex, writeKeyLog, jsonText } from './write.js';
     import { joinPath, readJson, writeText } from './storage.js';
+    import { collect } from './collect.js';
     import { stop, exit, short, plural, CONFIG_NAME, OBJ } from './folder.js';
     import { rotate, end, pull, describeLog, loadKeyLog, checked, OwnerError } from './keylogs.js';
     import { keeperLink, keeperOf, successorClaim, NOT_CHECKED } from './keepers.js';
@@ -373,8 +374,11 @@ Owner init, in an archive
 
 `osheaf owner init` makes another owner in an archive (chapter
 [27](27-init.md) makes it), adds it to the owners of `osheaf.json`, records
-the GitHub wallet of `--keys` as a hint for it, and writes the discovery
-document again.
+the GitHub wallet of `--keys` as a hint for it, seals its owner catalogue,
+empty and signed with its new current key (section 8.1: the catalogue is
+created when the owner is set up in the archive; chapter
+[24](24-owner-catalogues.md)), and writes the discovery document again,
+which lists it with its catalogue.
 
     // in owner init, in an archive:
     export async function ownerInitCommand(f, args) {
@@ -389,6 +393,7 @@ document again.
         }
         if (changed) await writeText(f.storage, CONFIG_NAME, jsonText(cfg));
         await recordWallet(f, log.owner, args.keys);
+        if (f.archiveOwners().includes(log.owner) && !f.catalogues.has(log.owner)) await collect(f, { owner: log.owner });
       }
       await writeDiscovery(f);
     }

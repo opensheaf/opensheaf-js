@@ -36,7 +36,7 @@ The module is `core/verify.js`.
     import { versionsOf, filesOf, documentVersionErrors, historyOf } from './versions.js';
     import { versionNumber, logicalPathProblem, OWNER_NAME_LAYOUT, HASHED_LAYOUT, LAYOUT_FILE } from './paths.js';
     import { finding, schemaFindings, descriptionErrors, memberErrors, memberPins, indexEntries, INDEX_KEY } from './rules.js';
-    import { readGenesis, nameOf, isNameOf, algorithm, objectId, parseId, isObject } from './names.js';
+    import { readGenesis, nameOf, isNameOf, algorithm, objectId, parseId, isObject, OWNER_NAME } from './names.js';
     import { sidecarDigest, jsonOrNull } from './owners.js';
     import { latestSigned, GOOD, SIGNED, VOUCHED, CONTESTED, UNCHECKED, UNSIGNED, INVALID, WITNESSES } from './signatures.js';
     import { verdict, levelOfVersion, INCONSISTENT, UNCHECKED as BRANCH_UNCHECKED, ORDER } from './branches.js';
@@ -59,7 +59,7 @@ concerned, so that a reader knows what "no errors" means here.
       { section: '12.3', text: 'The digests of the content files of copies found in other archives: their inventories, checksum files, descriptions, genesis records and signatures are checked, which is what pins rest on.' },
       { section: '6.6', text: 'Keepers: the check digit of an ORCID iD is checked, not the confirmation of the link by the keeper.' },
       { section: '15.4', text: 'Files that look like private keys in the archive, which osheaf verify looks for in the folder.' },
-      { section: 'appendix A', text: 'The requirements of the profiles (zenodo, texmacs) and of extensions; of the profile website, the home page and the landing pages of the members of the main catalogue.' },
+      { section: 'appendix A', text: 'The requirements of the profiles (zenodo, texmacs) and of extensions; of the profile website, the home page and the landing pages of the members of the owner catalogues.' },
     ];
 
 The report
@@ -760,10 +760,13 @@ no object listed twice; every object held listed, with the values its
 object gives (its kind, name, owner and head, the digest its checksum
 file states, and its status, that of its latest signed version, or of its
 head without one, and always active for a key log, section 13.1); labels
-distinct; `mainCollection` a catalogue it lists, whose members, when
-`owners` is present, are lines of those owners (a warning); `owners`
-naming key logs held, and `extensions` every extension the objects use
-(warnings); `drafts` listing drafts held with their heads; and the
+distinct; `owners` present (a warning without it), naming no owner twice
+and no catalogue for two owners, each with a catalogue it lists, a
+collection of that owner, of type `catalogue` when held, whose members are
+documents of lines of that owner held here (a warning for another member,
+but for one taken down, which section 13.2 asks to drop at the next
+version); `owners` naming key logs held, and `extensions` every extension
+the objects use (warnings); `drafts` listing drafts held with their heads; and the
 tombstones: each the line of its name and owner, none twice, none for an
 object held, and none, but by law or its keeper, for a key log that
 lines of the archive need (a warning, section 13.2), each else a result.
@@ -822,25 +825,42 @@ unlisted, as `osheaf verify` reports them.
         for (const lb of [...new Set(labels.filter((x, k) => labels.indexOf(x) !== k))].sort()) {
           this.add('error', 'opensheaf.json', `the label ${lb} is given twice (section 3.1)`);
         }
-        const main = disc.mainCollection;
-        if (main === undefined || main === null) {
-          this.add('warning', 'opensheaf.json', 'no mainCollection (section 3.1)');
-        } else if (!listed.has(main) || listed.get(main).kind !== 'collection') {
-          this.add('error', 'opensheaf.json', `mainCollection ${main} is not a collection it lists`);
-        } else if (this.found.has(main)) {
-          const o = this.found.get(main);
-          const mem = await a.json(main, o.inv, o.inv.head, 'members.json', this.options).catch(() => null) || {};
-          if (mem.type !== 'catalogue') this.add('error', 'opensheaf.json', 'mainCollection is not a catalogue (section 8.1)');
-          if (Array.isArray(disc.owners)) {
-            for (const m of Array.isArray(mem.members) ? mem.members : []) {
-              if (!disc.owners.includes(m?.owner)) {
-                this.add('warning', 'opensheaf.json', `the main catalogue lists ${m?.name}, a line of an owner that owners does not list (section 8.1)`);
-              }
+        if (!('owners' in disc)) {
+          this.add('warning', 'opensheaf.json', 'no owners: the owners hosted and their catalogues are not named (section 3.1)');
+        }
+        const seenOwners = new Set(), seenCatalogues = new Set();
+        for (const e of Array.isArray(disc.owners) ? disc.owners : []) {
+          if (!isObject(e)) continue;   // the schema reports it
+          const o = e.owner, cat = e.catalogue;
+          if (seenOwners.has(o)) this.add('error', 'opensheaf.json', `owners lists ${o} twice (section 3.1)`);
+          if (seenCatalogues.has(cat)) this.add('error', 'opensheaf.json', `owners gives ${cat} as the catalogue of two owners (section 3.1)`);
+          seenOwners.add(o);
+          seenCatalogues.add(cat);
+          if (typeof o !== 'string' || !OWNER_NAME.test(o)) continue;
+          if (!this.found.has(objectId(o, o))) this.add('warning', 'opensheaf.json', `owners lists ${o}, whose key log is not held here (section 3.1)`);
+          const entry = listed.get(cat) || {};
+          if (entry.kind !== 'collection' || entry.owner !== o) {
+            this.add('error', 'opensheaf.json', `the catalogue of ${o} in owners, ${cat}, is not a collection of that owner it lists (section 8.1)`);
+            continue;
+          }
+          const held = this.found.get(cat);
+          if (!held) continue;
+          const mem = await a.json(cat, held.inv, held.inv.head, 'members.json', this.options).catch(() => null) || {};
+          if (mem.type !== 'catalogue') {
+            this.add('error', 'opensheaf.json', `the owner catalogue of ${o}, ${this.where(cat)}, is not a catalogue (section 8.1)`);
+          }
+          for (const m of Array.isArray(mem.members) ? mem.members : []) {
+            if (this.tombstoned.has(`sheaf:${m?.name}:${m?.owner}`)) continue;   // taken down: section 13.2 asks for a version without it
+            let mine = false;
+            try {
+              mine = m?.owner === o && m?.kind === 'document' && this.found.has(objectId(m?.name, o));
+            } catch {
+              mine = false;
+            }
+            if (!mine) {
+              this.add('warning', 'opensheaf.json', `the owner catalogue of ${o} lists ${m?.name}, which is not a document of a line of that owner held here (section 8.1)`);
             }
           }
-        }
-        for (const owner of a.owners()) {
-          if (!this.found.has(objectId(owner, owner))) this.add('warning', 'opensheaf.json', `owners lists ${owner}, whose key log is not held here (section 3.1)`);
         }
         for (const d of Array.isArray(disc.drafts) ? disc.drafts : []) {
           const o = this.found.get(d?.id);
@@ -974,7 +994,8 @@ not UTF-8, or start with a byte order mark, are an error, as they are for
 ### Presentation (appendix A.3)
 
 An archive declaring the profile `website` shows on its home page the pin
-of every member of the latest signed version of its main catalogue, and
+of every member of the latest signed version of each of its owner
+catalogues, and
 gives each member it holds a landing page that gives the full `sheaf:`
 URI of its line (appendix A.3); breaches are errors, and warnings for an
 archive that has a home page without declaring the profile. The address
@@ -1002,10 +1023,11 @@ the configuration of the folder, and asks for none here (`pages: false`).
           return;
         }
         let members = [];
-        const main = this.found.get(a.disc.mainCollection);
-        if (main?.line?.latest) {
-          const mem = await a.json(main.id, main.inv, main.line.latest, 'members.json', this.options).catch(() => null);
-          members = Array.isArray(mem?.members) ? mem.members : [];
+        for (const e of a.owners()) {
+          const cat = this.found.get(e.catalogue);
+          if (!cat?.line?.latest) continue;
+          const mem = await a.json(cat.id, cat.inv, cat.line.latest, 'members.json', this.options).catch(() => null);
+          if (Array.isArray(mem?.members)) members = members.concat(mem.members);
         }
         const page = new TextDecoder().decode(home);
         for (const m of members) {

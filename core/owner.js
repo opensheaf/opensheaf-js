@@ -7,6 +7,7 @@ import { readRotationKey, readKey, keyText, rotationKeySheet, sheetCheck, passke
 import { CONTESTED, fileName as signatureFileName, WITNESSES } from './signatures.js';
 import { signatureFile, sha512hex, writeKeyLog, jsonText } from './write.js';
 import { joinPath, readJson, writeText } from './storage.js';
+import { collect } from './collect.js';
 import { stop, exit, short, plural, CONFIG_NAME, OBJ } from './folder.js';
 import { rotate, end, pull, describeLog, loadKeyLog, checked, OwnerError } from './keylogs.js';
 import { keeperLink, keeperOf, successorClaim, NOT_CHECKED } from './keepers.js';
@@ -258,6 +259,7 @@ export async function ownerInitCommand(f, args) {
     }
     if (changed) await writeText(f.storage, CONFIG_NAME, jsonText(cfg));
     await recordWallet(f, log.owner, args.keys);
+    if (f.archiveOwners().includes(log.owner) && !f.catalogues.has(log.owner)) await collect(f, { owner: log.owner });
   }
   await writeDiscovery(f);
 }

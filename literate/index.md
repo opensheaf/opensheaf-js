@@ -97,7 +97,7 @@ Keeping an archive
     genesis records, inventories, signature files, key logs.
 17. [The archive kept](23-folder.md): configuration, objects, key logs
     and statuses, the keys that sign, adding a signed version.
-18. [The main catalogue](24-main-catalogue.md).
+18. [The owner catalogues](24-owner-catalogues.md).
 19. [The discovery document and the indexes](25-discovery.md).
 20. [Depositing documents](26-deposit.md).
 21. [A new owner, a new archive](27-init.md).

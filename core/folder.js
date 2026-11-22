@@ -77,7 +77,7 @@ export async function readConfig(storage) {
 }
 
 function settingsOf(cfg) {
-  return Object.fromEntries(Object.entries(cfg).filter(([k]) => !['texmacs', 'index', 'mainCollection'].includes(k)));
+  return Object.fromEntries(Object.entries(cfg).filter(([k]) => !['texmacs', 'index'].includes(k)));
 }
 
 export class ArchiveFolder {
@@ -118,9 +118,6 @@ export class ArchiveFolder {
     this.labels = new Map((disc.objects || []).filter((o) => o.label).map((o) => [o.label, o.id]));
     this.catalogues = new Map((disc.owners || []).filter((e) => e && typeof e === 'object' && e.owner && e.catalogue)
       .map((e) => [e.owner, e.catalogue]));
-    if (disc.mainCollection && !this.catalogues.has(this.archive.owner)) {
-      this.catalogues.set(this.archive.owner, disc.mainCollection);
-    }
     this.tombstones = [...(disc.tombstones || [])];
     return this;
   }

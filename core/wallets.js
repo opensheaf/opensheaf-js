@@ -50,15 +50,14 @@ function isMap(x) {
 }
 
 function named(e) {
-  if (!isMap(e)) return [];
-  const out = Array.isArray(e.wallets) ? e.wallets.filter((w) => typeof w === 'string') : [];
-  return e.wallet ? [...out, String(e.wallet)] : out;
+  if (!isMap(e) || !Array.isArray(e.wallets)) return [];
+  return e.wallets.filter((w) => typeof w === 'string');
 }
 
 export function hints(config, owner = null) {
   config = isMap(config) ? config : {};
   const out = [];
-  for (const w of [...(owner ? named(config[owner]) : []), ...named(config)]) if (!out.includes(w)) out.push(w);
+  for (const w of owner ? named(config[owner]) : []) if (!out.includes(w)) out.push(w);
   return out;
 }
 
@@ -74,11 +73,16 @@ export function checkArchiveConfig(config, env) {
   config = isMap(config) ? config : {};
   const entries = [config, ...Object.entries(config).filter(([k, v]) => OWNER_NAME.test(k) && isMap(v)).map(([, v]) => v)];
   for (const e of entries) {
-    if (named(e).includes('command') || COMMANDS.some((c) => c in e)) {
+    if (named(e).includes('command') || e.wallet === 'command' || COMMANDS.some((c) => c in e)) {
       throw new WalletError('osheaf.json configures a command wallet ("keys"), whose commands would run on ' +
         'this machine: they are read only from your own configuration. Move "keys" to ' +
         `${env.wallets.userConfigPath()} (or to ${WALLET}), and leave osheaf.json without it`);
     }
+  }
+  if ('wallet' in config) {
+    throw new WalletError('osheaf.json: "keys": {"wallet": ...}, one wallet for the whole archive, is no ' +
+      `longer read: write "keys": {"<owner>": {"wallets": ["${config.wallet}"]}}, ` +
+      'one entry for each owner whose keys it holds');
   }
 }
 

@@ -218,7 +218,7 @@ Three functions serve it:
 - `walletCandidates(settings, owner, given)`: the wallets in which the
   keys of `owner` are looked for, in order: those the archive's
   `osheaf.json` hints for it (`keys`, GitHub wallets only, the owner's
-  own then those for every owner), then `given`, the person's own list
+  entry), then `given`, the person's own list
   (kept by the page), each once, as `osheaf` orders them;
 - `ownersHeld(wallet)` (chapter [35](35-wallets.md)): the owners whose
   keys a wallet holds, `[owner, number of keys, locks in words]`;

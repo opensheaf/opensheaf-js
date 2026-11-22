@@ -45,6 +45,12 @@ export function memberOrder(members, order = ORDER) {
   return [...dated, ...members.filter((m) => !key(m).some(Boolean)).sort(line)];
 }
 
+export function catalogueLabel(f, owner) {
+  if (owner === f.archive.owner) return CATALOGUE_LABEL;
+  const own = f.labelOf(objectId(owner, owner));
+  return own && own.length <= 64 - '-catalogue'.length ? `${own}-catalogue` : null;
+}
+
 export async function collect(f, { owner = null, curated = false, iKnow = false } = {}) {
   await f.initStorageRoot();
   if (owner && !f.archiveOwners().includes(owner)) exit(`${owner} is not an owner this archive hosts`);
@@ -90,7 +96,8 @@ export async function collectOwner(f, owner, { curated = false, iKnow = false } 
   let genesis, id = collId;
   if (id === null) {
     ({ genesis, id } = await f.seal('collection', owner));
-    if (owner === f.archive.owner && !f.labels.has(CATALOGUE_LABEL)) f.labels.set(CATALOGUE_LABEL, id);
+    const wanted = catalogueLabel(f, owner);
+    if (wanted && !f.labels.has(wanted)) f.labels.set(wanted, id);
   } else {
     genesis = await f.readLogical(collDir, cinv, GENESIS);
   }

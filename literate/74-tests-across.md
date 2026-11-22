@@ -29,8 +29,9 @@ that each copies, branches and checks what the other wrote:
    of a line and of its key log by law, with the findings of both
    verifications on the archive each took down;
 6. the owner catalogues of an archive with two owners (section 8.1):
-   `collect --owner` and `collect`, the checks of `owners` (section 14.6),
-   and a discovery document of the first drafts, with `mainCollection`.
+   `collect --owner` and `collect`, the label of the second owner's
+   catalogue, the home page together and by owner, and the checks of
+   `owners` (sections 3.1 and 14.6).
 
 These tests are part of `tests/parity.test.js`, and use its helpers.
 
@@ -254,12 +255,14 @@ a second owner set up by `osheaf owner init`, which seals its owner
 catalogue, empty, unlabelled; a paper of the second owner and its branch
 of the first owner's paper. `collect --owner` of the second owner, by
 both, gives a new version to its catalogue only, signed by it; `collect`
-then changes nothing. The home page presents the catalogues in the order
-of `owners`. A discovery document naming an owner twice, or giving one
-owner the catalogue of another, is an error to both verifications, and
-`owners` in another order is none. A discovery document of the first
-drafts (`mainCollection`, owners as bare names) gives its catalogue to the
-first owner, and both write it again in the new shape.
+then changes nothing. `label --owner` gives the second owner's catalogue
+the label `<label>-catalogue`, the same by both. Both write the same home
+page, the documents together, each naming its owner, and, with
+`index.owners` `by-owner`, under a heading for each owner, in the order of
+`owners`. A discovery document naming an owner twice, or giving one owner
+the catalogue of another, is an error to both verifications, `owners` in
+another order is none, and a discovery document without `owners` is an
+error (section 3.1).
 
     // in across: owner catalogues:
     test('owner catalogues, by both', { skip }, async () => {
@@ -282,11 +285,17 @@ first owner, and both write it again in the new shape.
         assert.equal(cat2.split(':')[2], second);
         assert.equal(disc.objects.find((o) => o.id === cat2).label, undefined);
         assert.equal(await head(arch, cat2), 'v1');
+        let { a, b } = await both(s, arch, ['label', '--owner', second, 'jane'], { more: s.more });
+        for (const where of [a, b]) {
+          assert.equal((await json(where, 'opensheaf.json')).objects.find((o) => o.id === cat2).label, 'jane-catalogue');
+        }
+        assert.equal(await readFile(path.join(b, 'osheaf.json'), 'utf-8'), await readFile(path.join(a, 'osheaf.json'), 'utf-8'));
+        ok(s.py(['label', '--owner', second, 'jane'], { cwd: arch }), 'py label');
         const head1 = await head(arch, cat1);
         await paper(s, 'py', arch, 'theirs', 'two', ['--new', '--owner', second]);
         ok(s.py(['branch', `${await idOf(arch, 'paper')}/v1`, '--owner', second, '--label', 'continued'], { cwd: arch }),
            'py branch');
-        let { a, b } = await both(s, arch, ['collect', '--owner', second], { more: s.more });
+        ({ a, b } = await both(s, arch, ['collect', '--owner', second], { more: s.more }));
         await sameArchives(a, b);
         assert.equal(await head(b, cat1), head1);
         assert.equal(await head(b, cat2), 'v2');
@@ -300,12 +309,28 @@ first owner, and both write it again in the new shape.
         assert.deepEqual(members.members.map((m) => m.owner), [second, second]);
         ok(s.js(['index'], { cwd: b }), 'js index');
         assert.deepEqual(verified(s, b, s.more).filter((f) => f.startsWith('error')), []);
-        const home = await readFile(path.join(b, 'index.html'), 'utf-8');
         const own = await json(b, `ocfl/${first}/${cat1.split(':')[1]}/${head1}/content/members.json`);
         const theirs = await idOf(b, 'theirs');
         const p1 = own.members[0].inventorySha512.slice(0, 32);
         const p2 = members.members.find((m) => `sheaf:${m.name}:${m.owner}` === theirs).inventorySha512.slice(0, 32);
-        assert.ok(home.indexOf(p1) >= 0 && home.indexOf(p1) < home.indexOf(p2));
+        const homes = async (dir) => {
+          ({ a, b } = await both(s, dir, ['index'], { more: s.more }));
+          const page = await readFile(path.join(a, 'index.html'), 'utf-8');
+          assert.equal(await readFile(path.join(b, 'index.html'), 'utf-8'), page);
+          return page;
+        };
+        let home = await homes(collected);
+        assert.ok(home.includes(p1) && home.includes(p2) && !home.includes('owner-heading'));
+        assert.ok(home.includes(`<a class="owner" href="owner/${second}/">jane</a>`));
+        const grouped = path.join(s.root, 'grouped');
+        await cp(collected, grouped, { recursive: true });
+        const gcfg = await json(grouped, 'osheaf.json');
+        gcfg.index = { ...gcfg.index, owners: 'by-owner' };
+        await writeFile(path.join(grouped, 'osheaf.json'), JSON.stringify(gcfg, null, 2) + '\n');
+        home = await homes(grouped);
+        const h = [...home.matchAll(/<h2 class="owner-heading">/g)].map((m) => m.index);
+        assert.equal(h.length, 2);
+        assert.ok(h[0] < home.indexOf(p1) && home.indexOf(p1) < h[1] && h[1] < home.indexOf(p2));
         disc = await json(b, 'opensheaf.json');
         const write = (d) => writeFile(path.join(b, 'opensheaf.json'), JSON.stringify(d));
         await write({ ...disc, owners: [disc.owners[0], { owner: second, catalogue: cat1 }, { owner: first, catalogue: cat2 }] });
@@ -314,16 +339,11 @@ first owner, and both write it again in the new shape.
         assert.ok(errors.some((f) => f.includes(`owners lists ${first} twice`)), errors.join('\n'));
         await write({ ...disc, owners: [...disc.owners].reverse() });
         assert.deepEqual(verified(s, b, s.more).filter((f) => f.startsWith('error')), []);
-        await write({ ...disc, owners: [first, second], mainCollection: cat1 });
-        const old = path.join(s.root, 'old');
-        await cp(b, old, { recursive: true });
-        ({ a, b } = await both(s, old, ['index', '--no-html'], { more: s.more }));
-        for (const where of [a, b]) {
-          const now = await json(where, 'opensheaf.json');
-          assert.deepEqual(now.owners, [{ owner: first, catalogue: cat1 }]);
-          assert.equal('mainCollection' in now, false);
+        await write({ ...disc, owners: undefined });
+        for (const by of [s.py, s.js]) {   // the schema's message is worded by each validator
+          const missing = findings(by(['verify', '--json'], { cwd: b, more: s.more })).filter((f) => f.startsWith('error'));
+          assert.ok(missing.some((f) => f.includes('no owners')), missing.join('\n'));
         }
-        assert.equal(await readFile(path.join(b, 'opensheaf.json'), 'utf-8'), await readFile(path.join(a, 'opensheaf.json'), 'utf-8'));
       } finally {
         await s.done();
       }

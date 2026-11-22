@@ -245,7 +245,6 @@ without declaring it.
     }
 
     async function landingNames(f, text, name, owner, id, dir) {
-      if (text.includes(`sheaf:${name}:${owner}`)) return true;
       let originator = null;
       try {
         const inv = await f.inventory(dir);
@@ -255,7 +254,8 @@ without declaring it.
       } catch {
         return false;
       }
-      return originator === owner && new RegExp(`sheaf:${name}(?![a-z0-9:/])`).test(text);
+      if (originator === owner) return new RegExp(`sheaf:${name}(?![a-z0-9:/])`).test(text);
+      return text.includes(`sheaf:${name}:${owner}`);
     }
 
 Files that look like private keys

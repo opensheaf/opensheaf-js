@@ -273,11 +273,12 @@ const CONFIG_DOC = `An archive is a folder with a configuration file osheaf.json
       "curator": {"name": "Family, Given", "givenName": "...", "familyName": "...",
                   "affiliation": "..."},
       "depositor": {"name": "Given Family", "address": "https://..."},
-      "index": {"html": {"templates": "templates", "featured": "<label>"}},
+      "index": {"html": {"templates": "templates", "featured": "<label>"}},   with several owners,
+                                         also "owners": "together" (the default) or "by-owner",
+                                         how the home page lists them
       "keys": {"<owner name>": {"wallets": ["github:OWNER/REPO", ...]}, ...}   optional:
                                          hints, the GitHub key wallets that hold the keys of
-                                         each owner (osheaf key wallet --add|--remove); a
-                                         general {"wallet": ...} is a hint for every owner;
+                                         each owner (osheaf key wallet --add|--remove);
                                          your own wallets are in ~/.config/opensheaf/config.json
       "formerAddresses": {"<address>": "sheaf:<name>:<owner>"}   written by osheaf label:
                                          the old addresses of relabelled lines, which redirect

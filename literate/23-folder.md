@@ -168,17 +168,16 @@ The archive folder
 An archive is opened from its storage: the configuration and the
 discovery document, from which the labels of lines, the owner catalogues
 (`catalogues`, each owner hosted to its catalogue, section 8.1) and the
-tombstones are read, as opensheaf-py's `configure` reads them. A discovery
-document written before #72, with `mainCollection` and the owners as bare
-names, gives its main catalogue to the archive's first owner, so that a
-draft archive made then keeps working until it is rebuilt; a
-configuration's `mainCollection` is ignored. `writeConfig` writes
+tombstones are read, as opensheaf-py's `configure` reads them. Only the
+forms of the current draft are read, in the discovery document as in the
+configuration: `mainCollection`, and owners given as bare names, of
+earlier drafts of 0.2, are not. `writeConfig` writes
 `osheaf.json` back, as Python's `json.dumps(..., indent=2)` writes it, and
 the settings of this run with it (opensheaf-py's `write_config`).
 
     // in the archive folder:
     function settingsOf(cfg) {
-      return Object.fromEntries(Object.entries(cfg).filter(([k]) => !['texmacs', 'index', 'mainCollection'].includes(k)));
+      return Object.fromEntries(Object.entries(cfg).filter(([k]) => !['texmacs', 'index'].includes(k)));
     }
 
     export class ArchiveFolder {
@@ -219,9 +218,6 @@ the settings of this run with it (opensheaf-py's `write_config`).
         this.labels = new Map((disc.objects || []).filter((o) => o.label).map((o) => [o.label, o.id]));
         this.catalogues = new Map((disc.owners || []).filter((e) => e && typeof e === 'object' && e.owner && e.catalogue)
           .map((e) => [e.owner, e.catalogue]));
-        if (disc.mainCollection && !this.catalogues.has(this.archive.owner)) {
-          this.catalogues.set(this.archive.owner, disc.mainCollection);
-        }
         this.tombstones = [...(disc.tombstones || [])];
         return this;
       }

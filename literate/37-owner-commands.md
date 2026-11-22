@@ -231,7 +231,8 @@ a command about no owner yet, takes the first wallet configured.
       const w = (await levelWallet(f, args, env, owner)) || (await configured(f, env, owner));
       if (!w) {
         stop('no key wallet: give --wallet github:OWNER/REPO (or command), or configure one in ' +
-             `${env.wallets.userConfigPath()} or osheaf.json ("keys": {"wallet": ...}) or in OPENSHEAF_WALLET`);
+             `${env.wallets.userConfigPath()}, or in osheaf.json for the owner ("keys": {"<owner>": {"wallets": [...]}}), ` +
+             'or in OPENSHEAF_WALLET');
       }
       return w;
     }
@@ -808,9 +809,6 @@ writes it.
         ? hints({ [owner]: cfg.keys[owner] }, owner) : [];
       if (remove) {
         if (!own.includes(remove)) {
-          if (hints(cfg.keys).includes(remove)) {
-            stop(`${CONFIG_NAME} hints ${remove} for every owner ("keys": {"wallet": ...}): edit ${CONFIG_NAME} to remove it`);
-          }
           env.out(`${CONFIG_NAME} hints no ${remove} for ${who}.`);
           return;
         }

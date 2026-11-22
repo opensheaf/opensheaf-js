@@ -7,6 +7,7 @@ import { pathOf } from './paths.js';
 import { sha512hex } from './write.js';
 import { compareText, joinPath } from './storage.js';
 import { GENESIS, OBJ, CONFIG_NAME, plural, exit, short } from './folder.js';
+import { memberOrder, catalogueLabel } from './collect.js';
 import { readJson, writeText } from './storage.js';
 import { LABEL } from './names.js';
 import { writeDiscovery } from './discovery.js';
@@ -316,7 +317,7 @@ export async function template(f, name) {
 
 const text = async (f, name) => new TextDecoder().decode(await template(f, name));
 
-export async function render(f, members, { home = true, featured = null, keeperFetch = null } = {}) {
+export async function render(f, members, { home = true, featured = null, keeperFetch = null, groups = null } = {}) {
   const site = new Site(f, { keeperFetch, home });
   members = members.filter((m) => !removed(f, m));
   const base = f.archive.baseUrl;
@@ -419,7 +420,7 @@ export async function render(f, members, { home = true, featured = null, keeperF
     if (htmlLink) urls.push([`${base}site/${line.slug}/${line.slug}.html`, lastmod]);
   }
   if (home) {
-    await writeHome(site, members, featured, fline, fmembers);
+    await writeHome(site, members, featured, fline, fmembers, groups);
   } else if (pageT.includes('style.css')) {
     await f.storage.write('style.css', await template(f, 'style.css'));
   }
@@ -478,10 +479,37 @@ async function keyLogOf(f, owner) {
   }
 }
 
-async function writeHome(site, members, featured, fline, fmembers) {
+async function ownerTag(site, owner, root = '') {
   const f = site.f;
+  const name = esc(f.labelOf(objectId(owner, owner)) || short(owner));
+  return (await keyLogOf(f, owner)) ? `<a class="owner" href="${root}owner/${owner}/">${name}</a>` : name;
+}
+
+async function writeHome(site, members, featured, fline, fmembers, groups) {
+  const f = site.f;
+  const here = (groups || []).map(([o, ms]) => [o, ms.filter((m) => !removed(f, m))]);
+  const several = here.length > 1;
+  const byOwner = several && (f.index.owners ?? 'together') === 'by-owner';
+  const showOwner = several && !byOwner;
+  const entry = async (m) => (await site.held(m) ? await localEntry(site, m, '', showOwner)
+    : await remoteEntry(site, m, '', showOwner));
+  const empty = '<li class="empty">No documents yet.</li>';
   const entries = [];
-  for (const m of members) entries.push(await site.held(m) ? await localEntry(site, m) : await remoteEntry(site, m));
+  let papersHtml, papersHeading = '';
+  if (byOwner) {
+    const blocks = [];
+    for (const [owner, ms] of here) {
+      const items = [];
+      for (const m of ms) items.push(await entry(m));
+      entries.push(...items);
+      blocks.push([`<h2 class="owner-heading">${await ownerTag(site, owner)}</h2>`, items.join('\n') || empty]);
+    }
+    papersHeading = blocks[0][0];
+    papersHtml = blocks[0][1] + blocks.slice(1).map(([h, body]) => `\n  </ol>\n${h}\n  <ol class="papers">\n${body}`).join('');
+  } else {
+    for (const m of several ? memberOrder(members) : members) entries.push(await entry(m));
+    papersHtml = entries.join('\n') || empty;
+  }
   let featuredHtml = '';
   if (featured) {
     const fdc = await fline.json('datacite.json', fline.signed);
@@ -509,9 +537,9 @@ async function writeHome(site, members, featured, fline, fmembers) {
   }
   const index = fill(await text(f, 'index.html'), {
     root: '', archive_name: esc(f.archive.name), base_url: esc(f.archive.baseUrl), lead,
-    papers: entries.length ? entries.join('\n') : '<li class="empty">No documents yet.</li>',
+    papers: papersHtml,
     featured: featuredHtml,
-    papers_heading: featured ? '<h2>In this archive</h2>' : '',
+    papers_heading: papersHeading || (featured ? '<h2>In this archive</h2>' : ''),
     count: String(entries.length), updated: esc(fmtDate(f.env.today())),
   });
   await f.storage.write('index.html', new TextEncoder().encode(index));
@@ -519,7 +547,7 @@ async function writeHome(site, members, featured, fline, fmembers) {
   if (!(await f.storage.kind('.nojekyll'))) await f.storage.write('.nojekyll', new Uint8Array());
 }
 
-async function localEntry(site, m, root = '') {
+async function localEntry(site, m, root = '', showOwner = false) {
   const f = site.f;
   const line = await site.held(m);
   const cur = presentedVersion(m, line.inv, line.objOf);
@@ -535,7 +563,8 @@ async function localEntry(site, m, root = '') {
     `<li class="paper${line.withdrawn ? ' withdrawn' : ''}">`,
     `<a class="paper-title" href="${root}paper/${line.slug}/">${esc(dc.titles[0].title)}</a>`,
     `<div class="paper-authors">${esc(authorsOf(dc))}</div>`,
-    `<div class="paper-meta">${esc((issued || '').slice(0, 4))} · ${versionsLine(m, obj)}` +
+    `<div class="paper-meta">${esc((issued || '').slice(0, 4))}` +
+      (showOwner ? ` · ${await ownerTag(site, m.owner, root)}` : '') + ` · ${versionsLine(m, obj)}` +
       (pdf ? ` · <a href="${esc(pdf)}">PDF</a>` : '') +
       (contested ? ' · <span class="contested">contested</span>' : '') +
       ` · <span class="pin" title="${pin}">pin ${pin.slice(0, 32)}…</span></div>`,
@@ -543,7 +572,7 @@ async function localEntry(site, m, root = '') {
     '</li>'].join('\n');
 }
 
-async function remoteEntry(site, m, root = '') {
+async function remoteEntry(site, m, root = '', showOwner = false) {
   const cite = m.cite || {};
   let title = cite.title || m.name, by = namesJoined(cite.creators || []);
   const year = cite.year ?? '';
@@ -574,7 +603,9 @@ async function remoteEntry(site, m, root = '') {
     landing ? `<a class="paper-title" href="${esc(landing)}">${esc(title)}</a>`
       : `<span class="paper-title">${esc(title)}</span>`,
     `<div class="paper-authors">${esc(by)}</div>`,
-    `<div class="paper-meta">${esc(String(year))} · in <a href="${esc(at)}">${esc(archiveName)}</a>` +
+    `<div class="paper-meta">${esc(String(year))}` +
+      (showOwner ? ` · ${await ownerTag(site, m.owner, root)}` : '') +
+      ` · in <a href="${esc(at)}">${esc(archiveName)}</a>` +
       (m.revisions ? ` · ${versionsLine(m, {})}` : '') +
       (links.length ? ' · ' + links.join(' · ') : '') +
       ` · <span class="pin" title="${pin}">pin ${pin.slice(0, 32)}…</span></div>`,
@@ -744,9 +775,8 @@ async function ownerPage(site, owner, log, lines) {
     lines: items.length ? items.join('\n') : '<li class="empty">No lines with a page here.</li>' });
 }
 
-export async function catalogueMembers(f) {
+export async function catalogueGroups(f) {
   const out = [];
-  let signed = false;
   for (const owner of f.archiveOwners()) {
     const cid = f.catalogues.get(owner);
     const dir = cid ? await f.dirOf(cid) : null;
@@ -758,10 +788,14 @@ export async function catalogueMembers(f) {
                 'none of its members is presented');
       continue;
     }
-    signed = true;
-    out.push(...(await f.readObjectJson(dir, inv, 'members.json', ver)).members);
+    out.push([owner, (await f.readObjectJson(dir, inv, 'members.json', ver)).members]);
   }
-  return signed ? out : null;
+  return out.length ? out : null;
+}
+
+export async function catalogueMembers(f) {
+  const groups = await catalogueGroups(f);
+  return groups === null ? null : groups.flatMap(([, ms]) => ms);
 }
 
 export function hasWebsite(f) {
@@ -774,8 +808,12 @@ export async function readableIndex(f, options = {}) {
                'opensheaf-py to write it and its landing pages again');
     return;
   }
-  const members = await catalogueMembers(f);
-  if (members === null) return;
+  const groups = await catalogueGroups(f);
+  if (groups === null) return;
+  const members = groups.flatMap(([, ms]) => ms);
+  if (!['together', 'by-owner'].includes(f.index.owners ?? 'together')) {
+    exit(`osheaf.json: index.owners is together or by-owner, not ${f.index.owners}`);
+  }
   const html = f.index.html && typeof f.index.html === 'object' ? f.index.html : {};
   const featured = html.featured || null;
   let fid = null;
@@ -789,7 +827,7 @@ export async function readableIndex(f, options = {}) {
       exit(`osheaf.json: index.html.featured names ${featured}, which is not a collection`);
     }
   }
-  const pages = await render(f, members, { featured: fid, ...options });
+  const pages = await render(f, members, { featured: fid, groups, ...options });
   f.env.out(`Done: opensheaf.json, index.html, ${plural(pages, 'landing page')} and sitemap.xml written.`);
 }
 
@@ -831,6 +869,7 @@ export async function labelCommand(f, args) {
     }
     if (fresh === old) {
       env.out(`${fresh}: unchanged`);
+      if (owner) await relabelCatalogue(f, owner, old, featured);
       return;
     }
     if (f.labels.has(fresh)) exit(`${fresh} is the label of another line already: ${f.labels.get(fresh)}`);
@@ -849,7 +888,8 @@ export async function labelCommand(f, args) {
   const after = await pageAddress(f, id);
   const former = { ...(cfg.formerAddresses || {}) };
   delete former[after];
-  const moves = ['document', 'collection'].includes(kind) && before !== after;
+  const moves = before !== after && (kind === 'document' ||
+    (kind === 'collection' && (await f.storage.kind(`paper/${before}/index.html`)) === 'file'));
   if (moves) {
     former[before] = id;
     await moveHtmlVersion(f, id, before, after, former);
@@ -864,7 +904,22 @@ export async function labelCommand(f, args) {
   env.out(fresh ? `Done: ${id} is labelled ${fresh}` + (old ? `, no longer ${old}.` : '.')
     : `Done: ${id} has no label any more (it was ${old}).`);
   if (moves) env.out(`Its old address paper/${before}/ leads to paper/${after}/ (${CONFIG_NAME}, formerAddresses).`);
-  if (f.index.template) env.out('Run osheaf index to typeset the TeXmacs index with the new label.');
+  const relabelled = Boolean(owner) && await relabelCatalogue(f, owner, old, featured);
+  if (f.index.template && !relabelled) env.out('Run osheaf index to typeset the TeXmacs index with the new label.');
+}
+
+async function relabelCatalogue(f, owner, old, featured) {
+  const cat = f.catalogues.get(owner);
+  if (owner === f.archive.owner || !cat) return false;
+  const have = f.labelOf(cat), wanted = catalogueLabel(f, owner);
+  if (have === wanted || ![null, old ? `${old}-catalogue` : null].includes(have)) return false;
+  if ((wanted && f.labels.has(wanted)) || (wanted === null && have === featured)) {
+    f.env.out(`The owner catalogue ${have || cat} keeps its label: ` +
+              (wanted ? `${wanted} is taken.` : 'it is the featured collection.'));
+    return false;
+  }
+  await labelCommand(f, { line: cat, label: wanted, owner: null, unset: wanted === null });
+  return true;
 }
 
 const OWNER_NAME_RE = /^[a-z2-7]{52}$/;

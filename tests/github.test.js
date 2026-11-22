@@ -589,7 +589,7 @@ test('an archive set up by the Manager with an owner made in the page is the one
                                                  wallet: 'github:jane/keys' })).recorded, false);
     assert.deepEqual(walletCandidates(s2, owner, ['github:jane/other', 'github:jane/keys', 'command']),
                      ['github:jane/keys', 'github:jane/other']);
-    assert.deepEqual(walletCandidates({ keys: { wallet: 'github:old/keys' } }, owner), ['github:old/keys']);
+    assert.deepEqual(walletCandidates({ keys: { wallet: 'github:old/keys' } }, owner), []);   // a form of the draft
     const again = await directSetup({ repo: REPO, github: client(g2), fields, keyLog: await keyLogFolder(log),
                                       env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
                                       schemas });

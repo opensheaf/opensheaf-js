@@ -641,7 +641,7 @@ class Verification {
       this.add('error', 'opensheaf.json', `the label ${lb} is given twice (section 3.1)`);
     }
     if (!('owners' in disc)) {
-      this.add('warning', 'opensheaf.json', 'no owners: the owners hosted and their catalogues are not named (section 3.1)');
+      this.add('error', 'opensheaf.json', 'no owners: the owners hosted and their catalogues are not named (section 3.1)');
     }
     const seenOwners = new Set(), seenCatalogues = new Set();
     for (const e of Array.isArray(disc.owners) ? disc.owners : []) {
@@ -821,7 +821,7 @@ class Verification {
       const text = await this.fetchOrNull(a.base + landing, LIMITS.page).catch((e) => { if (this.aborted(e)) throw e; return null; });
       const words = text ? new TextDecoder().decode(text) : '';
       const originator = this.found.get(mid).rec?.originator === m.owner;
-      if (!words.includes(mid) && !(originator && new RegExp(`sheaf:${m.name}(?![a-z0-9:/])`).test(words))) {
+      if (originator ? !new RegExp(`sheaf:${m.name}(?![a-z0-9:/])`).test(words) : !words.includes(mid)) {
         this.add(level, landing, `no landing page giving the sheaf: URI of ${this.where(mid)} (appendix A.3)` + note);
       }
     }

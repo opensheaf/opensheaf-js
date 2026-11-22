@@ -116,9 +116,19 @@ archive as a collection, its curator as creator, CC0; the title of an
 owner other than the archive's first followed by its label or short
 name), and its genesis record, made when the catalogue is first sealed.
 The catalogue of the archive's first owner gets the label `main` when it
-is sealed, if that label is free; the others none.
+is sealed, if that label is free; that of another owner
+`<label>-catalogue`, after the label of the owner's key log, if the owner
+has one and that label is free, and none otherwise (`catalogueLabel`, as
+opensheaf-py's `catalogue_label`); `osheaf label --owner` labels it so
+when the owner gets a label later.
 
     // in new versions of the owner catalogues:
+    export function catalogueLabel(f, owner) {
+      if (owner === f.archive.owner) return CATALOGUE_LABEL;
+      const own = f.labelOf(objectId(owner, owner));
+      return own && own.length <= 64 - '-catalogue'.length ? `${own}-catalogue` : null;
+    }
+
     export async function collect(f, { owner = null, curated = false, iKnow = false } = {}) {
       await f.initStorageRoot();
       if (owner && !f.archiveOwners().includes(owner)) exit(`${owner} is not an owner this archive hosts`);
@@ -164,7 +174,8 @@ is sealed, if that label is free; the others none.
       let genesis, id = collId;
       if (id === null) {
         ({ genesis, id } = await f.seal('collection', owner));
-        if (owner === f.archive.owner && !f.labels.has(CATALOGUE_LABEL)) f.labels.set(CATALOGUE_LABEL, id);
+        const wanted = catalogueLabel(f, owner);
+        if (wanted && !f.labels.has(wanted)) f.labels.set(wanted, id);
       } else {
         genesis = await f.readLogical(collDir, cinv, GENESIS);
       }

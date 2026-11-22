@@ -153,7 +153,6 @@ function where(f, id) {
 }
 
 async function landingNames(f, text, name, owner, id, dir) {
-  if (text.includes(`sheaf:${name}:${owner}`)) return true;
   let originator = null;
   try {
     const inv = await f.inventory(dir);
@@ -163,7 +162,8 @@ async function landingNames(f, text, name, owner, id, dir) {
   } catch {
     return false;
   }
-  return originator === owner && new RegExp(`sheaf:${name}(?![a-z0-9:/])`).test(text);
+  if (originator === owner) return new RegExp(`sheaf:${name}(?![a-z0-9:/])`).test(text);
+  return text.includes(`sheaf:${name}:${owner}`);
 }
 
 const ROTATION_NAME = /^rotation-[a-z2-7]{16}-[a-z2-7]{16}\.txt$/;

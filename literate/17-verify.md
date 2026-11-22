@@ -773,7 +773,7 @@ no object listed twice; every object held listed, with the values its
 object gives (its kind, name, owner and head, the digest its checksum
 file states, and its status, that of its latest signed version, or of its
 head without one, and always active for a key log, section 13.1); labels
-distinct; `owners` present (a warning without it), naming no owner twice
+distinct; `owners` present (an error without it), naming no owner twice
 and no catalogue for two owners, each with a catalogue it lists, a
 collection of that owner, of type `catalogue` when held, whose members are
 documents of lines of that owner held here (a warning for another member,
@@ -839,7 +839,7 @@ unlisted, as `osheaf verify` reports them.
           this.add('error', 'opensheaf.json', `the label ${lb} is given twice (section 3.1)`);
         }
         if (!('owners' in disc)) {
-          this.add('warning', 'opensheaf.json', 'no owners: the owners hosted and their catalogues are not named (section 3.1)');
+          this.add('error', 'opensheaf.json', 'no owners: the owners hosted and their catalogues are not named (section 3.1)');
         }
         const seenOwners = new Set(), seenCatalogues = new Set();
         for (const e of Array.isArray(disc.owners) ? disc.owners : []) {
@@ -1016,8 +1016,8 @@ of a landing page is the archive's choice, distinct for each line; the
 one checked is the one opensheaf-py writes, `paper/<label>/`, or for a
 line without a label `paper/<name>/`, followed by `-<owner>` when the
 archive holds several lines of that name. The URI is in canonical form,
-`sheaf:<name>` for the originator's line (sections 12.1 and 12.2), or
-with its owner part, which a page written before 0.2 gives.
+`sheaf:<name>` for the originator's line (sections 12.1 and 12.2), and
+`sheaf:<name>:<owner>` for another.
 
 A verification of an archive folder (chapter [28](28-verify-folder.md))
 makes this check otherwise, as opensheaf-py makes it from the files and
@@ -1055,7 +1055,7 @@ the configuration of the folder, and asks for none here (`pages: false`).
           const text = await this.fetchOrNull(a.base + landing, LIMITS.page).catch((e) => { if (this.aborted(e)) throw e; return null; });
           const words = text ? new TextDecoder().decode(text) : '';
           const originator = this.found.get(mid).rec?.originator === m.owner;
-          if (!words.includes(mid) && !(originator && new RegExp(`sheaf:${m.name}(?![a-z0-9:/])`).test(words))) {
+          if (originator ? !new RegExp(`sheaf:${m.name}(?![a-z0-9:/])`).test(words) : !words.includes(mid)) {
             this.add(level, landing, `no landing page giving the sheaf: URI of ${this.where(mid)} (appendix A.3)` + note);
           }
         }

@@ -376,8 +376,8 @@ first hinted wallet that holds keys of the owner is used, a hinted wallet
 that does not exist passed over; `key wallet` lists, adds and removes
 hints; `key wallets` lists the person's wallets and the archive's, with
 the owners each holds, and changes the configuration file, keeping what
-else it holds; the earlier form, one wallet for the archive, is a hint for
-every owner that `--remove` leaves alone. The second owner's catalogue is
+else it holds; one wallet for the whole archive, a form of the draft, is
+refused with a message saying how to write it. The second owner's catalogue is
 sealed by `owner init`, and named with it in `owners`.
 
     // in tests of wallets:
@@ -421,9 +421,7 @@ sealed by `owner init`, and named with it in `owners`.
         const cfg = await cfgOf();
         cfg.keys = { wallet: 'github:me/other' };
         await writeFile(path.join(a.dir, 'osheaf.json'), JSON.stringify(cfg, null, 2) + '\n');
-        assert.match((await box.run([...a.r, 'key', 'wallet', '--owner', second, '--remove', 'github:me/other'])).said,
-                     /every owner/);
-        assert.match((await box.ok([...a.r, 'key', 'wallet'])).out, /github:me\/other  osheaf\.json/);
+        assert.match((await box.run([...a.r, 'key', 'list'])).said, /no longer read/);
       } finally {
         await box.done();
       }

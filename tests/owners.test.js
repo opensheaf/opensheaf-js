@@ -324,9 +324,7 @@ test('the wallets of each owner', async () => {
     const cfg = await cfgOf();
     cfg.keys = { wallet: 'github:me/other' };
     await writeFile(path.join(a.dir, 'osheaf.json'), JSON.stringify(cfg, null, 2) + '\n');
-    assert.match((await box.run([...a.r, 'key', 'wallet', '--owner', second, '--remove', 'github:me/other'])).said,
-                 /every owner/);
-    assert.match((await box.ok([...a.r, 'key', 'wallet'])).out, /github:me\/other  osheaf\.json/);
+    assert.match((await box.run([...a.r, 'key', 'list'])).said, /no longer read/);
   } finally {
     await box.done();
   }

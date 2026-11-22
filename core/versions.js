@@ -150,7 +150,6 @@ export function documentVersionErrors(inv, objOf) {
     const newDoc = !seen.has(n);
     const own = ownFiles(inv, ver, obj);
     const change = obj.changes?.text ?? null;
-    if (!seen.size && obj.parent) highest = (Number.isInteger(n) ? n : 1) - 1;
     if (seen.has(n)) {
       const before = filesOfDoc.get(n);
       if (missingOf.get(n)) {

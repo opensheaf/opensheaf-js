@@ -1155,6 +1155,19 @@ async function paper(s, tool, root, label, text, more = [], rights = 'cc-by-4.0'
             `${tool} deposit ${label}`);
 }
 
+async function headFile(root, id, logical) {
+  const [, name, owner] = id.split(':');
+  const dir = path.join(root, 'ocfl', owner, name);
+  const inv = JSON.parse(await readFile(path.join(dir, 'inventory.json'), 'utf-8'));
+  const state = inv.versions[inv.head].state;
+  const d = Object.keys(state).find((k) => state[k].includes(logical));
+  return readFile(path.join(dir, inv.manifest[d][0]));
+}
+
+async function headJson(root, id, logical = 'object.json') {
+  return JSON.parse(new TextDecoder().decode(await headFile(root, id, logical)));
+}
+
 async function idOf(root, label) {
   return JSON.parse(await readFile(path.join(root, 'opensheaf.json'), 'utf-8')).objects.find((o) => o.label === label).id;
 }
@@ -1248,18 +1261,29 @@ test('accept and branch across archives, by both', { skip }, async () => {
       assert.ok(found.some((f) => /the parent's line: verified at https:\/\/example.org\/authors\//.test(f)), found.join('\n'));
     }
     ok(s.js(['accept', v(2), '--selection', 'issue-1', '--label', 'work', '--with-original'], { cwd: journal }), 'js accept');
+    const accepted = await idOf(journal, 'work');
+    let obj = await headJson(journal, accepted);
+    assert.ok(obj.documentVersion === 1 && obj.parent.documentVersion === 2 && !('notices' in obj));
     await paper(s, 'py', authors, 'work', 'three');
+    await s.file('remark.md', 'Accepted with a remark.');
+    ok(s.js(['notice', 'work', '--about', '1', '--text', 'A remark.', '--file', path.join(s.root, 'remark.md')],
+            { cwd: journal }), 'js notice');
     ({ a, b } = await both(s, journal, ['accept', v(3), '--selection', 'issue-1'], { more: s.more }));
     await sameWithSelection(a, b, selection);
-    verified(s, b, s.more);
+    for (const where of [a, b]) {
+      obj = await headJson(where, accepted);
+      assert.ok(obj.documentVersion === 2 && obj.parent.documentVersion === 3 && obj.parent.objectVersion === 'v3');
+      assert.equal(obj.notices[0].text, 'A remark.');
+      assert.equal(new TextDecoder().decode(await headFile(where, accepted, obj.notices[0].path)), 'Accepted with a remark.');
+      assert.deepEqual(verified(s, where, s.more).filter((f) => f.startsWith('error')), []);
+    }
     ok(s.py(['accept', v(3), '--selection', 'issue-1'], { cwd: journal }), 'py accept');
     await both(s, journal, ['accept', v(3), '--selection', 'issue-1'], { more: s.more, status: 1 });
-    const accepted = await idOf(journal, 'work');
-    ({ a, b } = await both(s, bb, ['branch', `${accepted}/v3?${at('journal')}`, '--label', 'continued'], { more: s.more }));
+    ({ a, b } = await both(s, bb, ['branch', `${accepted}/v2?${at('journal')}`, '--label', 'continued'], { more: s.more }));
     await sameArchives(a, b);
     const found = verified(s, a, s.more);
     assert.ok(found.some((f) => /continued: a branch of .*: confirmed/.test(f)), found.join('\n'));
-    await both(s, authors, ['branch', `${accepted}/v3?${at('journal')}`, '--label', 'back'], { more: s.more, status: 1 });
+    await both(s, authors, ['branch', `${accepted}/v2?${at('journal')}`, '--label', 'back'], { more: s.more, status: 1 });
   } finally {
     await s.done();
   }

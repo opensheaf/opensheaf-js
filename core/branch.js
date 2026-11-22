@@ -113,7 +113,7 @@ export async function makeBranch(f, uri, where, { owner = null, label = null, me
   const rec = await readGenesis(genesis);
   if (owner === parent.owner || owner === rec.originator) {
     exit("the owner of a branch is neither the parent's owner nor the originator (sections 5.3 and 9.1): the " +
-         "originator's own lines take in another line's work otherwise (#57)");
+         "originator takes in another line's work by depositing it (section 9.5)");
   }
   const isHere = c.archive === r.home;
   const at = isHere ? f.archive.baseUrl : c.archive.base.startsWith('https://') ? c.archive.base : null;
@@ -140,9 +140,9 @@ export async function makeBranch(f, uri, where, { owner = null, label = null, me
   }
   pdc ||= {};
   const keep = ['mainSource', 'sourceFormat', 'sourcesMissing', 'renditions', 'toolchain', 'changes', 'stage',
-                'notices', 'licence', 'agreement'];
+                'licence', 'agreement'];
   const obj = { format: OBJ_FORMAT, specification: SPEC, kind: pobj.kind, name, owner, parent,
-                documentVersion: parent.documentVersion };
+                documentVersion: 1 };
   for (const k2 of keep) if (Object.hasOwn(pobj, k2)) obj[k2] = pobj[k2];
   obj.status = 'active';
   if (move) {
@@ -151,9 +151,14 @@ export async function makeBranch(f, uri, where, { owner = null, label = null, me
     let most = 0;
     for (const x of Object.keys(binv.versions)) most = Math.max(most, (await f.readObjectJson(bdir, binv, OBJ, x)).documentVersion);
     obj.documentVersion = most + 1;
-    const notes = new Set((obj.notices || []).filter((n) => n.path).map((n) => n.path));
-    delete obj.notices;
-    files = new Map([...files].filter(([p]) => !notes.has(p)));
+    const ownNotices = (await f.readObjectJson(bdir, binv, OBJ)).notices || [];
+    if (ownNotices.length) obj.notices = ownNotices;
+    for (const n of ownNotices) {
+      if (n.path) {
+        if (files.has(n.path)) exit(`${n.path}: a notice of the branch has the path of a file of the new parent version (section 9.4)`);
+        files.set(n.path, await f.readLogical(bdir, binv, n.path));
+      }
+    }
   }
   const dc = Object.fromEntries(Object.entries(pdc).filter(([key]) => key !== 'doi' && key !== 'url'));
   dc.publisher = { name: f.archive.name };
@@ -172,11 +177,11 @@ export async function makeBranch(f, uri, where, { owner = null, label = null, me
   const [v, problems] = await verdict(await levelOfFiles(content), obj, genesis, (o) => keyLogOf(f, o));
   if (v !== CONFIRMED) exit(`${id}: the branch point would be ${v}: ` + problems.join('; '));
   const done = await f.addVersion(id, content, obj, message || (move
-    ? `Branch point moved to ${parent.objectVersion} of ${line}`
+    ? `New branch point ${parent.objectVersion} of ${line}`
     : `Branch of ${line} at ${parent.objectVersion} (document version ${parent.documentVersion})`));
   if (label && !move) f.labels.set(label, id);
   await writeDiscovery(f);
-  f.env.out(`${label || f.labelOf(id) || id}: ${done.head} ` + (move ? 'moves the branch point to ' : 'branch of ') +
+  f.env.out(`${label || f.labelOf(id) || id}: ${done.head} ` + (move ? 'takes the new branch point ' : 'branch of ') +
             `${line} ${parent.objectVersion} (document version ${parent.documentVersion})`);
   return { id, head: done.head, inv: done, parentAt };
 }

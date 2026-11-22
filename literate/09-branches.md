@@ -77,7 +77,9 @@ after a clash has the greater algorithm number); the pin (the digest of
 `parent/inventory.json` is the one `parent` records, and its head the
 version, and `parent/object.json` is the one it records); at the first
 level only, the files (every file of the parent version but its
-descriptions and evidence is held with its digest, and nothing else);
+descriptions and evidence is held with its digest, and nothing else but
+the files of the branch's own notices, which its `object.json` names,
+section 9.4);
 the parent (the fields of `parent` are those of `parent/object.json`, the
 branch's owner is neither the parent's owner nor the originator, and the
 parent is the originator's line or itself a branch); the signatures (the
@@ -124,7 +126,8 @@ unchecked one with why.
         problems.push('parent/object.json is not the object.json the parent inventory records');
       }
       if (depth === 0) {
-        const own = ['datacite.json', 'object.json'];
+        const own = ['datacite.json', 'object.json',
+          ...(Array.isArray(obj.notices) ? obj.notices : []).map((n) => n?.path).filter((x) => typeof x === 'string')];
         for (const [path, d] of pstate) {
           if (own.includes(path) || isEvidence(path)) continue;
           if (lv.digests.get(path) !== d) problems.push(`${path}: a file of the parent version is missing, or differs (section 9.3)`);

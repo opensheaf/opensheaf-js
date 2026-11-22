@@ -10,6 +10,7 @@ import { GENESIS, OBJ, CONFIG_NAME, plural, exit, short } from './folder.js';
 import { memberOrder, catalogueLabel } from './collect.js';
 import { readJson, writeText } from './storage.js';
 import { LABEL } from './names.js';
+import { same } from './schema.js';
 import { writeDiscovery } from './discovery.js';
 import { lineOf } from './describe.js';
 import { displayName } from './deposit.js';
@@ -208,6 +209,12 @@ async function versionBlock(f, line, ver, shown, notices, root, vetted = null) {
   const dc = await line.json('datacite.json', ver);
   const n = obj.documentVersion;
   const labels = (obj.external || []).filter((e) => e.role === 'source' && e.label).map((e) => `${e.service} ${e.label}`);
+  const vs = Object.keys(line.inv.versions);
+  const first = vs.find((v) => line.objOf(v)?.documentVersion === n);
+  const par = first ? line.objOf(first)?.parent : null;
+  if (par && (vs.indexOf(first) === 0 || !same(line.objOf(vs[vs.indexOf(first) - 1])?.parent ?? null, par))) {
+    labels.unshift(`the parent's version ${par.documentVersion}`);
+  }
   let head = `Version ${n}` + (labels.length ? ` (${esc(labels.join(', '))})` : '');
   if (obj.stage) head += ` <span class="stage">${esc(obj.stage.value)}</span>`;
   if (vetted !== null && vetted.has(n)) head += ' <span class="current">vetted</span>';

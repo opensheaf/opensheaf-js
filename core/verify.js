@@ -453,7 +453,7 @@ class Verification {
         continue;
       }
       if (prevObj !== null && same(p, prevObj.parent)) {
-        if (!same(evidence, prevEvidence)) this.add('error', where, 'the identity files change without moving the branch point (section 9.4)', { object: id, ver });
+        if (!same(evidence, prevEvidence)) this.add('error', where, 'the identity files change without a new branch point (section 9.4)', { object: id, ver });
       } else {
         const [v, problems] = await verdict(levelOfVersion(a, id, o.inv, ver, this.options), obj, genesis,
                                             async (who) => this.logs.get(who) ?? null);
@@ -502,9 +502,9 @@ class Verification {
     const read = async (v) => jsonOrNull(await a.bytes(id, o.inv, v, 'parent/inventory.json', this.options).catch(() => null)) || {};
     const [oldInv, newInv] = [await read(before), await read(ver)];
     if (p.owner !== old.owner || p.name !== old.name) {
-      this.add('error', where, 'a branch point moves only to a version of the same parent line (section 9.4)', { object: id, ver });
+      this.add('error', where, 'a new branch point is a version of the same parent line (section 9.4)', { object: id, ver });
     } else if (versionNumber(p.objectVersion) <= versionNumber(old.objectVersion) || p.documentVersion === old.documentVersion) {
-      this.add('error', where, 'a branch point moves only to a higher object version, holding another document version (section 9.4)', { object: id, ver });
+      this.add('error', where, 'a new branch point is a higher object version, holding another document version (section 9.4)', { object: id, ver });
     }
     const oldVersions = isObject(oldInv.versions) ? oldInv.versions : {};
     const newVersions = isObject(newInv.versions) ? newInv.versions : {};

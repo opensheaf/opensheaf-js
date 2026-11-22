@@ -63,7 +63,8 @@ export async function verdict(lv, obj, genesis, logs, depth = 0) {
     problems.push('parent/object.json is not the object.json the parent inventory records');
   }
   if (depth === 0) {
-    const own = ['datacite.json', 'object.json'];
+    const own = ['datacite.json', 'object.json',
+      ...(Array.isArray(obj.notices) ? obj.notices : []).map((n) => n?.path).filter((x) => typeof x === 'string')];
     for (const [path, d] of pstate) {
       if (own.includes(path) || isEvidence(path)) continue;
       if (lv.digests.get(path) !== d) problems.push(`${path}: a file of the parent version is missing, or differs (section 9.3)`);

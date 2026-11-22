@@ -291,9 +291,9 @@ completion "changes or removes no file of the version", section 4.2).
 A collection is a document whose source is `members.json` (section 4.2),
 and is checked the same way. The check stops at the first object version
 that is neither a document nor a collection or whose `object.json` could
-not be read, as opensheaf-py does. A branch numbers on from its branch point
-(section 9.4): its first version holds the document version of its
-parent version, and the numbering continues from there.
+not be read, as opensheaf-py does. A branch numbers its own document
+versions from 1, as every line does (section 9.4); `parent.documentVersion`
+keeps the parent's number.
 
     // in the rules of document versions:
     export function documentVersionErrors(inv, objOf) {
@@ -315,7 +315,6 @@ parent version, and the numbering continues from there.
         const newDoc = !seen.has(n);
         const own = ownFiles(inv, ver, obj);
         const change = obj.changes?.text ?? null;
-        if (!seen.size && obj.parent) highest = (Number.isInteger(n) ? n : 1) - 1;
         <<check the number and the files of a document version>>
         <<check the fields that belong to a document version>>
         <<check that a withdrawal is kept until a new document version>>

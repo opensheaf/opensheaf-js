@@ -125,7 +125,7 @@ The name of a new branch
 The names of the record are tried from `parent.name` upwards: a line free
 for the owner (no object and no tombstone here) takes the branch; the
 owner's own branch of the same parent line, when the new branch point is
-later in its history, has its branch point moved; any other line of the
+later in its history, takes the new branch point; any other line of the
 owner is a clash, and the next number is tried.
 
     // in branch: the name of a new branch:
@@ -174,7 +174,7 @@ Making a branch
 `makeBranch` resolves the parent version, which must be signed and not
 contested (section 9.1); checks the owner (sections 5.3 and 9.1); copies
 beside the branch the key logs its evidence needs, from the copies found;
-names the branch, or finds the branch whose branch point moves; and
+names the branch, or finds the branch that takes a new branch point; and
 writes the version, after checking its branch point as a verifier will.
 `parent.url` is the URL of the parent version where it was found, at the
 `https` base URL of its archive (here, the archive's own `baseUrl`).
@@ -200,7 +200,7 @@ writes the version, after checking its branch point as a verifier will.
       const rec = await readGenesis(genesis);
       if (owner === parent.owner || owner === rec.originator) {
         exit("the owner of a branch is neither the parent's owner nor the originator (sections 5.3 and 9.1): the " +
-             "originator's own lines take in another line's work otherwise (#57)");
+             "originator takes in another line's work by depositing it (section 9.5)");
       }
       const isHere = c.archive === r.home;
       const at = isHere ? f.archive.baseUrl : c.archive.base.startsWith('https://') ? c.archive.base : null;
@@ -222,11 +222,11 @@ writes the version, after checking its branch point as a verifier will.
       const [v, problems] = await verdict(await levelOfFiles(content), obj, genesis, (o) => keyLogOf(f, o));
       if (v !== CONFIRMED) exit(`${id}: the branch point would be ${v}: ` + problems.join('; '));
       const done = await f.addVersion(id, content, obj, message || (move
-        ? `Branch point moved to ${parent.objectVersion} of ${line}`
+        ? `New branch point ${parent.objectVersion} of ${line}`
         : `Branch of ${line} at ${parent.objectVersion} (document version ${parent.documentVersion})`));
       if (label && !move) f.labels.set(label, id);
       await writeDiscovery(f);
-      f.env.out(`${label || f.labelOf(id) || id}: ${done.head} ` + (move ? 'moves the branch point to ' : 'branch of ') +
+      f.env.out(`${label || f.labelOf(id) || id}: ${done.head} ` + (move ? 'takes the new branch point ' : 'branch of ') +
                 `${line} ${parent.objectVersion} (document version ${parent.documentVersion})`);
       return { id, head: done.head, inv: done, parentAt };
     }
@@ -234,9 +234,14 @@ writes the version, after checking its branch point as a verifier will.
 The records of the branch. `object.json` keeps the parent's description
 of the document's files and records the branch's own line and branch
 point; it drops what belongs to the parent's line alone (its history, its
-external records, its withdrawal). A version that moves the branch point
-takes the next document version of the branch, and drops its own notices
-with their files (section 9.4). `datacite.json` is the parent's, with
+external records, its withdrawal, and its notices, which are about the
+parent's document versions and stay in `parent/object.json`, their files
+among the parent's). The branch numbers its own document versions from 1
+(section 9.4): its first version is its document version 1,
+`parent.documentVersion` keeping the parent's number. A version that
+takes a new branch point is the branch's next document version, and keeps
+the branch's own notices with their files, which must not have the path
+of a file of the new parent version (section 9.4). `datacite.json` is the parent's, with
 the archive as publisher, the branch's own address, no DOI of the
 parent's, and an `IsIdenticalTo` relation to the parent version: its DOI,
 or else `parent.url` (section 9.7).
@@ -251,9 +256,9 @@ or else `parent.url` (section 9.7).
     }
     pdc ||= {};
     const keep = ['mainSource', 'sourceFormat', 'sourcesMissing', 'renditions', 'toolchain', 'changes', 'stage',
-                  'notices', 'licence', 'agreement'];
+                  'licence', 'agreement'];
     const obj = { format: OBJ_FORMAT, specification: SPEC, kind: pobj.kind, name, owner, parent,
-                  documentVersion: parent.documentVersion };
+                  documentVersion: 1 };
     for (const k2 of keep) if (Object.hasOwn(pobj, k2)) obj[k2] = pobj[k2];
     obj.status = 'active';
     if (move) {
@@ -262,9 +267,14 @@ or else `parent.url` (section 9.7).
       let most = 0;
       for (const x of Object.keys(binv.versions)) most = Math.max(most, (await f.readObjectJson(bdir, binv, OBJ, x)).documentVersion);
       obj.documentVersion = most + 1;
-      const notes = new Set((obj.notices || []).filter((n) => n.path).map((n) => n.path));
-      delete obj.notices;
-      files = new Map([...files].filter(([p]) => !notes.has(p)));
+      const ownNotices = (await f.readObjectJson(bdir, binv, OBJ)).notices || [];
+      if (ownNotices.length) obj.notices = ownNotices;
+      for (const n of ownNotices) {
+        if (n.path) {
+          if (files.has(n.path)) exit(`${n.path}: a notice of the branch has the path of a file of the new parent version (section 9.4)`);
+          files.set(n.path, await f.readLogical(bdir, binv, n.path));
+        }
+      }
     }
     const dc = Object.fromEntries(Object.entries(pdc).filter(([key]) => key !== 'doi' && key !== 'url'));
     dc.publisher = { name: f.archive.name };

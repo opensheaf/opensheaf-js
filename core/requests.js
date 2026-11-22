@@ -575,9 +575,13 @@ async function noticeOp(r, form, origin) {
   const about = field(form, 'Document version it is about', true);
   if (!/^\d+$/.test(about)) throw new Problem(`**Document version it is about** should be a number (1, 2, ...), not \`${about}\`.`);
   const text = field(form, 'Text of the notice', true);
+  const replaces = field(form, 'Notice it replaces (optional)');
+  if (replaces && !/^\d+$/.test(replaces)) {
+    throw new Problem(`**Notice it replaces** should be a number (1 for the first notice of the paper), not \`${replaces}\`.`);
+  }
   const files = attached(form, 'Full statement (optional)');
   await osheaf(r, (f) => notice(f, { label, about: Number(about), text, file: files[0] || null,
-                                     message: `Notice from ${origin}` }));
+                                     replaces: replaces ? Number(replaces) : null, message: `Notice from ${origin}` }));
   return ['', `Notice about ${label}, version ${about} (${origin})`, `Notice: ${label}, version ${about}`,
           `\`${label}\` was given a notice`];
 }

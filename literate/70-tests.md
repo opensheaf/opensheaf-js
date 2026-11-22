@@ -429,6 +429,53 @@ was. A member list changed under the same number is reported.
       assert.ok((await errorsOf(storage)).includes('list: v5 has other files than document version 3'));
     });
 
+Notices written behind the commands' back: a replacement of a notice
+about another document version, of one replaced already, or of no earlier
+notice is reported, as in opensheaf-py's test.
+
+    // in tests of an archive in memory:
+    test('notices replace earlier ones about the same version, once (section 4.2)', async () => {
+      const { storage, f } = await newArchive();
+      const first = { documentVersion: 1, date: '2026-02-01', text: 'Theorem 2 is wrong as stated.' };
+      const fix = { documentVersion: 1, date: '2026-03-01', text: 'Theorem 2 is right.', replaces: 1 };
+      for (const label of ['pa', 'pb', 'pc', 'pd']) await deposit(f, paper(label));
+      await again(f, 'pa', (o) => { o.notices = [first]; });
+      await again(f, 'pa', (o) => { o.notices = [first, fix]; });
+      await again(f, 'pb', (o) => { o.notices = [first, { ...fix, documentVersion: 2 }]; });
+      await again(f, 'pc', (o) => { o.notices = [first, fix, { ...fix, text: 'Again.' }]; });
+      await again(f, 'pd', (o) => { o.notices = [fix]; });
+      assert.deepEqual((await errorsOf(storage)).filter((e) => / notice \d/.test(e)).sort(), [
+        'pb: v2 notice 2 replaces notice 1, about another document version',
+        'pc: v2 notice 3 replaces notice 1, which is already replaced',
+        'pd: v2 notice 1 replaces no earlier notice (1)',
+      ]);
+    });
+
+Digests in inventories and checksum files are in lower case (section 4.1):
+a checksum file rewritten in upper case, and an inventory whose manifest
+and state are rewritten in upper case, are each reported as such.
+
+    // in tests of an archive in memory:
+    test('digests in upper case are reported (section 4.1)', async () => {
+      const { storage, f } = await newArchive();
+      await deposit(f, paper('pa'));
+      await deposit(f, paper('pb'));
+      assert.deepEqual(await errorsOf(storage), []);
+      let dir = await f.dirOf(f.labels.get('pa'));
+      const sc = new TextDecoder().decode(await storage.read(`${dir}/inventory.json.sha512`));
+      await storage.write(`${dir}/inventory.json.sha512`, utf8(`${sc.split(' ')[0].toUpperCase()}  inventory.json\n`));
+      dir = await f.dirOf(f.labels.get('pb'));
+      const inv = JSON.parse(new TextDecoder().decode(await storage.read(`${dir}/inventory.json`)));
+      inv.manifest = Object.fromEntries(Object.entries(inv.manifest).map(([k, v]) => [k.toUpperCase(), v]));
+      for (const v of Object.values(inv.versions)) {
+        v.state = Object.fromEntries(Object.entries(v.state).map(([k, p]) => [k.toUpperCase(), p]));
+      }
+      await storage.write(`${dir}/inventory.json`, utf8(JSON.stringify(inv, null, 2) + '\n'));
+      const errors = await errorsOf(storage);
+      assert.ok(errors.includes('pa: inventory.json.sha512 states its digest not in lower case (section 4.1)'), errors.join('\n'));
+      assert.ok(errors.includes('pb: the inventory has digests not in lower case (section 4.1)'), errors.join('\n'));
+    });
+
     test('a file changed behind the archive', async () => {
       const { storage, f } = await newArchive();
       await deposit(f, paper('changed'));
@@ -519,6 +566,28 @@ not all signed is extended only with `iKnow`.
       await assert.rejects(notice(f, { label: 'weak', about: 1, text: 'x' }), /give --i-know/);
       await notice(f, { label: 'weak', about: 1, text: 'x', iKnow: true });
       assert.equal((await head(f, 'weak')).inv.head, 'v2');
+    });
+
+Notices are numbered by their position (section 4.2). A later notice
+replaces an earlier one about the same document version by its number,
+once; a replacement of a notice about another version, of one replaced
+already, or of no notice is refused, with opensheaf-py's messages.
+
+    // in tests of descriptions:
+    test('a notice replaces an earlier one, once (section 4.2)', async () => {
+      const { storage, f } = await newArchive();
+      await deposit(f, paper('p'));
+      await deposit(f, paper('p', { new: false, pdf: { name: 'paper.pdf', bytes: utf8('%PDF-1.4 two\n') } }));
+      await notice(f, { label: 'p', about: 1, text: 'Lemma 2 is wrong as stated.' });
+      await notice(f, { label: 'p', about: 2, text: 'Lemma 3 is wrong too.' });
+      await assert.rejects(notice(f, { label: 'p', about: 1, text: 'x', replaces: 3 }), /p has no notice 3 \(it has 2\)/);
+      await assert.rejects(notice(f, { label: 'p', about: 1, text: 'x', replaces: 2 }),
+                           /notice 2 is about document version 2, not 1: a notice replaces one about the same version/);
+      await notice(f, { label: 'p', about: 1, text: 'Lemma 2 is right after all.', replaces: 1 });
+      await assert.rejects(notice(f, { label: 'p', about: 1, text: 'Again.', replaces: 1 }), /notice 1 is already replaced/);
+      const h = await head(f, 'p');
+      assert.deepEqual(h.json.notices.map((n) => n.replaces ?? null), [null, null, 1]);
+      assert.deepEqual(await errorsOf(storage), []);
     });
 
 Collections and the website

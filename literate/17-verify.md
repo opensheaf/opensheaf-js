@@ -33,7 +33,7 @@ The module is `core/verify.js`.
     // in core/verify.js:
     import { sha512, pool, LIMITS, parseJson } from './http.js';
     import { Archive } from './archive.js';
-    import { versionsOf, filesOf, documentVersionErrors, historyOf } from './versions.js';
+    import { versionsOf, filesOf, documentVersionErrors, noticeWarnings, historyOf } from './versions.js';
     import { versionNumber, logicalPathProblem, OWNER_NAME_LAYOUT, HASHED_LAYOUT, LAYOUT_FILE } from './paths.js';
     import { finding, schemaFindings, descriptionErrors, memberErrors, memberPins, indexEntries, INDEX_KEY } from './rules.js';
     import { readGenesis, nameOf, isNameOf, algorithm, objectId, parseId, isObject, OWNER_NAME } from './names.js';
@@ -271,8 +271,10 @@ but in a draft); and, for every object but a key log, `object.json`
 against its schema and the inventory chain (section 4.3): `previous` in
 every version after the first, the digest of the inventory file of the
 version before as its checksum file states it, and none in a first
-version or a draft. The files of key logs are checked with the key logs,
-below.
+version or a draft. Digests in the inventory and in the checksum files are
+in lower case (section 4.1): one in upper case is reported as such, before
+the comparisons it would otherwise fail. The files of key logs are checked
+with the key logs, below.
 
     // in core/verify.js:
       async objectStorage(id) {
@@ -314,8 +316,17 @@ below.
         this.found.set(id, o);
         const at = (ver) => ({ object: id, ver });
         if (inv.digestAlgorithm !== 'sha512') this.add('error', place, 'the digest algorithm is not sha512 (section 4.1)', at());
+        const stated = [...Object.keys(inv.manifest),
+          ...Object.values(inv.versions).flatMap((v) => Object.keys(isObject(v?.state) ? v.state : {})),
+          ...Object.values(isObject(inv.fixity) ? inv.fixity : {}).flatMap((alg) => Object.keys(isObject(alg) ? alg : {}))];
+        if (stated.some((x) => x !== x.toLowerCase())) this.add('error', place, 'the inventory has digests not in lower case (section 4.1)', at());
+        const upper = (bytes, file) => {
+          const word = sidecarDigest(bytes);
+          if (word && word !== word.toLowerCase()) this.add('error', place, `${file} states its digest not in lower case (section 4.1)`, at());
+        };
         const rootDigest = await sha512(rootBytes);
         const sc = await a.sidecarBytes(id, null, options).catch((e) => { if (this.aborted(e)) throw e; return null; });
+        upper(sc, 'inventory.json.sha512');
         if (!sc || sidecarDigest(sc) !== rootDigest) this.add('error', place, 'the checksum file of the inventory does not state its digest', at());
         o.sidecar = sc ? sidecarDigest(sc) : null;
         const head = typeof inv.head === 'string' ? inv.head : '';
@@ -334,6 +345,7 @@ below.
           const copySc = await a.sidecarBytes(id, ver, this.options).catch((e) => { if (this.aborted(e)) throw e; return null; });
           o.digests[k] = copy ? await sha512(copy) : '';
           o.sidecars[k] = copySc ? sidecarDigest(copySc) : null;
+          upper(copySc, `${ver}/inventory.json.sha512`);
           if (!copy || !copySc) {
             this.add('error', where, 'no copy of the inventory with its checksum file in the version folder (section 4.1)', at(ver));
           } else {
@@ -506,6 +518,7 @@ collections are then checked (14.5).
           }
           if (head.kind === 'document' || head.kind === 'collection') {
             for (const e of documentVersionErrors(o.inv, (v) => o.objs.get(v) ?? null)) this.add('error', place, `${e.ver} ${e.message}`, { object: id, ver: e.ver });
+            for (const e of noticeWarnings(o.inv, (v) => o.objs.get(v) ?? null)) this.add('warning', place, `${e.ver} ${e.message}`, { object: id, ver: e.ver });
           }
           let log = this.logs.get(owner) ?? null;
           if (!log) {

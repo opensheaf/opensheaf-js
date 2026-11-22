@@ -247,11 +247,14 @@ async function versionBlock(f, line, ver, shown, notices, root, vetted = null) {
   out.push(`<div class="pin" title="${esc(uri)}">${ver} · pin <code class="copy" data-copy="${esc(uri)}">` +
            `${line.digest(ver).slice(0, 32)}…</code> (<a href="${root}ocfl/${at}/` +
            `${ver}/inventory.json">inventory</a>)</div>`);
-  for (const x of notices) {
-    if (x.documentVersion === n) {
+  const replaced = new Set(notices.map((x) => x.replaces));
+  for (const [i, x] of notices.entries()) {
+    const k = i + 1;
+    if (x.documentVersion === n && !replaced.has(k)) {
       const src = line.signed || line.inv.head;
       const link = x.path ? ` ${await fileLink(f, root, line, src, x.path, 'statement')}` : '';
-      out.push(`<div class="notice"><strong>Notice (${esc(fmtDate(x.date))}):</strong> ` +
+      const repl = x.replaces ? `, replacing notice ${x.replaces}` : '';
+      out.push(`<div class="notice"><strong>Notice ${k} (${esc(fmtDate(x.date))}${repl}):</strong> ` +
                `${esc(x.text ?? '')}${link}</div>`);
     }
   }

@@ -133,7 +133,14 @@ of a notice is kept at `notices/<its name>`, that of a withdrawal at
       return { note, add };
     }
 
-A notice is about one document version, which the line must hold.
+A notice is about one document version, which the line must hold,
+possibly not the current one. It is appended to the notices of the head,
+which every later object version keeps unchanged and in order (section
+4.2), so that its position is its number: notice 1, 2, ... of the line. A
+notice is never edited: a later notice corrects or withdraws it by naming
+its number in `replaces` (`--replaces`), and must then be about the same
+document version; a notice is replaced at most once. Its `date` is the
+date its author issued it, today unless `--date` says otherwise.
 
     // in notices and withdrawals:
     export async function notice(f, a) {
@@ -143,10 +150,22 @@ A notice is about one document version, which the line must hold.
       if (!numbers.has(a.about)) exit(`${a.label} has no document version ${a.about}`);
       const { note, add } = noteFrom(a.text, a.file, 'notices');
       Object.assign(note, { documentVersion: a.about, date: a.date || f.env.today() });
+      const earlier = (await f.readObjectJson(dir, inv, OBJ)).notices || [];
+      const r = a.replaces ?? null;
+      if (r !== null) {
+        if (!(r >= 1 && r <= earlier.length)) exit(`${a.label} has no notice ${r} (it has ${earlier.length})`);
+        if (earlier[r - 1].documentVersion !== a.about) {
+          exit(`notice ${r} is about document version ${earlier[r - 1].documentVersion}, ` +
+               `not ${a.about}: a notice replaces one about the same version (section 4.2)`);
+        }
+        if (earlier.some((x) => x.replaces === r)) exit(`notice ${r} is already replaced (section 4.2)`);
+        note.replaces = r;
+      }
       const done = await descriptionVersion(f, a.label, (dc, obj) => {
         obj.notices = [...(obj.notices || []), note];
       }, a.message || `Notice about document version ${a.about} (description-only version)`, add, a.iKnow);
-      f.env.out(`${a.label}: ${done.head} (notice about version ${a.about})`);
+      f.env.out(`${a.label}: ${done.head} (notice ${earlier.length + 1}, about version ${a.about}` +
+                (r !== null ? `, replacing notice ${r})` : ')'));
       return done;
     }
 

@@ -564,7 +564,8 @@ The options are those of opensheaf-py, for the commands of this phase.
       notice: {
         help: 'a notice about a document version (description-only)', positionals: ['label!'],
         options: { '--about': int('about', { required: true }), '--text': value('text', { required: true }),
-                   '--file': value('file'), '--date': value('date'), '--message': value('message'), ...I_KNOW },
+                   '--file': value('file'), '--date': value('date'), '--replaces': int('replaces'),
+                   '--message': value('message'), ...I_KNOW },
       },
       withdraw: {
         help: 'withdraw a document (description-only; the content stays)', positionals: ['label!'],

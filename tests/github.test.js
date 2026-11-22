@@ -248,6 +248,8 @@ const REQUESTS = [
                 'In collection': 'reading', Position: '1', 'Why (optional)': 'A test' },
    { 'PDF of this version': [{ name: 'second.pdf', bytes: PDF(1) }] }],
   ['notice', { Label: 'first', 'Document version it is about': '1', 'Text of the notice': 'A sign error in section 2.' }, {}],
+  ['notice', { Label: 'first', 'Document version it is about': '1', 'Text of the notice': 'The sign error is in section 3.',
+               'Notice it replaces (optional)': '1' }, {}],
   ['relicense', { Label: 'second', 'New licence': 'CC0 1.0 (cc0-1.0)', 'How the authors agreed': 'by e-mail' }, {}],
   ['new_collection', { 'Label of the new collection': 'issue-1', 'Title of the collection': 'Issue 1: sheaves',
                        Kind: 'Selection', Description: 'The first issue.\n\nTwo papers.', 'In collection': 'reading',
@@ -266,6 +268,10 @@ const REFUSED = [
    { 'PDF of this version': [{ name: 'p.pdf', bytes: PDF(1) }] }],
   ['add', { 'In collection': 'issue-1', 'New member': 'first' }, {}],
   ['notice', { Label: 'first', 'Document version it is about': '9', 'Text of the notice': 'No such version.' }, {}],
+  ['notice', { Label: 'first', 'Document version it is about': '1', 'Text of the notice': 'Again.',
+               'Notice it replaces (optional)': '1' }, {}],
+  ['notice', { Label: 'first', 'Document version it is about': '1', 'Text of the notice': 'x',
+               'Notice it replaces (optional)': 'the first' }, {}],
 ];
 
 test('the same requests carried out on a disk and on GitHub give the same files', async () => {

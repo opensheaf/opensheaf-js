@@ -79,10 +79,22 @@ export async function notice(f, a) {
   if (!numbers.has(a.about)) exit(`${a.label} has no document version ${a.about}`);
   const { note, add } = noteFrom(a.text, a.file, 'notices');
   Object.assign(note, { documentVersion: a.about, date: a.date || f.env.today() });
+  const earlier = (await f.readObjectJson(dir, inv, OBJ)).notices || [];
+  const r = a.replaces ?? null;
+  if (r !== null) {
+    if (!(r >= 1 && r <= earlier.length)) exit(`${a.label} has no notice ${r} (it has ${earlier.length})`);
+    if (earlier[r - 1].documentVersion !== a.about) {
+      exit(`notice ${r} is about document version ${earlier[r - 1].documentVersion}, ` +
+           `not ${a.about}: a notice replaces one about the same version (section 4.2)`);
+    }
+    if (earlier.some((x) => x.replaces === r)) exit(`notice ${r} is already replaced (section 4.2)`);
+    note.replaces = r;
+  }
   const done = await descriptionVersion(f, a.label, (dc, obj) => {
     obj.notices = [...(obj.notices || []), note];
   }, a.message || `Notice about document version ${a.about} (description-only version)`, add, a.iKnow);
-  f.env.out(`${a.label}: ${done.head} (notice about version ${a.about})`);
+  f.env.out(`${a.label}: ${done.head} (notice ${earlier.length + 1}, about version ${a.about}` +
+            (r !== null ? `, replacing notice ${r})` : ')'));
   return done;
 }
 

@@ -123,7 +123,9 @@ Its number is the head of its inventory.
     }
 
 The digest a checksum file states: two words, the digest and
-`inventory.json`; `null` if it says anything else.
+`inventory.json`; `null` if it says anything else. The digest is read as
+written, in lower case (section 4.1): one in upper case matches no digest,
+and the verifier says why.
 
     // in core/owners.js:
     export function sidecarDigest(bytes) {
@@ -135,7 +137,7 @@ The digest a checksum file states: two words, the digest and
         return null;
       }
       const parts = text.split(/\s+/).filter(Boolean);
-      return parts.length === 2 && parts[1] === 'inventory.json' ? parts[0].toLowerCase() : null;
+      return parts.length === 2 && parts[1] === 'inventory.json' ? parts[0] : null;
     }
 
 The computed first version

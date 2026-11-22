@@ -329,16 +329,28 @@ notices about it.
       out.push(`<div class="pin" title="${esc(uri)}">${ver} · pin <code class="copy" data-copy="${esc(uri)}">` +
                `${line.digest(ver).slice(0, 32)}…</code> (<a href="${root}ocfl/${at}/` +
                `${ver}/inventory.json">inventory</a>)</div>`);
-      for (const x of notices) {
-        if (x.documentVersion === n) {
-          const src = line.signed || line.inv.head;
-          const link = x.path ? ` ${await fileLink(f, root, line, src, x.path, 'statement')}` : '';
-          out.push(`<div class="notice"><strong>Notice (${esc(fmtDate(x.date))}):</strong> ` +
-                   `${esc(x.text ?? '')}${link}</div>`);
-        }
-      }
+      <<the notices about a version>>
       out.push('</li>');
       return out.join('\n');
+    }
+
+The notices come from the latest signed version, and each current one is
+shown under the version it is about, with its number; a notice replaced by
+a later one is not, and the one replacing it says so (section 4.2). A
+notice with a file (a full statement, with mathematics or as a PDF) links
+to it, as stored in that version.
+
+    // in the notices about a version:
+    const replaced = new Set(notices.map((x) => x.replaces));
+    for (const [i, x] of notices.entries()) {
+      const k = i + 1;
+      if (x.documentVersion === n && !replaced.has(k)) {
+        const src = line.signed || line.inv.head;
+        const link = x.path ? ` ${await fileLink(f, root, line, src, x.path, 'statement')}` : '';
+        const repl = x.replaces ? `, replacing notice ${x.replaces}` : '';
+        out.push(`<div class="notice"><strong>Notice ${k} (${esc(fmtDate(x.date))}${repl}):</strong> ` +
+                 `${esc(x.text ?? '')}${link}</div>`);
+      }
     }
 
 The metadata of a landing page

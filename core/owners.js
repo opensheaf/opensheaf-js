@@ -81,7 +81,7 @@ export function sidecarDigest(bytes) {
     return null;
   }
   const parts = text.split(/\s+/).filter(Boolean);
-  return parts.length === 2 && parts[1] === 'inventory.json' ? parts[0].toLowerCase() : null;
+  return parts.length === 2 && parts[1] === 'inventory.json' ? parts[0] : null;
 }
 
 export function ownerObject(owner, previous = null) {

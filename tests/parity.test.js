@@ -335,6 +335,7 @@ test('descriptions and deposits from a file, by both, give the same files', { sk
     ok(s.py(['collect'], { cwd: arch }), 'py collect');
     const runs = [
       ['notice', 'bare', '--about', '1', '--text', 'A second notice.'],
+      ['notice', 'bare', '--about', '1', '--replaces', '1', '--text', 'The first notice is withdrawn.', '--date', '2025-01-03'],
       ['notice', 'paper', '--about', '1', '--text', 'A notice.', '--file', '../statement.md', '--date', '2025-01-02'],
       ['withdraw', 'paper', '--reason', 'An error.', '--file', '../statement.md'],
       ['relate', 'paper', '--to', 'arxiv:2501.00001', '--relation', 'IsVariantFormOf', '--issued', '2024-12-01'],
@@ -347,8 +348,10 @@ test('descriptions and deposits from a file, by both, give the same files', { sk
       await sameArchives(a, b);
       assert.deepEqual(verified(s, a), verified(s, b));
     }
-    for (const args of [['notice', 'paper', '--about', '2', '--text', 'x'], ['relicense', 'paper', '--rights', 'cc-by-4.0',
-                                                                             '--method', 'again'],
+    for (const args of [['notice', 'paper', '--about', '2', '--text', 'x'],
+                        ['notice', 'paper', '--about', '1', '--replaces', '1', '--text', 'x'],
+                        ['notice', 'bare', '--about', '1', '--replaces', '9', '--text', 'x'],
+                        ['relicense', 'paper', '--rights', 'cc-by-4.0', '--method', 'again'],
                         ['describe', 'paper'], ['complete', 'paper', '--version', '1', '--source', '../paper.tex']]) {
       await both(s, arch, args, { status: 1 });
     }
@@ -387,6 +390,9 @@ test('the website written by both is the same', { skip }, async () => {
     ok(s.py(['deposit', 'one', '../paper.tex', ...DEPOSIT, '--pdf', '../paper2.pdf', '--changes', 'Corrected.',
              '--stage', 'AM', '--related', 'arxiv=2401.00001'], { cwd: arch }), 'py deposit v2');
     ok(s.py(['notice', 'one', '--about', '1', '--text', 'An erratum.'], { cwd: arch }), 'py notice');
+    ok(s.py(['notice', 'one', '--about', '2', '--text', 'A notice about version 2.'], { cwd: arch }), 'py notice 2');
+    ok(s.py(['notice', 'one', '--about', '1', '--replaces', '1', '--text', 'The erratum is withdrawn.'], { cwd: arch }),
+       'py notice --replaces');
     ok(s.py(['withdraw', 'three', '--reason', 'Wrong.'], { cwd: arch }), 'py withdraw');
     ok(s.py(['collect'], { cwd: arch }), 'py collect');
     ok(s.py(['collection', 'new', 'picks', '--type', 'selection', '--title', 'Picks', '--description', 'Chosen.'],
@@ -394,6 +400,8 @@ test('the website written by both is the same', { skip }, async () => {
     ok(s.py(['collection', 'add', 'picks', 'one', 'two'], { cwd: arch }), 'py collection add');
     const pages = await sameWebsite(s, arch);
     assert.ok(pages.has('paper/one/index.html') && pages.has('paper/picks/index.html') && pages.has('sitemap.xml'));
+    const landing = pages.get('paper/one/index.html').toString();
+    assert.ok(!landing.includes('An erratum.') && landing.includes('Notice 3') && landing.includes('replacing notice 1'));
     const cfg = JSON.parse(await readFile(path.join(arch, 'osheaf.json'), 'utf-8'));
     cfg.index.html.featured = 'picks';
     await writeFile(path.join(arch, 'osheaf.json'), JSON.stringify(cfg, null, 2) + '\n');

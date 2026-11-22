@@ -199,7 +199,17 @@ export function documentVersionErrors(inv, objOf) {
       }
     }
     const current = Array.isArray(obj.notices) ? obj.notices : [];
-    if (notices.some((x) => !current.some((y) => same(x, y)))) add(ver, 'drops or changes an earlier notice');
+    if (!same(current.slice(0, notices.length), notices)) {
+      add(ver, 'drops, changes or moves an earlier notice');
+    } else {
+      for (let k = notices.length; k < current.length; k++) {
+        const r = current[k]?.replaces;
+        if (r === undefined || r === null) continue;
+        if (!Number.isInteger(r) || r < 1 || r > k) add(ver, `notice ${k + 1} replaces no earlier notice (${r})`);
+        else if (current[r - 1]?.documentVersion !== current[k]?.documentVersion) add(ver, `notice ${k + 1} replaces notice ${r}, about another document version`);
+        else if (current.slice(0, k).some((y) => y?.replaces === r)) add(ver, `notice ${k + 1} replaces notice ${r}, which is already replaced`);
+      }
+    }
     notices = current;
     prevVer = ver;
   }
@@ -207,3 +217,20 @@ export function documentVersionErrors(inv, objOf) {
 }
 
 const DOCUMENT_VERSION_FIELDS = ['mainSource', 'sourceFormat', 'sourcesMissing', 'renditions', 'toolchain'];
+
+export function noticeWarnings(inv, objOf) {
+  const out = [];
+  let before = 0;
+  for (const ver of versionsOf(inv)) {
+    const notices = Array.isArray(objOf(ver)?.notices) ? objOf(ver).notices : [];
+    const created = String(inv.versions?.[ver]?.created ?? '').slice(0, 10);
+    for (let k = before; k < notices.length; k++) {
+      const date = notices[k]?.date;
+      if (typeof date === 'string' && created && date > created) {
+        out.push({ ver, message: `notice ${k + 1} is dated ${date}, after its deposit (${created}, section 4.2)` });
+      }
+    }
+    before = Math.max(before, notices.length);
+  }
+  return out;
+}

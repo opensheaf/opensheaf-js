@@ -398,10 +398,46 @@ document version, as known when the history was written.
       }
     }
 
-Every notice of an object version must be present, unchanged, in the next
-one, and so in every later one.
+Every notice of an object version must be present, unchanged and in the
+same order, at the start of the notices of the next one, and so of every
+later one: a notice is numbered by its position, from 1 (section 4.2). A
+new notice may replace an earlier one, by its number, which must be about
+the same document version and not replaced already. opensheaf-py makes the
+same checks, with the same messages.
 
     // in check that an object version keeps the earlier notices:
     const current = Array.isArray(obj.notices) ? obj.notices : [];
-    if (notices.some((x) => !current.some((y) => same(x, y)))) add(ver, 'drops or changes an earlier notice');
+    if (!same(current.slice(0, notices.length), notices)) {
+      add(ver, 'drops, changes or moves an earlier notice');
+    } else {
+      for (let k = notices.length; k < current.length; k++) {
+        const r = current[k]?.replaces;
+        if (r === undefined || r === null) continue;
+        if (!Number.isInteger(r) || r < 1 || r > k) add(ver, `notice ${k + 1} replaces no earlier notice (${r})`);
+        else if (current[r - 1]?.documentVersion !== current[k]?.documentVersion) add(ver, `notice ${k + 1} replaces notice ${r}, about another document version`);
+        else if (current.slice(0, k).some((y) => y?.replaces === r)) add(ver, `notice ${k + 1} replaces notice ${r}, which is already replaced`);
+      }
+    }
     notices = current;
+
+The date of a notice is the date its author issued it, which should not
+be later than its deposit, the `created` date of the object version that
+added it (section 4.2): a later date is a warning.
+
+    // in the rules of document versions:
+    export function noticeWarnings(inv, objOf) {
+      const out = [];
+      let before = 0;
+      for (const ver of versionsOf(inv)) {
+        const notices = Array.isArray(objOf(ver)?.notices) ? objOf(ver).notices : [];
+        const created = String(inv.versions?.[ver]?.created ?? '').slice(0, 10);
+        for (let k = before; k < notices.length; k++) {
+          const date = notices[k]?.date;
+          if (typeof date === 'string' && created && date > created) {
+            out.push({ ver, message: `notice ${k + 1} is dated ${date}, after its deposit (${created}, section 4.2)` });
+          }
+        }
+        before = Math.max(before, notices.length);
+      }
+      return out;
+    }

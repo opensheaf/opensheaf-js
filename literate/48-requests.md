@@ -718,7 +718,9 @@ selection where it is already, its new version is vetted.
     }
 
 Notices, withdrawals and new licences: description-only versions
-(chapter [29](29-description.md)).
+(chapter [29](29-description.md)). A notice may name the number of an
+earlier notice about the same version that it corrects or withdraws
+(section 4.2), as `osheaf notice --replaces` does.
 
     // in the operations:
     async function noticeOp(r, form, origin) {
@@ -727,9 +729,13 @@ Notices, withdrawals and new licences: description-only versions
       const about = field(form, 'Document version it is about', true);
       if (!/^\d+$/.test(about)) throw new Problem(`**Document version it is about** should be a number (1, 2, ...), not \`${about}\`.`);
       const text = field(form, 'Text of the notice', true);
+      const replaces = field(form, 'Notice it replaces (optional)');
+      if (replaces && !/^\d+$/.test(replaces)) {
+        throw new Problem(`**Notice it replaces** should be a number (1 for the first notice of the paper), not \`${replaces}\`.`);
+      }
       const files = attached(form, 'Full statement (optional)');
       await osheaf(r, (f) => notice(f, { label, about: Number(about), text, file: files[0] || null,
-                                         message: `Notice from ${origin}` }));
+                                         replaces: replaces ? Number(replaces) : null, message: `Notice from ${origin}` }));
       return ['', `Notice about ${label}, version ${about} (${origin})`, `Notice: ${label}, version ${about}`,
               `\`${label}\` was given a notice`];
     }

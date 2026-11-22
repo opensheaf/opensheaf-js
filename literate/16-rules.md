@@ -68,7 +68,10 @@ The descriptions of an object version
 The rules of sections 4.3 and 4.4 that the files of one version decide:
 `object.json` and `datacite.json` agree on the document version and the
 date of a withdrawal; `datacite.json` has the properties section 4.4
-requires; a licence without an SPDX identifier has its URL; the files of
+requires; an SPDX identifier of a licence is given as one, in lower case
+(section 4.4: an entry with `rightsIdentifier` or `rightsUri` is a licence,
+one with neither a rights statement, read from the fields, never from the
+name; whether a licence allows a copy is not checked, section 11.2); the files of
 the notes, the main source and the renditions are in the version; and a
 collection has its member list. The answer is a list of messages.
 
@@ -83,9 +86,12 @@ collection has its member list. The answer is a list of messages.
         if (!Object.hasOwn(dc, k)) out.push(`datacite.json lacks ${k}`);
       }
       for (const r of Array.isArray(dc.rightsList) ? dc.rightsList : []) {
-        const rights = typeof r?.rights === 'string' ? r.rights.toLowerCase() : '';
-        if (r?.rightsIdentifier == null && (rights.startsWith('creative') || rights.startsWith('arxiv')) && !r?.rightsUri) {
-          out.push('licence without SPDX identifier and without rightsUri');
+        const ident = r?.rightsIdentifier;
+        if (ident == null) continue;
+        if (r?.rightsIdentifierScheme !== 'SPDX') {
+          out.push(`rightsList: ${ident} is not given as an SPDX identifier (section 4.4)`);
+        } else if (String(ident) !== String(ident).toLowerCase()) {
+          out.push(`rightsList: ${ident} is not in lower case (section 4.4)`);
         }
       }
       const notes = [obj.changes, obj.sourcesMissing, obj.licence, ...(Array.isArray(obj.notices) ? obj.notices : []), obj.withdrawal?.reason];

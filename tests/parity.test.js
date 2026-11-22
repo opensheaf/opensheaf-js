@@ -1222,7 +1222,8 @@ test('resolve and mirror across archives, by both', { skip }, async () => {
     const outside = ['resolve', `sheaf:${name}`, '--at', 'https://example.org/authors/', '--json'];
     assert.deepEqual(json(ok(s.js(outside), 'js resolve')), json(ok(s.py(outside), 'py resolve')));
     assert.equal(json(s.js(outside)).status, 'verified');
-    await both(s, lib, ['mirror', `${await idOf(authors, 'closed')}?${at('authors')}`], { more: s.more, status: 1 });
+    const closed = await both(s, lib, ['mirror', `${await idOf(authors, 'closed')}?${at('authors')}`], { more: s.more });
+    await sameArchives(closed.a, closed.b);
     let { a, b } = await both(s, lib, ['mirror', `${id}?${at('authors')}`, '--label', 'copy'], { more: s.more });
     assert.deepEqual(await filesOf(path.join(b, 'ocfl', owner, name)), await filesOf(path.join(authors, 'ocfl', owner, name)));
     await sameArchives(a, b);

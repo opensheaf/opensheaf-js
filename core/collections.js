@@ -130,7 +130,7 @@ export async function pinned(r, name, owner, u, places, kind, revisions = []) {
   return founds;
 }
 
-export function describeCollection(f, title, description, version, issued, members, label = null) {
+export function describeCollection(f, title, description, version, issued, members, url = null) {
   const cur = f.archive.curator;
   const creator = { name: cur.name, nameType: 'Personal', familyName: cur.familyName };
   if (cur.givenName) creator.givenName = cur.givenName;
@@ -139,7 +139,7 @@ export function describeCollection(f, title, description, version, issued, membe
                version: String(version),
                dates: [{ date: issued, dateType: 'Issued' }, { date: f.env.today(), dateType: 'Available' }],
                rightsList: [{ ...RIGHTS['cc0-1.0'] }] };
-  if (label) dc.url = landingUrl(f, label);
+  if (url) dc.url = url;
   if (description) dc.descriptions = [{ description, descriptionType: 'Abstract' }];
   const dois = [...members.filter((m) => m.doi).map((m) => m.doi),
                 ...members.flatMap((m) => (m.revisions || []).filter((x) => x.doi).map((x) => x.doi))];
@@ -179,7 +179,8 @@ export async function write(f, collId, mem, { message, title = null, description
   label = label || f.labelOf(collId);
   const files = new Map([
     ['members.json', jsonBytes(mem)], [GENESIS, genesis],
-    ['datacite.json', jsonBytes(describeCollection(f, title, description, version, issued, mem.members, label))],
+    ['datacite.json', jsonBytes(describeCollection(f, title, description, version, issued, mem.members,
+                                                     label ? await landingUrl(f, collId) : null))],
   ]);
   const obj = { format: OBJ_FORMAT, specification: SPEC, kind: 'collection', name: collId.split(':')[1], owner,
                 documentVersion: version, status: 'active' };

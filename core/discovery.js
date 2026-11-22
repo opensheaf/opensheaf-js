@@ -160,5 +160,37 @@ export async function writeIndexes(f) {
 
 export async function writeDiscovery(f) {
   await writeIndexes(f);
-  await f.storage.write('opensheaf.json', jsonBytes(await discovery(f)));
+  let doc = await discovery(f);
+  const pages = objectPages(doc.objects);
+  const stale = ((await f.storage.list(OBJECT_PAGES)) || [])
+    .filter((e) => e.kind === 'file' && e.name.endsWith('.json') && !Object.hasOwn(pages, `${OBJECT_PAGES}/${e.name}`));
+  for (const e of stale) await f.storage.remove(`${OBJECT_PAGES}/${e.name}`);
+  if ((await f.storage.kind(OBJECT_PAGES)) === 'dir' && !((await f.storage.list(OBJECT_PAGES)) || []).length) {
+    await f.storage.remove(OBJECT_PAGES);
+  }
+  if (Object.keys(pages).length) {
+    for (const [path, entries] of Object.entries(pages)) {
+      await f.storage.write(path, jsonBytes({ format: 'opensheaf-objects/0.2', objects: entries }));
+    }
+    doc = Object.fromEntries(Object.entries(doc).map(([k, v]) => (k === 'objects' ? ['objectPages', Object.keys(pages)] : [k, v])));
+  }
+  await f.storage.write('opensheaf.json', jsonBytes(doc));
+}
+
+export const OBJECT_PAGES = 'objects';
+export const PAGING = { perPage: 1000 };
+
+export function objectPages(objs) {
+  if (objs.length <= PAGING.perPage) return {};
+  let groups;
+  for (let k = 1; k < 53; k++) {
+    groups = new Map();
+    for (const o of objs) {
+      const p = o.name.slice(0, k);
+      if (!groups.has(p)) groups.set(p, []);
+      groups.get(p).push(o);
+    }
+    if (Math.max(...[...groups.values()].map((g) => g.length)) <= PAGING.perPage) break;
+  }
+  return Object.fromEntries([...groups.keys()].sort(compareText).map((p) => [`${OBJECT_PAGES}/${p}.json`, groups.get(p)]));
 }

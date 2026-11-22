@@ -116,6 +116,7 @@ verification.
         const disc = parseJson(await http.cached(where, options), where);
         if (!isObject(disc)) throw new FetchError('json', where, 'is not a JSON object');
         const archive = new Archive(http, base, disc);
+        if (!archive.old && Object.hasOwn(disc, 'objectPages')) await archive.loadPages(options);
         if (!archive.old) {
           const ids = [...archive.objects().map((o) => o.id), ...archive.drafts().map((d) => d.id),
                        ...archive.tombstones().map((t) => t.id).filter(isObjectId)];
@@ -151,12 +152,18 @@ tombstones, the owners it hosts, each with its owner catalogue (section
 8.1), in the order in which the archive presents them, and the labels it
 gives (section 3.1),
 which the explorer uses in its addresses and as names of objects, as
-`osheaf` does in its findings.
+`osheaf` does in its findings. `listed` gives the entries as listed, for
+verification; an archive that pages its objects (section 3.1) has them
+from its pages, read when it is opened (below).
 
     // in core/archive.js:
+      listed() {
+        if (Array.isArray(this.paged)) return this.paged;
+        return Array.isArray(this.disc.objects) ? this.disc.objects : [];
+      }
+
       objects() {
-        const list = Array.isArray(this.disc.objects) ? this.disc.objects : [];
-        return list.filter((o) => isObject(o) && isObjectId(o.id) && !parseId(o.id).draft);
+        return this.listed().filter((o) => isObject(o) && isObjectId(o.id) && !parseId(o.id).draft);
       }
 
       entry(id) {
@@ -184,6 +191,46 @@ which the explorer uses in its addresses and as names of objects, as
 
       byLabel(label) {
         return this.objects().find((o) => o.label === label)?.id ?? null;
+      }
+
+An archive with many objects lists them in pages (section 3.1):
+`objectPages` gives the paths of page files below the discovery document,
+each with `format` `"opensheaf-objects/0.2"` and entries of the form of
+`objects`. They are read when the archive is opened, and their entries
+take the place of `objects`. A path must be relative, without `.`, `..`
+or empty segments, a scheme or a backslash, and name a JSON file. A path
+refused, a page missing or not a page is kept in `pageProblems`, which
+verification reports as errors and which makes the archive unavailable to
+a resolver, as `osheaf` does; the pages read are kept in `pages`, for
+verification against their schema.
+
+    // in core/archive.js:
+      async loadPages(options = {}) {
+        const ok = (path) => typeof path === 'string' && path.endsWith('.json') && !path.startsWith('/') &&
+          !path.includes('\\') && !path.split('/')[0].includes(':') &&
+          path.split('/').every((x) => x !== '' && x !== '.' && x !== '..');
+        this.pages = [];
+        this.pageProblems = [];
+        const entries = [];
+        for (const path of Array.isArray(this.disc.objectPages) ? this.disc.objectPages : []) {
+          if (!ok(path)) {
+            this.pageProblems.push(`${JSON.stringify(path)} is not the path of a page below the discovery document (section 3.1)`);
+            continue;
+          }
+          let page;
+          try {
+            page = parseJson(await this.http.cached(this.base + path, options), this.base + path);
+          } catch (error) {
+            if (error?.kind === 'aborted') throw error;
+            this.pageProblems.push(error?.kind === 'not-found' ? `the page of objects ${path} is missing (section 3.1)`
+              : `the page of objects ${path} is not JSON`);
+            continue;
+          }
+          this.pages.push({ path, page });
+          if (isObject(page) && Array.isArray(page.objects)) entries.push(...page.objects);
+          else this.pageProblems.push(`${path} is not a page of objects (section 3.1)`);
+        }
+        this.paged = entries;
       }
 
 How an object is named to a reader, in findings and on pages: a key log
@@ -279,14 +326,6 @@ when the checksum file states the digest of the bytes served.
 
       async sidecar(id, ver, options = {}) {
         return sidecarDigest(await this.sidecarBytes(id, ver, options)) ?? '';
-      }
-
-      async pin(id, ver, options = {}) {
-        const digest = await sha512(await this.inventoryBytes(id, ver, options));
-        if ((await this.sidecar(id, ver, options)) !== digest) {
-          throw new FetchError('digest', this.inventoryUrl(id, ver), 'the inventory does not match its checksum file');
-        }
-        return digest;
       }
 
 Files

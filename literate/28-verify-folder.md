@@ -49,7 +49,7 @@ The module is `core/check.js`.
     import { objectId, parseId } from './names.js';
     import { memberPins } from './versions.js';
     import { ArchiveFolder, environment } from './folder.js';
-    import { pageAddress } from './website.js';
+    import { nameAddress } from './deposit.js';
     import { keeperOf, keeperLink, successorClaim, NOT_CHECKED } from './keepers.js';
 
     <<verifying a folder>>
@@ -186,7 +186,10 @@ The presentation of a folder
 Appendix A.3, as opensheaf-py checks it: the home page shows the pin of
 every member of the latest signed version of each owner catalogue, and each
 member held here has a landing page giving the full `sheaf:` URI of its
-line; errors under the profile `website`, warnings for an archive that
+line, at the address built from its name, which fixed files record
+(`paper/<name>/`, or `paper/<name>-<owner>/` for a line whose owner is
+not the originator; a label may give a second address, which is not
+checked); errors under the profile `website`, warnings for an archive that
 presents pages (a home page, a readable index configured, landing pages)
 without declaring it.
 
@@ -214,7 +217,6 @@ without declaring it.
       const page = home ? new TextDecoder().decode(home) : null;
       if (page === null && website) out.push(finding(level, 'index.html', 'the home page is missing (appendix A.3)'));
       const gone = new Set(f.tombstones.map((t) => t.id));
-      const ids = (await f.objects()).map((o) => o.id);
       for (const m of members) {
         const id = objectId(m?.name, m?.owner);
         if (gone.has(id)) continue;
@@ -228,7 +230,7 @@ without declaring it.
           continue;
         }
         if ((await f.storage.kind(joinPath(dir, 'inventory.json'))) !== 'file') continue;
-        const landing = `paper/${await pageAddress(f, id, ids)}/index.html`;
+        const landing = `paper/${await nameAddress(f, id)}/index.html`;
         const bytes = await f.storage.read(landing);
         const text = bytes ? new TextDecoder().decode(bytes) : '';
         if (!(await landingNames(f, text, m.name, m.owner, id, dir))) {

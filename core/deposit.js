@@ -102,9 +102,24 @@ export function setDate(dc, dateType, date, info = null) {
   dc.dates = [...(dc.dates || []).filter((d) => d.dateType !== dateType), entry];
 }
 
-export function landingUrl(f, label) {
-  if (f.index.html || f.index.template) return `${f.archive.baseUrl}paper/${label}/`;
-  return `${f.archive.baseUrl}site/${label}/${label}.html`;
+export async function nameAddress(f, id, originator = null) {
+  const [, name, owner] = id.split(':');
+  if (originator === null) {
+    originator = owner;
+    try {
+      const dir = await f.dirOf(id);
+      const inv = await f.inventory(dir);
+      const g = inv ? await f.readLogical(dir, inv, GENESIS, 'v1') : null;
+      if (g) originator = JSON.parse(new TextDecoder().decode(g)).originator ?? owner;
+    } catch {
+      originator = owner;
+    }
+  }
+  return originator === owner ? name : `${name}-${owner}`;
+}
+
+export async function landingUrl(f, id, originator = null) {
+  return `${f.archive.baseUrl}paper/${await nameAddress(f, id, originator)}/`;
 }
 
 async function docVersionOf(f, dir, inv, ver) {
@@ -193,8 +208,7 @@ export async function deposit(f, a) {
     docVersion = most + 1;
     owner = prevObj.owner;
   }
-  if (a.created && a.available) exit('give --created (a version not public at the time) or --available, not both');
-  const available = a.created ? null : (a.available || f.env.today());
+  const available = a.available || f.env.today();
   const issued = a.issued || (prevDc ? dateOf(prevDc, 'Issued') : null) || available;
   const source = a.source || null;
   if (source && suffixOf(source.name) === '.tm' && !a.pdf) {
@@ -234,10 +248,10 @@ export async function deposit(f, a) {
     titles: [{ title: a.title }],
     creators: a.author.map(creator),
     publisher: { name: f.archive.name },
-    publicationYear: Number((issued || a.created).slice(0, 4)),
+    publicationYear: Number(issued.slice(0, 4)),
     types: { resourceTypeGeneral: a.type || 'Preprint' },
     version: String(docVersion),
-    url: landingUrl(f, label),
+    url: null,
     dates: [],
     language: a.language || 'en',
     formats,
@@ -246,12 +260,11 @@ export async function deposit(f, a) {
   if (a.keyword?.length) datacite.subjects = a.keyword.map((k) => ({ subject: k }));
   else if (prevDc?.subjects?.length) datacite.subjects = prevDc.subjects;
   if (issued) setDate(datacite, 'Issued', issued);
-  if (available) setDate(datacite, 'Available', available, a.dateInfo);
-  else setDate(datacite, 'Created', a.created, a.dateInfo);
+  setDate(datacite, 'Available', available, a.created ? null : a.dateInfo);
+  if (a.created) setDate(datacite, 'Created', a.created, a.dateInfo);
   if (abstract) datacite.descriptions = [{ description: abstract, descriptionType: 'Abstract' }];
   const related = relatedFromArgs(a.related);
   if (related.length) datacite.relatedIdentifiers = related;
-  if (draft) delete datacite.url;
 
   const obj = { format: OBJ_FORMAT, specification: SPEC, kind: 'document', name: null, owner,
                 documentVersion: docVersion };
@@ -262,7 +275,7 @@ export async function deposit(f, a) {
   obj.status = 'active';
   if (a.changes) obj.changes = { text: a.changes };
   if (a.agreement) {
-    obj.agreement = { by: datacite.creators.map((c) => c.name), date: available || a.created || f.env.today(),
+    obj.agreement = { by: datacite.creators.map((c) => c.name), date: available,
                       method: a.agreement };
   }
   if (a.stage) obj.stage = { scheme: 'NISO-JAV', value: a.stage };
@@ -285,7 +298,12 @@ export async function deposit(f, a) {
   } else {
     files.set(GENESIS, await f.readLogical(dir, inv, GENESIS));
   }
-  if (!draft) obj.name = id.split(':')[1];
+  if (!draft) {
+    obj.name = id.split(':')[1];
+    datacite.url = await landingUrl(f, id);
+  } else {
+    delete datacite.url;
+  }
   if (prevObj?.parent) {
     obj.parent = prevObj.parent;
     const state = inv.versions[inv.head].state;

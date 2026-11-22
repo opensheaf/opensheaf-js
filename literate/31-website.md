@@ -44,7 +44,7 @@ website only, and warns.
     import { same } from './schema.js';
     import { writeDiscovery } from './discovery.js';
     import { lineOf } from './describe.js';
-    import { displayName } from './deposit.js';
+    import { displayName, nameAddress } from './deposit.js';
     import { keeperOf, keeperLink, successorClaim, CONFIRMED } from './keepers.js';
 
     <<small pieces>>
@@ -151,18 +151,16 @@ opensheaf-py gives them, with no interpretation of the text put in (a
       return [p.version, p.pin];
     }
 
-The address of a landing page below `paper/` is the label of its line, or
-its name, followed by `-<owner>` when the archive holds several lines of
-that name (appendix A.3).
+The landing page of a line is written at the address built from its
+name, which fixed files record and which never changes (`nameAddress`,
+chapter [26](26-deposit.md)), and, for a line with a label, also at its
+label, the address the pages link to and the canonical one: the same page
+at both, so that the readable address and the permanent one both work
+(appendix A.3), as opensheaf-py's `page_address` and `name_address`.
 
     // in small pieces:
-    export async function pageAddress(f, id, ids = null) {
-      const label = f.labelOf(id);
-      if (label) return label;
-      const [, name, owner] = id.split(':');
-      ids ??= (await f.objects()).map((o) => o.id);
-      const same = ids.filter((i) => typeof i === 'string' && i.startsWith(`sheaf:${name}:`));
-      return same.length <= 1 ? name : `${name}-${owner}`;
+    export async function pageAddress(f, id) {
+      return f.labelOf(id) || nameAddress(f, id);
     }
 
 The lines presented
@@ -182,7 +180,6 @@ latest signed version, and the state of the line read from that version
         this.keepers = new Map();
         this.keeperFetch = keeperFetch;
         this.remotes = new Map();
-        this.ids = null;
         this.http = new Http({ fetch: f.env.fetch, budget: null });
       }
 
@@ -205,8 +202,8 @@ latest signed version, and the state of the line read from that version
         const f = this.f;
         const [, name, owner] = id.split(':');
         const inv = await f.inventory(dir);
-        this.ids ??= (await f.objects()).map((o) => o.id);
-        const slug = await pageAddress(f, id, this.ids);
+        const slug = await pageAddress(f, id);
+        const home = await nameAddress(f, id);
         let originator = null;
         try {
           const g = await f.readLogical(dir, inv, GENESIS, 'v1');
@@ -216,7 +213,7 @@ latest signed version, and the state of the line read from that version
         }
         const read = await f.line(id);
         const json = (logical, ver = null) => f.readObjectJson(dir, inv, logical, ver);
-        const line = { id, name, owner, dir, inv, slug, originator, statuses: read.statuses, signed: read.latest,
+        const line = { id, name, owner, dir, inv, slug, home, originator, statuses: read.statuses, signed: read.latest,
                        objs: read.objs, json,
                        status: (ver) => read.statuses[Number(ver.slice(1)) - 1],
                        digest: (ver) => read.versions[Number(ver.slice(1)) - 1].digest };
@@ -544,8 +541,10 @@ collection. It returns the number of landing pages.
             pdf: esc((await fileUrl(f, root, line, cur, pdfOf(obj))) || `#v${obj.documentVersion}`),
             html_link: htmlLink });
         }
-        await f.storage.write(`paper/${line.slug}/index.html`, new TextEncoder().encode(page));
-        written.push(line.slug);
+        for (const address of new Set([line.home, line.slug])) {
+          await f.storage.write(`paper/${address}/index.html`, new TextEncoder().encode(page));
+          written.push(address);
+        }
         const lastmod = line.inv.versions[line.inv.head].created.slice(0, 10);
         urls.push([`${base}paper/${line.slug}/`, lastmod]);
         if (htmlLink) urls.push([`${base}site/${line.slug}/${line.slug}.html`, lastmod]);

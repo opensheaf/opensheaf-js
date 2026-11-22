@@ -493,7 +493,7 @@ the paper's landing page in this archive as `url`.
       publicationYear: Number(firstDate.slice(0, 4)),
       types: { resourceTypeGeneral: 'Preprint' },
       version: String(docn),
-      url: landingUrl(f, label),
+      url: id ? await landingUrl(f, id) : null,
       dates: [{ date: firstDate, dateType: 'Issued' }, { date: v.date.slice(0, 10), dateType: 'Available' }],
       language: 'en',
       formats,
@@ -552,6 +552,7 @@ HTML version is made only from a TeXmacs source.
       const inv0 = await f.inventory(dir);
       if (inv0 !== null) genesis = await f.readLogical(dir, inv0, GENESIS);
       content.set(GENESIS, genesis);
+      datacite.url = await landingUrl(f, id);
       const next = inv0 ? `v${Number(inv0.head.slice(1)) + 1}` : 'v1';
       await carryForward(f, inv0 ? await f.readObjectJson(dir, inv0, OBJ) : null, obj, dir, inv0, next);
       for (const [lp, bytes] of await carriedFiles(f, dir, inv0)) if (!content.has(lp)) content.set(lp, bytes);

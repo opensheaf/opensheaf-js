@@ -279,7 +279,7 @@ or else `parent.url` (section 9.7).
     const dc = Object.fromEntries(Object.entries(pdc).filter(([key]) => key !== 'doi' && key !== 'url'));
     dc.publisher = { name: f.archive.name };
     dc.version = String(obj.documentVersion);
-    if (label || f.labelOf(id)) dc.url = landingUrl(f, label || f.labelOf(id));
+    dc.url = await landingUrl(f, id, (await readGenesis(files.get(GENESIS))).originator ?? null);
     const rel = pdc.doi ? { relatedIdentifier: pdc.doi, relatedIdentifierType: 'DOI', relationType: 'IsIdenticalTo' }
       : parent.url ? { relatedIdentifier: parent.url, relatedIdentifierType: 'URL', relationType: 'IsIdenticalTo' } : null;
     if (rel) {

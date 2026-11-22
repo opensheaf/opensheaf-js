@@ -9,7 +9,7 @@ import { unbase64 } from './crypto.js';
 import { objectId, parseId } from './names.js';
 import { memberPins } from './versions.js';
 import { ArchiveFolder, environment } from './folder.js';
-import { pageAddress } from './website.js';
+import { nameAddress } from './deposit.js';
 import { keeperOf, keeperLink, successorClaim, NOT_CHECKED } from './keepers.js';
 
 export async function verifyFolder(storage, { schemas, remote = false, fetch = globalThis.fetch,
@@ -122,7 +122,6 @@ export async function presentationFindings(f, disc) {
   const page = home ? new TextDecoder().decode(home) : null;
   if (page === null && website) out.push(finding(level, 'index.html', 'the home page is missing (appendix A.3)'));
   const gone = new Set(f.tombstones.map((t) => t.id));
-  const ids = (await f.objects()).map((o) => o.id);
   for (const m of members) {
     const id = objectId(m?.name, m?.owner);
     if (gone.has(id)) continue;
@@ -136,7 +135,7 @@ export async function presentationFindings(f, disc) {
       continue;
     }
     if ((await f.storage.kind(joinPath(dir, 'inventory.json'))) !== 'file') continue;
-    const landing = `paper/${await pageAddress(f, id, ids)}/index.html`;
+    const landing = `paper/${await nameAddress(f, id)}/index.html`;
     const bytes = await f.storage.read(landing);
     const text = bytes ? new TextDecoder().decode(bytes) : '';
     if (!(await landingNames(f, text, m.name, m.owner, id, dir))) {

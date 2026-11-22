@@ -211,7 +211,8 @@ Writing them
 ------------
 
 The files of each index replace those of its folder: a file no entry
-needs any more is removed. The discovery document is written last.
+needs any more is removed. The discovery document is written last, with
+its pages of objects when it has many (below).
 
     // in writing the discovery document and the indexes:
     export async function writeIndexes(f) {
@@ -229,5 +230,53 @@ needs any more is removed. The discovery document is written last.
 
     export async function writeDiscovery(f) {
       await writeIndexes(f);
-      await f.storage.write('opensheaf.json', jsonBytes(await discovery(f)));
+      let doc = await discovery(f);
+      const pages = objectPages(doc.objects);
+      const stale = ((await f.storage.list(OBJECT_PAGES)) || [])
+        .filter((e) => e.kind === 'file' && e.name.endsWith('.json') && !Object.hasOwn(pages, `${OBJECT_PAGES}/${e.name}`));
+      for (const e of stale) await f.storage.remove(`${OBJECT_PAGES}/${e.name}`);
+      if ((await f.storage.kind(OBJECT_PAGES)) === 'dir' && !((await f.storage.list(OBJECT_PAGES)) || []).length) {
+        await f.storage.remove(OBJECT_PAGES);
+      }
+      if (Object.keys(pages).length) {
+        for (const [path, entries] of Object.entries(pages)) {
+          await f.storage.write(path, jsonBytes({ format: 'opensheaf-objects/0.2', objects: entries }));
+        }
+        doc = Object.fromEntries(Object.entries(doc).map(([k, v]) => (k === 'objects' ? ['objectPages', Object.keys(pages)] : [k, v])));
+      }
+      await f.storage.write('opensheaf.json', jsonBytes(doc));
+    }
+
+Pages
+-----
+
+An archive with many objects lists them in pages (section 3.1): in place
+of `objects`, `objectPages` lists the paths of page files, each with
+`format` `"opensheaf-objects/0.2"` and its entries. As opensheaf-py, this
+program pages beyond `OBJECTS_PER_PAGE` objects, a thousand, as the
+specification advises, in `objects/<p>.json`, `<p>` being the shortest
+prefix of the names that keeps every page within a thousand entries, as
+far as the names allow: names are digests, so objects spread evenly.
+Pages no longer written are removed. The pages are read back through the
+reader of an archive (`loadPages`, chapter [14](14-archive.md)), when the
+archive kept is opened (chapter [23](23-folder.md)) and when it is
+verified.
+
+    // in writing the discovery document and the indexes:
+    export const OBJECT_PAGES = 'objects';
+    export const PAGING = { perPage: 1000 };
+
+    export function objectPages(objs) {
+      if (objs.length <= PAGING.perPage) return {};
+      let groups;
+      for (let k = 1; k < 53; k++) {
+        groups = new Map();
+        for (const o of objs) {
+          const p = o.name.slice(0, k);
+          if (!groups.has(p)) groups.set(p, []);
+          groups.get(p).push(o);
+        }
+        if (Math.max(...[...groups.values()].map((g) => g.length)) <= PAGING.perPage) break;
+      }
+      return Object.fromEntries([...groups.keys()].sort(compareText).map((p) => [`${OBJECT_PAGES}/${p}.json`, groups.get(p)]));
     }

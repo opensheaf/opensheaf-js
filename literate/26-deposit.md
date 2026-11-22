@@ -148,14 +148,35 @@ Related works are given as `arxiv=ID` (the same work on arXiv, as
       dc.dates = [...(dc.dates || []).filter((d) => d.dateType !== dateType), entry];
     }
 
-The address in a description is the landing page of the line, which the
-website writes (`paper/<label>/`), or else the HTML version of a TeXmacs
-document, as in opensheaf-py.
+The address in a description is the landing page of the line, built from
+its name, never from its label, which may change (section 3.1, appendix
+A.3), as opensheaf-py's `landing_url` does: `paper/<name>/` for the
+originator's line, `paper/<name>-<owner>/` for another. The originator is
+given, or read from the genesis record held, or else taken to be the
+owner. The website writes the landing page there, and also at the label
+of a line that has one (chapter [31](31-website.md)). A new work has its
+name only once it is sealed, so the address is written last, with the
+name; a draft, which has none, has no `url`.
 
     // in creators and related works:
-    export function landingUrl(f, label) {
-      if (f.index.html || f.index.template) return `${f.archive.baseUrl}paper/${label}/`;
-      return `${f.archive.baseUrl}site/${label}/${label}.html`;
+    export async function nameAddress(f, id, originator = null) {
+      const [, name, owner] = id.split(':');
+      if (originator === null) {
+        originator = owner;
+        try {
+          const dir = await f.dirOf(id);
+          const inv = await f.inventory(dir);
+          const g = inv ? await f.readLogical(dir, inv, GENESIS, 'v1') : null;
+          if (g) originator = JSON.parse(new TextDecoder().decode(g)).originator ?? owner;
+        } catch {
+          originator = owner;
+        }
+      }
+      return originator === owner ? name : `${name}-${owner}`;
+    }
+
+    export async function landingUrl(f, id, originator = null) {
+      return `${f.archive.baseUrl}paper/${await nameAddress(f, id, originator)}/`;
     }
 
 The history, carried forward
@@ -280,8 +301,7 @@ written afresh, `active` and without the withdrawal; the deposit says so.
         docVersion = most + 1;
         owner = prevObj.owner;
       }
-      if (a.created && a.available) exit('give --created (a version not public at the time) or --available, not both');
-      const available = a.created ? null : (a.available || f.env.today());
+      const available = a.available || f.env.today();
       const issued = a.issued || (prevDc ? dateOf(prevDc, 'Issued') : null) || available;
       const source = a.source || null;
       if (source && suffixOf(source.name) === '.tm' && !a.pdf) {
@@ -313,7 +333,10 @@ written afresh, `active` and without the withdrawal; the deposit says so.
 
 The description of the version: DataCite 4.7, with the dates of section
 4.4 (Issued, the first public appearance of the work; Available, when
-this version became public, or Created, for a version that was not), and
+this version was first made available, by default the day of the deposit,
+whether the archive is public or not, an earlier date given for a version
+that appeared elsewhere first; and Created beside it, when a version
+deposited long after it was written was written), and
 the abstract and keywords of the version before unless new ones are
 given.
 
@@ -328,10 +351,10 @@ given.
         titles: [{ title: a.title }],
         creators: a.author.map(creator),
         publisher: { name: f.archive.name },
-        publicationYear: Number((issued || a.created).slice(0, 4)),
+        publicationYear: Number(issued.slice(0, 4)),
         types: { resourceTypeGeneral: a.type || 'Preprint' },
         version: String(docVersion),
-        url: landingUrl(f, label),
+        url: null,
         dates: [],
         language: a.language || 'en',
         formats,
@@ -340,12 +363,11 @@ given.
       if (a.keyword?.length) datacite.subjects = a.keyword.map((k) => ({ subject: k }));
       else if (prevDc?.subjects?.length) datacite.subjects = prevDc.subjects;
       if (issued) setDate(datacite, 'Issued', issued);
-      if (available) setDate(datacite, 'Available', available, a.dateInfo);
-      else setDate(datacite, 'Created', a.created, a.dateInfo);
+      setDate(datacite, 'Available', available, a.created ? null : a.dateInfo);
+      if (a.created) setDate(datacite, 'Created', a.created, a.dateInfo);
       if (abstract) datacite.descriptions = [{ description: abstract, descriptionType: 'Abstract' }];
       const related = relatedFromArgs(a.related);
       if (related.length) datacite.relatedIdentifiers = related;
-      if (draft) delete datacite.url;
 
 The `object.json` of the version (section 4.3): its kind, name, owner and
 document version; its main source and format, or why the sources are
@@ -363,7 +385,7 @@ of the version (NISO-JAV) and the file of its licence.
       obj.status = 'active';
       if (a.changes) obj.changes = { text: a.changes };
       if (a.agreement) {
-        obj.agreement = { by: datacite.creators.map((c) => c.name), date: available || a.created || f.env.today(),
+        obj.agreement = { by: datacite.creators.map((c) => c.name), date: available,
                           method: a.agreement };
       }
       if (a.stage) obj.stage = { scheme: 'NISO-JAV', value: a.stage };
@@ -391,7 +413,12 @@ is a branch (section 9.2), the notices, and the history.
       } else {
         files.set(GENESIS, await f.readLogical(dir, inv, GENESIS));
       }
-      if (!draft) obj.name = id.split(':')[1];
+      if (!draft) {
+        obj.name = id.split(':')[1];
+        datacite.url = await landingUrl(f, id);
+      } else {
+        delete datacite.url;
+      }
       if (prevObj?.parent) {
         obj.parent = prevObj.parent;
         const state = inv.versions[inv.head].state;

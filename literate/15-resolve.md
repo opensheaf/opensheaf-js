@@ -248,6 +248,10 @@ page of a collection shows under "What was met" and a verification under
               this.note('warning', `unavailable: ${where}: not an archive of specification 0.2`);
               return null;
             }
+            if (archive.pageProblems?.length) {
+              this.note('warning', `unavailable: ${where}: ${archive.pageProblems[0]}`);
+              return null;
+            }
             return archive;
           }, (error) => {
             if (error?.kind === 'aborted') {
@@ -407,7 +411,9 @@ an archive other than the home counts only if its discovery document
 lists the line; each copy found must be a copy of the line (below); and
 its statuses are judged against the key log met in every archive read so
 far, as opensheaf-py's `copies` does. A line taken down in an archive read
-and found elsewhere is noted (section 12.3).
+and found elsewhere is noted (section 12.3), and so is a checksum file
+missing or wrong at another archive: the bytes of an inventory decide a
+pin, and the checksum file does not make the copy fail (section 12.3).
 
     // in core/resolve.js:
       async copies(name, owner, where = [], options = {}) {
@@ -435,6 +441,18 @@ and found elsewhere is noted (section 12.3).
           if (problem) {
             this.note('warning', `${w}: ${id}: not a copy of the line: ${problem}`);
             continue;
+          }
+          if (archive !== this.home) {
+            for (const v of line.versions) {
+              if (!v.digest) continue;
+              const sc = await archive.sidecar(id, v.ver, options).catch((error) => {
+                if (error?.kind === 'aborted') throw error;
+                return '';
+              });
+              if (sc !== v.digest) {
+                this.note('warning', `${w}: ${id} ${v.ver}: the checksum file of its inventory is missing, or does not state its digest (section 12.3)`);
+              }
+            }
           }
           out.push(new Copy(w, archive, line));
         }
@@ -479,7 +497,9 @@ A pin
 The status of a pin (version, digest) of the line (name, owner), as
 section 8.5 defines it: the status of the version that holds the pin in a
 copy found; *mismatch* when copies were found and none holds it;
-*removed* or *unavailable* when none was found. A pin of a key log is
+*removed* or *unavailable* when none was found. A copy holding the
+version with another digest is noted with its location, whether another
+copy matches or not (section 12.3). A pin of a key log is
 verified when the key log met holds or carries that version (section
 12.3).
 
@@ -493,6 +513,10 @@ verified when the key log met holds or carries that version (section
         }
         const copies = await this.copies(name, owner, where, options);
         const n = isVersion(version) ? versionNumber(version) : 0;
+        for (const c of copies) {
+          const d = n ? c.digest(n) : null;
+          if (d && d !== digest) this.note('warning', `${c.where}: ${objectId(name, owner)} ${version} does not match the pin (section 12.3)`);
+        }
         for (const c of copies) {
           if (n && c.digest(n) === digest) return found(MEMBER_STATUS[c.status(n)] || 'not a version', c, version, digest, copies);
         }

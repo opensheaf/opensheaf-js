@@ -123,6 +123,10 @@ export class Resolver {
           this.note('warning', `unavailable: ${where}: not an archive of specification 0.2`);
           return null;
         }
+        if (archive.pageProblems?.length) {
+          this.note('warning', `unavailable: ${where}: ${archive.pageProblems[0]}`);
+          return null;
+        }
         return archive;
       }, (error) => {
         if (error?.kind === 'aborted') {
@@ -271,6 +275,18 @@ export class Resolver {
         this.note('warning', `${w}: ${id}: not a copy of the line: ${problem}`);
         continue;
       }
+      if (archive !== this.home) {
+        for (const v of line.versions) {
+          if (!v.digest) continue;
+          const sc = await archive.sidecar(id, v.ver, options).catch((error) => {
+            if (error?.kind === 'aborted') throw error;
+            return '';
+          });
+          if (sc !== v.digest) {
+            this.note('warning', `${w}: ${id} ${v.ver}: the checksum file of its inventory is missing, or does not state its digest (section 12.3)`);
+          }
+        }
+      }
       out.push(new Copy(w, archive, line));
     }
     if (out.length && await this.tombstoned(id, where, options)) {
@@ -312,6 +328,10 @@ export class Resolver {
     }
     const copies = await this.copies(name, owner, where, options);
     const n = isVersion(version) ? versionNumber(version) : 0;
+    for (const c of copies) {
+      const d = n ? c.digest(n) : null;
+      if (d && d !== digest) this.note('warning', `${c.where}: ${objectId(name, owner)} ${version} does not match the pin (section 12.3)`);
+    }
     for (const c of copies) {
       if (n && c.digest(n) === digest) return found(MEMBER_STATUS[c.status(n)] || 'not a version', c, version, digest, copies);
     }

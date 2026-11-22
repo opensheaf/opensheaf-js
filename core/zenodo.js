@@ -335,7 +335,7 @@ export async function deposit(f, label, z) {
     }
     const today = f.env.today();
     dc.doi = doi;
-    dc.url = dc.url || landingUrl(f, label);
+    dc.url = dc.url || await landingUrl(f, id);
     const rel = (dc.relatedIdentifiers || []).filter((r) => !(['IsVersionOf', 'IsNewVersionOf'].includes(r.relationType) &&
                                                                r.relatedIdentifier.includes('zenodo')));
     if (conceptDoi) rel.push({ relatedIdentifier: conceptDoi, relatedIdentifierType: 'DOI', relationType: 'IsVersionOf' });

@@ -73,7 +73,7 @@ export async function seal(f, args) {
   const { genesis, id: line } = await f.seal(head.kind, owner);
   const rest = Object.fromEntries(Object.entries(kept).filter(([k]) => !['format', 'specification', 'kind'].includes(k)));
   const obj = { format: kept.format, specification: kept.specification, kind: kept.kind, name: line.split(':')[1], owner, ...rest };
-  dc.url = landingUrl(f, label);
+  dc.url = await landingUrl(f, line);
   files.set(GENESIS, genesis);
   files.set('datacite.json', jsonBytes(dc));
   const done = await f.addVersion(line, files, obj, args.message || `Sealed from the draft ${args.label}`);

@@ -213,12 +213,13 @@ Writing a collection
 A new version of a collection, signed by its owner: `members.json`, in the
 order the collection declares, and `datacite.json`, whose title and
 description are kept unless new ones are given, with the DOIs of the
-members as parts. The document version of a collection counts the changes
+members as parts, and, for a collection with a label, the address of its
+landing page, built from its name (chapter [26](26-deposit.md)). The document version of a collection counts the changes
 of its members; a new title or description alone keeps it. Nothing
 changed, nothing is written.
 
     // in writing a collection:
-    export function describeCollection(f, title, description, version, issued, members, label = null) {
+    export function describeCollection(f, title, description, version, issued, members, url = null) {
       const cur = f.archive.curator;
       const creator = { name: cur.name, nameType: 'Personal', familyName: cur.familyName };
       if (cur.givenName) creator.givenName = cur.givenName;
@@ -227,7 +228,7 @@ changed, nothing is written.
                    version: String(version),
                    dates: [{ date: issued, dateType: 'Issued' }, { date: f.env.today(), dateType: 'Available' }],
                    rightsList: [{ ...RIGHTS['cc0-1.0'] }] };
-      if (label) dc.url = landingUrl(f, label);
+      if (url) dc.url = url;
       if (description) dc.descriptions = [{ description, descriptionType: 'Abstract' }];
       const dois = [...members.filter((m) => m.doi).map((m) => m.doi),
                     ...members.flatMap((m) => (m.revisions || []).filter((x) => x.doi).map((x) => x.doi))];
@@ -267,7 +268,8 @@ changed, nothing is written.
       label = label || f.labelOf(collId);
       const files = new Map([
         ['members.json', jsonBytes(mem)], [GENESIS, genesis],
-        ['datacite.json', jsonBytes(describeCollection(f, title, description, version, issued, mem.members, label))],
+        ['datacite.json', jsonBytes(describeCollection(f, title, description, version, issued, mem.members,
+                                                         label ? await landingUrl(f, collId) : null))],
       ]);
       const obj = { format: OBJ_FORMAT, specification: SPEC, kind: 'collection', name: collId.split(':')[1], owner,
                     documentVersion: version, status: 'active' };

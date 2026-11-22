@@ -15,7 +15,8 @@ that each copies, branches and checks what the other wrote:
 1. `resolve`, by its JSON, of a line, a document version, a pin, a short
    form and a key log, inside an archive and outside any;
 2. `mirror` of a line of an archive made by this program, into an archive
-   made by opensheaf-py: refused for a closed licence, made, brought up to
+   made by opensheaf-py: made with a warning for a closed licence (section
+   11.2), made, brought up to
    date by `mirror --all` up to the latest signed version only; the
    mirror's object is the source's, byte for byte;
 3. `accept` and `branch` in an archive made by this program, of a line of
@@ -145,7 +146,8 @@ Resolution and mirrors
         const outside = ['resolve', `sheaf:${name}`, '--at', 'https://example.org/authors/', '--json'];
         assert.deepEqual(json(ok(s.js(outside), 'js resolve')), json(ok(s.py(outside), 'py resolve')));
         assert.equal(json(s.js(outside)).status, 'verified');
-        await both(s, lib, ['mirror', `${await idOf(authors, 'closed')}?${at('authors')}`], { more: s.more, status: 1 });
+        const closed = await both(s, lib, ['mirror', `${await idOf(authors, 'closed')}?${at('authors')}`], { more: s.more });
+        await sameArchives(closed.a, closed.b);
         let { a, b } = await both(s, lib, ['mirror', `${id}?${at('authors')}`, '--label', 'copy'], { more: s.more });
         assert.deepEqual(await filesOf(path.join(b, 'ocfl', owner, name)), await filesOf(path.join(authors, 'ocfl', owner, name)));
         await sameArchives(a, b);

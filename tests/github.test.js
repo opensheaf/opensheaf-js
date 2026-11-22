@@ -526,7 +526,8 @@ test('an archive set up by the Manager with an owner made in the page is the one
     }
     assert.deepEqual(disc(A).map((o) => o.label).filter(Boolean).sort(), ['a-reading-list-on-sheaves', 'main']);
     sameFiles(A, B, newNames);
-    const outside = (m) => [...m.keys()].filter((x) => !/^(ocfl|names|sha512)\//.test(x)).sort();
+    const renamed = (x) => newNames.reduce((t, [n, r]) => t.split(n).join(r), x);
+    const outside = (m) => [...m.keys()].filter((x) => !/^(ocfl|names|sha512)\//.test(x)).map(renamed).sort();
     assert.deepEqual(outside(B), outside(A));
     const cfg = JSON.parse(text(B.get('osheaf.json')));
     assert.deepEqual([cfg.owner, cfg.baseUrl, cfg.index.html.featured, cfg.keys], [owner, 'https://jane.github.io/reading/',

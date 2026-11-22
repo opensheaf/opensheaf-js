@@ -115,7 +115,13 @@ export class ArchiveFolder {
     this.archive.profiles ??= [];
     this.archive.contact ??= this.archive.baseUrl;
     this.index = cfg.index || {};
-    this.labels = new Map((disc.objects || []).filter((o) => o.label).map((o) => [o.label, o.id]));
+    let listed = Array.isArray(disc.objects) ? disc.objects : [];
+    if (Object.hasOwn(disc, 'objectPages')) {
+      const paged = new Archive(new Http({ fetch: storageFetch(this.storage, ORIGIN), budget: null }), ORIGIN, disc);
+      await paged.loadPages();
+      listed = paged.pageProblems.length ? [] : paged.listed();
+    }
+    this.labels = new Map(listed.filter((o) => o && typeof o === 'object' && o.label).map((o) => [o.label, o.id]));
     this.catalogues = new Map((disc.owners || []).filter((e) => e && typeof e === 'object' && e.owner && e.catalogue)
       .map((e) => [e.owner, e.catalogue]));
     this.tombstones = [...(disc.tombstones || [])];

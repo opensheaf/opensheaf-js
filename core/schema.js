@@ -169,6 +169,7 @@ function collect(schema, data, root) {
 
 export const SCHEMA_FILES = {
   'opensheaf-archive/0.2': 'opensheaf-archive-0.2.schema.json',
+  'opensheaf-objects/0.2': 'opensheaf-objects-0.2.schema.json',
   'opensheaf-object/0.2': 'opensheaf-object-0.2.schema.json',
   'opensheaf-collection/0.2': 'opensheaf-collection-0.2.schema.json',
   'opensheaf-genesis/0.2': 'opensheaf-genesis-0.2.schema.json',

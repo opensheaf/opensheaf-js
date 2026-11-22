@@ -25,11 +25,11 @@ storage root, every file checked, and the open licences. The module is
     import { sidecarDigest } from './owners.js';
     import { fileName, WITNESSES } from './signatures.js';
     import { joinPath, readJson, writeText, ORIGIN } from './storage.js';
-    import { jsonText } from './write.js';
+    import { jsonText, sidecar } from './write.js';
     import { hex } from './crypto.js';
     import { randomBytes } from './keys.js';
     import { writeDiscovery } from './discovery.js';
-    import { exit, removeTree, CONFIG_NAME } from './folder.js';
+    import { exit, removeTree, CONFIG_NAME, Stop } from './folder.js';
     import { openResolver } from './collections.js';
     import { recordKeyLog, keyLogOf } from './owner.js';
     import { mayReturn } from './takedown.js';
@@ -122,10 +122,11 @@ Copying an object
 `upto` (by default its head), into the folder `dest` of the storage, as
 opensheaf-py's `fetch_object` does:
 
-1. the inventory of every version, from its version folder, with its
-   checksum file, which must state its digest (section 4.1); every path of
+1. the inventory of every version, from its version folder; every path of
    its manifest must be a content path of the object (`vK/content/...`,
-   `K` not after the version);
+   `K` not after the version). The bytes of an inventory decide its pin
+   (section 12.3): a checksum file missing, or not stating the digest, is
+   told to `warn`, and the copy gets one that states it;
 2. every file the inventory of the last version copied records, each
    checked against its digest: a file that does not match makes the copy
    unavailable, never a copy with a wrong file;
@@ -153,7 +154,12 @@ most (section 15.2), and a file `MAX_BYTES`.
       return parts.length >= 3 && /^v[1-9][0-9]*$/.test(parts[0]) && parts[1] === cd && Number(parts[0].slice(1)) <= n;
     }
 
-    export async function fetchObject(storage, archive, id, dest, { upto = null, witnessNames = null, where = archive.base } = {}) {
+    export function checksumWarning(where, id, n) {
+      return `${where}: ${id} v${n}: the checksum file of its inventory is missing, or does not state its digest (section 12.3)`;
+    }
+
+    export async function fetchObject(storage, archive, id, dest, { upto = null, witnessNames = null, where = archive.base,
+                                                                    warn = null } = {}) {
       await archive.locate(id);
       const fetched = { files: 0, bytes: 0 };
       const get = async (url) => {
@@ -187,9 +193,11 @@ most (section 15.2), and a file `MAX_BYTES`.
       let last = null;
       for (let n = 1; n <= upto; n++) {
         const data = await get(archive.inventoryUrl(id, `v${n}`));
-        const sc = await get(archive.versionUrl(id, `v${n}`, 'inventory.json.sha512'));
-        if (data === null || sc === null || sidecarDigest(sc) !== await sha512(data)) {
-          throw new Unavailable(`${where}: ${id} v${n} has no inventory with its checksum file (section 4.1)`);
+        if (data === null) throw new Unavailable(`${where}: ${id} v${n} has no inventory (section 4.1)`);
+        let sc = await get(archive.versionUrl(id, `v${n}`, 'inventory.json.sha512'));
+        if (sc === null || sidecarDigest(sc) !== await sha512(data)) {
+          if (warn) warn(checksumWarning(where, id, n));
+          sc = await sidecar(data);
         }
         let bad;
         try {
@@ -252,12 +260,16 @@ file (section 7.2).
 Open licences
 -------------
 
-Copying is redistribution, which the licence of every version copied must
-allow (section 11.2). A licence is recognised as open by its SPDX
-identifier, in lower case, or by its URL, by stem, the NonCommercial and
-NoDerivatives variants excluded; one open entry suffices. The list is
-opensheaf-py's, short on purpose; a curator who knows that redistribution
-is allowed otherwise says so with `--licence-checked`.
+Copying is redistribution, and the archive keeping a mirror answers for
+having the right to it, by the licences, the rights holders' agreement or
+law (section 11.2); the tool only warns when the licences do not show it.
+A licence is recognised as open by its SPDX identifier, in lower case, or
+by its URL, by stem, the NonCommercial and NoDerivatives variants
+excluded; one open entry suffices. The list is opensheaf-py's, short on
+purpose, and the tool's, not the format's: a version under none of these
+licences is copied with a warning, which a curator who knows that
+redistribution is allowed otherwise (by the authors' agreement) silences
+with `--licence-checked`.
 
     // in mirrors: open licences:
     export const OPEN = ['cc-by-4.0', 'cc-by-sa-4.0', 'cc0-1.0', 'gpl-3.0-only', 'gpl-3.0-or-later', 'cc-by-3.0'];
@@ -293,17 +305,20 @@ date, as opensheaf-py's `mirror_line` does:
    agree with it, or the fork of the line is reported and nothing copied
    (section 7.4); the versions copied stop at its latest signed version,
    never contested, and those after it are reported;
-4. a mirror held must agree with the copy; every new version must be
-   openly licensed, or the curator must have said so; a line taken down
-   here returns only from a copy holding the version its tombstone pins
-   (section 13.2, chapter [42](42-takedown.md));
+4. a mirror held must agree with the copy; a new version not under a
+   licence known to be open is reported, unless the curator has said that
+   the copy is allowed (section 11.2); a line taken down here returns only
+   from a copy holding the version its tombstone pins (section 13.2,
+   chapter [42](42-takedown.md));
 5. the object is copied into a staging folder and moved into place: a new
    mirror whole, an existing one by its new version folders, its new
    witness files and its root inventory. A witness file of the same name
    with other bytes is reported, and the mirror keeps its own.
 
 A line of an owner the archive hosts is never mirrored: it is written
-here.
+here. A tombstone of the line at a place copied from is reported first: a
+takedown there does not reach the mirror, which this archive keeps or
+takes down itself, answering for what it serves (section 13.3).
 
     // in mirrors: mirroring a line:
     export async function mirrorLine(f, name, owner, where, { licenceChecked = false, label = null } = {}) {
@@ -314,6 +329,14 @@ here.
       }
       const r = await openResolver(f);
       let copies = (await r.copies(name, owner, where)).filter((c) => c.archive !== r.home);
+      for (const w of r.places(where)) {
+        const archive = w === r.home?.base ? null : await r.source(w);
+        const t = archive?.tombstones().find((x) => x.id === id);
+        if (t) {
+          env.err(`Warning: ${id} was taken down at ${w} on ${t.date} (${t.reason}); this archive decides whether to ` +
+                  'keep its mirror, and answers for what it serves (section 13.3)');
+        }
+      }
       if (!copies.length) exit(`no copy of ${id} found at ${where.join(', ') || 'the places given'}`);
       const others = (r.logs.get(owner)?.found || []).filter((x) => x.where !== r.home.base).map((x) => [x.where, x.log]);
       const log = await recordKeyLog(f, owner, others);
@@ -365,8 +388,8 @@ The checks before copying.
         dc = null;
       }
       if (!licenceChecked && !isOpen(dc?.rightsList)) {
-        exit(`${id} v${n}: its licence does not clearly allow redistribution (section 11.2); give --licence-checked if ` +
-             'it is allowed otherwise');
+        env.err(`Warning: ${id} v${n}: its licence is not one known to allow redistribution; the archive answers for the ` +
+                'copy (section 11.2); give --licence-checked if it is allowed');
       }
     }
     if (!held && !(await mayReturn(f, id, async (n, d) => source.digest(n) === d))) {
@@ -381,7 +404,10 @@ The copy, through a staging folder of the archive.
     try {
       const fresh = joinPath(stage, 'object');
       try {
-        await fetchObject(s, source.archive, id, fresh, { upto: target, witnessNames: lineWitnessNames(log), where: source.where });
+        await fetchObject(s, source.archive, id, fresh, {
+          upto: target, witnessNames: lineWitnessNames(log), where: source.where,
+          warn: (m) => env.err(`Warning: ${m}; the mirror gets a checksum file that states it`),
+        });
       } catch (error) {
         if (error instanceof Unavailable) exit(error.message);
         throw error;
@@ -439,7 +465,8 @@ The command. `osheaf mirror URI` mirrors the line a `sheaf:` URI names, at
 the URI's `at` and the places given with `--at`; a label gives it a
 readable name here. Without an owner part, the URI names the originator's
 line, which the resolver finds. `osheaf mirror --all` brings every mirror
-up to date from the places remembered.
+up to date from the places remembered; a mirror that cannot be brought
+up to date (no copy found, a fork) is reported, and the others go on.
 
     // in mirrors: mirroring a line:
     export async function mirror(f, args) {
@@ -448,7 +475,12 @@ up to date from the places remembered.
         for (const id of Object.keys(known).sort()) {
           const [, name, owner] = id.split(':');
           if ((await f.storage.kind(joinPath(await f.dirOf(id), 'inventory.json'))) === 'file') {
-            await mirrorLine(f, name, owner, known[id], { licenceChecked: Boolean(args.licenceChecked) });
+            try {
+              await mirrorLine(f, name, owner, known[id], { licenceChecked: Boolean(args.licenceChecked) });
+            } catch (error) {
+              if (!(error instanceof Stop)) throw error;
+              f.env.err(`${id}: ${error.message}`);
+            }
           }
         }
         return;

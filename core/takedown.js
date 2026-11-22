@@ -5,6 +5,7 @@ import { joinPath, readJson } from './storage.js';
 import { writeIndexes, writeDiscovery } from './discovery.js';
 import { OBJ, GENESIS, CONFIG_NAME, exit } from './folder.js';
 import { lineOf } from './describe.js';
+import { nameAddress } from './deposit.js';
 
 export function tombstoneOf(f, id) {
   return f.tombstones.find((t) => t.id === id) ?? null;
@@ -92,12 +93,13 @@ export async function takedown(f, args) {
                  inventorySha512: sidecarDigest(await f.storage.read(joinPath(dir, 'inventory.json.sha512'))),
                  date: env.today(), reason: args.reason.trim() };
   await writeIndexes(f);
+  const home = await nameAddress(f, id);
   const label = f.labelOf(id);
   if (label) f.labels.delete(label);
   const cfg = await readJson(f.storage, CONFIG_NAME);
   const former = { ...(cfg.formerAddresses || {}) };
   const gone = Object.keys(former).filter((a) => former[a] === id);
-  for (const folder of [`paper/${label || name}`, `site/${label || name}`,
+  for (const folder of [`paper/${home}`, `paper/${label || name}`, `site/${label || name}`,
                         ...gone.filter((a) => LABEL.test(a)).map((a) => `site/${a}`)]) {
     await removeFolder(f.storage, folder);
   }

@@ -23,7 +23,10 @@ import { mirror } from '../core/mirror.js';
 import { branch } from '../core/branch.js';
 import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
 import { takedown } from '../core/takedown.js';
-import { currentVersion, versionsOf, withdrawnVersions } from '../core/versions.js';
+import { Resolver } from '../core/resolve.js';
+import { Http } from '../core/http.js';
+import { writeDiscovery, PAGING } from '../core/discovery.js';
+import { currentVersion, versionsOf, withdrawnVersions, dateOf } from '../core/versions.js';
 
 const schemas = await loadSchemas(async (url) => JSON.parse(await readFile(fileURLToPath(url), 'utf-8')));
 
@@ -206,6 +209,10 @@ test('init, deposit, collect, verify, in memory', async () => {
   assert.equal(dc.descriptions[0].description, 'An abstract.');
   assert.equal(dc.rightsList[0].rightsIdentifier, 'cc-by-4.0');
   assert.deepEqual(dc.subjects, [{ subject: 'x' }]);
+  assert.equal(dc.url, `https://example.org/papers/paper/${id.split(':')[1]}/`);
+  await deposit(f, paper('old-notes', { created: '2019-05-01' }));
+  const notes = (await head(f, 'old-notes', 'datacite.json')).json;
+  assert.deepEqual([dateOf(notes, 'Available'), dateOf(notes, 'Created')], [env.today(), '2019-05-01']);
   const obj = await g.readObjectJson(dir, inv, 'object.json');
   assert.equal(obj.documentVersion, 2);
   assert.equal(obj.previous, (await sha512hex(await storage.read(`${dir}/v1/inventory.json`))));
@@ -224,7 +231,6 @@ test('what a deposit refuses', async () => {
   await assert.rejects(deposit(f, paper('nopdf', { pdf: null })), /give the PDF/);
   await assert.rejects(deposit(f, paper('notpdf', { pdf: { name: 'x.pdf', bytes: utf8('hello') } })), /x.pdf is not a PDF/);
   await assert.rejects(deposit(f, paper('nosource', { source: null })), /--no-source REASON/);
-  await assert.rejects(deposit(f, paper('both', { created: '2020-01-01', available: '2020-02-01' })), /not both/);
   await assert.rejects(deposit(f, paper('tm', { source: { name: 'x.tm', bytes: utf8('') }, pdf: null })), /TeXmacs/);
   env.keys.clear();
   await assert.rejects(deposit(f, paper('unsigned')), (e) => e instanceof Stop && /holds 0 of the current keys/.test(e.message));
@@ -537,8 +543,10 @@ test('collections of the archive, and the website', async () => {
   assert.equal(await storage.kind('paper/picks/index.html'), 'file');
   assert.deepEqual(await errorsOf(storage), []);
   const landing = new TextDecoder().decode(await storage.read('paper/one/index.html'));
-  assert.match(landing, new RegExp(`sheaf:${f.labels.get('one').split(':')[1]}`));
-  await storage.remove('paper/one/index.html');
+  const oneName = f.labels.get('one').split(':')[1];
+  assert.match(landing, new RegExp(`sheaf:${oneName}`));
+  assert.equal(new TextDecoder().decode(await storage.read(`paper/${oneName}/index.html`)), landing);
+  await storage.remove(`paper/${oneName}/index.html`);
   assert.ok((await errorsOf(storage)).some((e) => /no landing page giving the sheaf: URI of one/.test(e)));
 });
 
@@ -603,6 +611,9 @@ test('mirrors, branches, drafts and takedowns, in memory', async () => {
   assert.deepEqual(await errorsOf(two.storage), []);
   assert.ok(two.env.said.some((l) => l.endsWith(`mirrored, v1 to v1, from ${at[0]}`)), two.env.said.join('\n'));
   await assert.rejects(mirror(two.f, { uri: id, at, label: 'copy' }), /not given to another line/);
+  await deposit(one.f, paper('closed', { rights: 'All rights reserved' }));
+  await mirror(two.f, { uri: one.f.labels.get('closed'), at });
+  assert.ok(two.env.said.some((l) => l.includes('not one known to allow redistribution')), two.env.said.join('\n'));
   await branch(two.f, { uri: `sheaf:${name}:${owner}/v1`, at, label: 'kept' });
   const kept = two.f.labels.get('kept');
   assert.equal(kept, `sheaf:${name}:${two.f.archive.owner}`);
@@ -618,6 +629,12 @@ test('mirrors, branches, drafts and takedowns, in memory', async () => {
   await draftDelete(two.f, { label: 'notes' });
   assert.equal((await readJson(two.storage, 'opensheaf.json')).drafts, undefined);
   assert.deepEqual(await errorsOf(two.storage), []);
+  const closed = one.f.labels.get('closed');
+  await takedown(one.f, { label: 'closed', reason: 'Withdrawn by its authors.', yes: true });
+  two.env.said.length = 0;
+  await mirror(two.f, { all: true });
+  assert.ok(two.env.said.some((l) => l.includes(`${closed} was taken down at`)), two.env.said.join('\n'));
+  assert.equal(await two.storage.kind(`${await two.f.dirOf(closed)}/inventory.json`), 'file');
   await takedown(two.f, { label: 'copy', reason: 'Stopped keeping it.', yes: true });
   const disc = await readJson(two.storage, 'opensheaf.json');
   assert.deepEqual(Object.keys(disc.tombstones[0]), ['id', 'kind', 'name', 'owner', 'genesisName', 'lastVersion',
@@ -628,4 +645,69 @@ test('mirrors, branches, drafts and takedowns, in memory', async () => {
   const found = await errorsOf(two.storage);
   assert.ok(found.some((x) => x.includes('kept v1: unchecked branch point')), found.join('\n'));
   assert.ok(!found.some((x) => x.startsWith('error')), found.join('\n'));
+});
+
+test('copies that disagree with a pin (section 12.3)', async () => {
+  const one = await newArchive();
+  await deposit(one.f, paper('first', { rights: 'cc-by-4.0' }));
+  const id = one.f.labels.get('first'), [, name, owner] = id.split(':');
+  const dir = await one.f.dirOf(id);
+  const digest = await sha512hex(await one.storage.read(`${dir}/v1/inventory.json`));
+  const inner = storageFetch(one.storage, 'https://example.org/papers/');
+  const fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u.startsWith('https://example.org/nocheck/')) {
+      if (u.endsWith('inventory.json.sha512')) return new Response('not found', { status: 404 });
+      return inner(u.replace('/nocheck/', '/papers/'), init);
+    }
+    if (u.startsWith('https://example.org/tampered/')) {
+      const real = u.replace('/tampered/', '/papers/');
+      const res = await inner(real, init);
+      if (res.ok && init.method !== 'HEAD' && real.endsWith(`${dir}/v1/inventory.json`)) {
+        const bytes = new Uint8Array([...new Uint8Array(await res.arrayBuffer()), 32]);
+        return new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.length) } });
+      }
+      return res;
+    }
+    return inner(u, init);
+  };
+  const fresh = () => new Resolver(new Http({ fetch, budget: null }));
+  const messages = (r) => r.notes.map((n) => n.message);
+  const [nocheck, tampered, papers] = ['nocheck', 'tampered', 'papers'].map((x) => `https://example.org/${x}/`);
+  let r = fresh();
+  assert.equal((await r.pin(name, owner, 'v1', digest, [nocheck])).status, 'verified');
+  assert.ok(messages(r).some((m) => m.startsWith(nocheck) && m.includes('the checksum file of its inventory is missing')),
+            messages(r).join('\n'));
+  r = fresh();
+  assert.equal((await r.pin(name, owner, 'v1', digest, [tampered, papers])).status, 'verified');
+  assert.ok(messages(r).includes(`${tampered}: ${id} v1 does not match the pin (section 12.3)`), messages(r).join('\n'));
+  r = fresh();
+  assert.equal((await r.pin(name, owner, 'v1', digest, [tampered])).status, 'mismatch');
+});
+
+test('the objects of the discovery document in pages (section 3.1)', async () => {
+  const { storage, f, env } = await newArchive();
+  PAGING.perPage = 2;
+  try {
+    for (const label of ['one', 'two', 'three']) await deposit(f, paper(label));
+    const disc = await readJson(storage, 'opensheaf.json');
+    assert.ok(!('objects' in disc) && disc.objectPages.length > 1);
+    const pages = await Promise.all(disc.objectPages.map((p) => readJson(storage, p)));
+    assert.ok(pages.every((p) => p.format === 'opensheaf-objects/0.2' && p.objects.length <= 2));
+    const listed = pages.flatMap((p) => p.objects.map((o) => o.id));
+    assert.equal(new Set(listed).size, listed.length);
+    assert.deepEqual(await errorsOf(storage), []);
+    assert.equal((await ArchiveFolder.open(storage, env)).labels.get('two'), f.labels.get('two'));
+    const first = disc.objectPages[0], saved = await storage.read(first);
+    await storage.remove(first);
+    assert.ok((await errorsOf(storage)).some((e) => /is missing \(section 3\.1\)/.test(e)));
+    await storage.write(first, saved);
+    PAGING.perPage = 1000;
+    await writeDiscovery(f);
+    assert.ok(!('objectPages' in await readJson(storage, 'opensheaf.json')));
+    assert.equal(await storage.kind('objects'), null);
+    assert.deepEqual(await errorsOf(storage), []);
+  } finally {
+    PAGING.perPage = 1000;
+  }
 });

@@ -5,11 +5,11 @@ import { parseSheaf, objectId, LABEL } from './names.js';
 import { sidecarDigest } from './owners.js';
 import { fileName, WITNESSES } from './signatures.js';
 import { joinPath, readJson, writeText, ORIGIN } from './storage.js';
-import { jsonText } from './write.js';
+import { jsonText, sidecar } from './write.js';
 import { hex } from './crypto.js';
 import { randomBytes } from './keys.js';
 import { writeDiscovery } from './discovery.js';
-import { exit, removeTree, CONFIG_NAME } from './folder.js';
+import { exit, removeTree, CONFIG_NAME, Stop } from './folder.js';
 import { openResolver } from './collections.js';
 import { recordKeyLog, keyLogOf } from './owner.js';
 import { mayReturn } from './takedown.js';
@@ -77,7 +77,12 @@ function contentPathOk(cp, inv, n) {
   return parts.length >= 3 && /^v[1-9][0-9]*$/.test(parts[0]) && parts[1] === cd && Number(parts[0].slice(1)) <= n;
 }
 
-export async function fetchObject(storage, archive, id, dest, { upto = null, witnessNames = null, where = archive.base } = {}) {
+export function checksumWarning(where, id, n) {
+  return `${where}: ${id} v${n}: the checksum file of its inventory is missing, or does not state its digest (section 12.3)`;
+}
+
+export async function fetchObject(storage, archive, id, dest, { upto = null, witnessNames = null, where = archive.base,
+                                                                warn = null } = {}) {
   await archive.locate(id);
   const fetched = { files: 0, bytes: 0 };
   const get = async (url) => {
@@ -111,9 +116,11 @@ export async function fetchObject(storage, archive, id, dest, { upto = null, wit
   let last = null;
   for (let n = 1; n <= upto; n++) {
     const data = await get(archive.inventoryUrl(id, `v${n}`));
-    const sc = await get(archive.versionUrl(id, `v${n}`, 'inventory.json.sha512'));
-    if (data === null || sc === null || sidecarDigest(sc) !== await sha512(data)) {
-      throw new Unavailable(`${where}: ${id} v${n} has no inventory with its checksum file (section 4.1)`);
+    if (data === null) throw new Unavailable(`${where}: ${id} v${n} has no inventory (section 4.1)`);
+    let sc = await get(archive.versionUrl(id, `v${n}`, 'inventory.json.sha512'));
+    if (sc === null || sidecarDigest(sc) !== await sha512(data)) {
+      if (warn) warn(checksumWarning(where, id, n));
+      sc = await sidecar(data);
     }
     let bad;
     try {
@@ -187,6 +194,14 @@ export async function mirrorLine(f, name, owner, where, { licenceChecked = false
   }
   const r = await openResolver(f);
   let copies = (await r.copies(name, owner, where)).filter((c) => c.archive !== r.home);
+  for (const w of r.places(where)) {
+    const archive = w === r.home?.base ? null : await r.source(w);
+    const t = archive?.tombstones().find((x) => x.id === id);
+    if (t) {
+      env.err(`Warning: ${id} was taken down at ${w} on ${t.date} (${t.reason}); this archive decides whether to ` +
+              'keep its mirror, and answers for what it serves (section 13.3)');
+    }
+  }
   if (!copies.length) exit(`no copy of ${id} found at ${where.join(', ') || 'the places given'}`);
   const others = (r.logs.get(owner)?.found || []).filter((x) => x.where !== r.home.base).map((x) => [x.where, x.log]);
   const log = await recordKeyLog(f, owner, others);
@@ -228,8 +243,8 @@ export async function mirrorLine(f, name, owner, where, { licenceChecked = false
       dc = null;
     }
     if (!licenceChecked && !isOpen(dc?.rightsList)) {
-      exit(`${id} v${n}: its licence does not clearly allow redistribution (section 11.2); give --licence-checked if ` +
-           'it is allowed otherwise');
+      env.err(`Warning: ${id} v${n}: its licence is not one known to allow redistribution; the archive answers for the ` +
+              'copy (section 11.2); give --licence-checked if it is allowed');
     }
   }
   if (!held && !(await mayReturn(f, id, async (n, d) => source.digest(n) === d))) {
@@ -240,7 +255,10 @@ export async function mirrorLine(f, name, owner, where, { licenceChecked = false
   try {
     const fresh = joinPath(stage, 'object');
     try {
-      await fetchObject(s, source.archive, id, fresh, { upto: target, witnessNames: lineWitnessNames(log), where: source.where });
+      await fetchObject(s, source.archive, id, fresh, {
+        upto: target, witnessNames: lineWitnessNames(log), where: source.where,
+        warn: (m) => env.err(`Warning: ${m}; the mirror gets a checksum file that states it`),
+      });
     } catch (error) {
       if (error instanceof Unavailable) exit(error.message);
       throw error;
@@ -298,7 +316,12 @@ export async function mirror(f, args) {
     for (const id of Object.keys(known).sort()) {
       const [, name, owner] = id.split(':');
       if ((await f.storage.kind(joinPath(await f.dirOf(id), 'inventory.json'))) === 'file') {
-        await mirrorLine(f, name, owner, known[id], { licenceChecked: Boolean(args.licenceChecked) });
+        try {
+          await mirrorLine(f, name, owner, known[id], { licenceChecked: Boolean(args.licenceChecked) });
+        } catch (error) {
+          if (!(error instanceof Stop)) throw error;
+          f.env.err(`${id}: ${error.message}`);
+        }
       }
     }
     return;

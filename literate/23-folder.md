@@ -168,7 +168,9 @@ The archive folder
 An archive is opened from its storage: the configuration and the
 discovery document, from which the labels of lines, the owner catalogues
 (`catalogues`, each owner hosted to its catalogue, section 8.1) and the
-tombstones are read, as opensheaf-py's `configure` reads them. Only the
+tombstones are read, as opensheaf-py's `configure` reads them; the labels
+come from the pages of objects of a discovery document that pages them
+(section 3.1), and a page missing gives none. Only the
 forms of the current draft are read, in the discovery document as in the
 configuration: `mainCollection`, and owners given as bare names, of
 earlier drafts of 0.2, are not. `writeConfig` writes
@@ -215,7 +217,13 @@ the settings of this run with it (opensheaf-py's `write_config`).
         this.archive.profiles ??= [];
         this.archive.contact ??= this.archive.baseUrl;
         this.index = cfg.index || {};
-        this.labels = new Map((disc.objects || []).filter((o) => o.label).map((o) => [o.label, o.id]));
+        let listed = Array.isArray(disc.objects) ? disc.objects : [];
+        if (Object.hasOwn(disc, 'objectPages')) {
+          const paged = new Archive(new Http({ fetch: storageFetch(this.storage, ORIGIN), budget: null }), ORIGIN, disc);
+          await paged.loadPages();
+          listed = paged.pageProblems.length ? [] : paged.listed();
+        }
+        this.labels = new Map(listed.filter((o) => o && typeof o === 'object' && o.label).map((o) => [o.label, o.id]));
         this.catalogues = new Map((disc.owners || []).filter((e) => e && typeof e === 'object' && e.owner && e.catalogue)
           .map((e) => [e.owner, e.catalogue]));
         this.tombstones = [...(disc.tombstones || [])];

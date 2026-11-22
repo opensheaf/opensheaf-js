@@ -355,7 +355,7 @@ the same with `--update`; a label of another paper refused.
         assert.equal(v2.agreement.method, 'deposited by an author');
         assert.deepEqual(v2.agreement.by, ['Doe, Jane', 'Roe, Richard']);
         const dc = await l.json('datacite.json', 'v2');
-        assert.equal(dc.url, 'https://example.org/T/paper/first-paper/');
+        assert.equal(dc.url, `https://example.org/T/paper/${l.id.split(':')[1]}/`);
         assert.equal(dc.version, '2');
         assert.deepEqual(await l.file('genesis.json'), await l.file('genesis.json', 'v1'));
         assert.match((await box.ok([...a.r, 'arxiv', 'import', dl])).out, /skipped: already archived as first-paper/);
@@ -448,7 +448,7 @@ version is a new version of the record, `IsNewVersionOf` the first.
         assert.match(dc.doi, /^10\.5281\/zenodo\./);
         assert.match(entry.record, /^https:\/\/zenodo\.org\/records\//);
         assert.equal(obj.documentVersion, 1);
-        assert.equal(dc.url, 'https://example.org/T/paper/p/');
+        assert.equal(dc.url, `https://example.org/T/paper/${l.id.split(':')[1]}/`);
         assert.deepEqual(Object.keys(box.zenodo.true.uploads).sort(), ['datacite.json', 'genesis.json', 'object.json', 'p.tex', 'paper.pdf']);
         assert.deepEqual(Buffer.from(box.zenodo.true.uploads['object.json']), await l.file('object.json'));
         assert.match((await box.run([...a.r, 'zenodo', 'p', '--production'])).err, /already on Zenodo/);

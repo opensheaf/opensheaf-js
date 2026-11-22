@@ -107,6 +107,8 @@ class Verification {
   async run() {
     const a = this.archive;
     this.schema('opensheaf.json', a.disc, 'archive');
+    for (const problem of a.pageProblems || []) this.add('error', 'opensheaf.json', problem);
+    for (const { path, page } of a.pages || []) this.schema(path, page, 'objects');
     await this.storageRoot();
     const ids = [...a.objects().map((o) => o.id), ...a.drafts().map((d) => d.id), ...(a.unlisted || [])];
     const entries = [...new Set(ids)].slice(0, LIMITS.objects);
@@ -615,7 +617,7 @@ class Verification {
     const a = this.archive;
     const disc = a.disc;
     const listed = new Map();
-    for (const e of Array.isArray(disc.objects) ? disc.objects : []) {
+    for (const e of a.listed()) {
       if (!isObject(e)) continue;
       if (listed.has(e.id)) this.add('error', 'opensheaf.json', `lists ${this.where(e.id)} twice`);
       listed.set(e.id, e);
@@ -827,11 +829,10 @@ class Verification {
       const pin = pins[pins.length - 1]?.pin || '';
       if (!page.includes(pin.slice(0, 32))) this.add(level, 'index.html', `does not show the pin of ${m?.name}` + note);
       if (!this.found.has(mid)) continue;
-      const same = [...this.found.keys()].filter((i) => i.startsWith(`sheaf:${m.name}:`)).length;
-      const landing = `paper/${a.labelOf(mid) || (same <= 1 ? m.name : `${m.name}-${m.owner}`)}/index.html`;
+      const originator = this.found.get(mid).rec?.originator === m.owner;
+      const landing = `paper/${originator ? m.name : `${m.name}-${m.owner}`}/index.html`;
       const text = await this.fetchOrNull(a.base + landing, LIMITS.page).catch((e) => { if (this.aborted(e)) throw e; return null; });
       const words = text ? new TextDecoder().decode(text) : '';
-      const originator = this.found.get(mid).rec?.originator === m.owner;
       if (originator ? !new RegExp(`sheaf:${m.name}(?![a-z0-9:/])`).test(words) : !words.includes(mid)) {
         this.add(level, landing, `no landing page giving the sheaf: URI of ${this.where(mid)} (appendix A.3)` + note);
       }

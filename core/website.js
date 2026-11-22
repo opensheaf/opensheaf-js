@@ -1,6 +1,6 @@
 // Generated from literate/31-website.md by opensheaf-literate: edit the document, not this file.
 import { readGenesis, objectId, parseId, SheafUri } from './names.js';
-import { historyOf, currentVersion, dateOf, pdfOf, memberPins } from './versions.js';
+import { historyOf, currentVersion, dateOf, pdfOf, memberPins, withdrawnVersions } from './versions.js';
 import { CONTESTED, SIGNED, VOUCHED } from './signatures.js';
 import { Http } from './http.js';
 import { pathOf } from './paths.js';
@@ -242,6 +242,8 @@ async function versionBlock(f, line, ver, shown, notices, root, vetted = null) {
   const out = [`<li class="version${n === shown ? ' is-current' : ''}" id="v${n}">`,
                `<div class="version-head">${head}</div>`];
   if (when) out.push(`<div class="version-date">${esc(when)}</div>`);
+  const withdrawn = withdrawnVersions(line.inv, line.objOf, line.signed || line.inv.head);
+  if (withdrawn.has(n)) out.push(withdrawalHtml(line.objOf(withdrawn.get(n))));
   if (changesNote(obj)) out.push(`<div class="changes">${esc(changesNote(obj))}</div>`);
   out.push(`<div class="files">${files.filter(Boolean).join(' · ')}</div>`);
   const uri = await pinUri(line, ver);

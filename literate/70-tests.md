@@ -48,7 +48,7 @@ The tests are written with `node:test` and `node:assert`, which both
     import { branch } from '../core/branch.js';
     import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
     import { takedown } from '../core/takedown.js';
-    import { currentVersion, versionsOf } from '../core/versions.js';
+    import { currentVersion, versionsOf, withdrawnVersions } from '../core/versions.js';
 
     <<an environment for the tests>>
 
@@ -398,6 +398,34 @@ same messages.
       ]);
     });
 
+A withdrawal is kept by the description-only versions after it, and only
+a new document version reinstates the line; a new document version is
+never a withdrawal (section 13.1). The cases of opensheaf-py's test, with
+the same messages.
+
+    // in tests of an archive in memory:
+    test('a withdrawal is kept until a new document version, which reinstates the line (section 13.1)', async () => {
+      const { storage, f } = await newArchive();
+      const gone = { date: '2026-03-01', reason: { text: 'An error.' } };
+      const withdrawn = (o) => { o.status = 'withdrawn'; o.withdrawal = gone; };
+      for (const label of ['pa', 'pb', 'pc']) await deposit(f, paper(label));
+      await again(f, 'pa', withdrawn);
+      await again(f, 'pa', (o) => { o.status = 'active'; delete o.withdrawal; });
+      await again(f, 'pb', (o) => { withdrawn(o); o.documentVersion = 2; }, { 'paper.pdf': utf8('%PDF-1.4 two\n') });
+      await again(f, 'pc', withdrawn);
+      await again(f, 'pc', (o) => { o.status = 'active'; delete o.withdrawal; o.documentVersion = 2; },
+                  { 'paper.pdf': utf8('%PDF-1.4 two\n') });
+      const errors = (await errorsOf(storage)).filter((e) => e.includes('(section 13.1)'));
+      assert.deepEqual(errors.sort(), [
+        'pa: v3 drops or changes the withdrawal of v2: only a new document version reinstates a line (section 13.1)',
+        'pb: v2 is a new document version and a withdrawal: a withdrawal is a description-only version (section 13.1)',
+      ]);
+      const h = await head(f, 'pc');
+      const objs = new Map();
+      for (const v of Object.keys(h.inv.versions)) objs.set(v, await f.readObjectJson(h.dir, h.inv, 'object.json', v));
+      assert.deepEqual([...withdrawnVersions(h.inv, (v) => objs.get(v) ?? null)], [[1, 'v2']]);
+    });
+
 A collection is a document whose source is `members.json` (section 4.2):
 a new member list is a new document version, and a description-only
 version may hold an earlier one, which leaves the current version where it
@@ -534,7 +562,28 @@ not all signed is extended only with `iKnow`.
       assert.equal(h.json.status, 'withdrawn');
       assert.equal(h.inv.head, 'v6');
       assert.ok(Object.values(h.inv.versions.v6.state).flat().includes('notices/n.md'));
-      await assert.rejects(deposit(f, paper('doc', { new: false })), /is withdrawn/);
+      await assert.rejects(deposit(f, paper('doc', { new: false })), /the files and the change note of the current version/);
+      await deposit(f, paper('doc', { new: false, pdf: { name: 'paper.pdf', bytes: utf8('%PDF-1.4 two\n') },
+                                      changes: 'Corrected; the error is fixed.' }));
+      assert.ok(f.env.said.some((l) => l.startsWith('Note: doc is withdrawn; this version reinstates it')), f.env.said.join('\n'));
+      h = await head(f, 'doc');
+      assert.equal(h.inv.head, 'v7');
+      assert.equal(h.json.documentVersion, 2);
+      assert.equal(h.json.status, 'active');
+      assert.ok(!('withdrawal' in h.json));
+      const objOf = async () => {
+        const m = new Map();
+        for (const v of Object.keys(h.inv.versions)) m.set(v, await f.readObjectJson(h.dir, h.inv, 'object.json', v));
+        return (v) => m.get(v) ?? null;
+      };
+      assert.deepEqual([...withdrawnVersions(h.inv, await objOf())], [[1, 'v6']]);
+      assert.deepEqual(await errorsOf(storage), []);
+      await readableIndex(f);
+      const page = new TextDecoder().decode(await storage.read('paper/doc/index.html'));
+      assert.equal(page.split('class="withdrawn"').length - 1, 1);
+      await withdraw(f, { label: 'doc', reason: 'Another error.' });
+      h = await head(f, 'doc');
+      assert.deepEqual([...withdrawnVersions(h.inv, await objOf())], [[1, 'v6'], [2, 'v8']]);
       assert.deepEqual(await errorsOf(storage), []);
     });
 

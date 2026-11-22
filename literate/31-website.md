@@ -31,7 +31,7 @@ website only, and warns.
 
     // in core/website.js:
     import { readGenesis, objectId, parseId, SheafUri } from './names.js';
-    import { historyOf, currentVersion, dateOf, pdfOf, memberPins } from './versions.js';
+    import { historyOf, currentVersion, dateOf, pdfOf, memberPins, withdrawnVersions } from './versions.js';
     import { CONTESTED, SIGNED, VOUCHED } from './signatures.js';
     import { Http } from './http.js';
     import { pathOf } from './paths.js';
@@ -248,9 +248,10 @@ A version of a line
 
 One document version on a landing page: its number and labels, its stage,
 whether it is the current or a vetted one, its status when it is not
-plainly signed, its date, its change note, its files (the PDF, the source,
-the inventory, the records elsewhere, arXiv, the DOI), its pin, and the
-notices about it.
+plainly signed, its date, its withdrawal if it is withdrawn (also after a
+new document version has reinstated the line, section 13.1), its change
+note, its files (the PDF, the source, the inventory, the records
+elsewhere, arXiv, the DOI), its pin, and the notices about it.
 
     // in a version of a line:
     async function fileUrl(f, root, line, ver, logical) {
@@ -324,6 +325,8 @@ notices about it.
       const out = [`<li class="version${n === shown ? ' is-current' : ''}" id="v${n}">`,
                    `<div class="version-head">${head}</div>`];
       if (when) out.push(`<div class="version-date">${esc(when)}</div>`);
+      const withdrawn = withdrawnVersions(line.inv, line.objOf, line.signed || line.inv.head);
+      if (withdrawn.has(n)) out.push(withdrawalHtml(line.objOf(withdrawn.get(n))));
       if (changesNote(obj)) out.push(`<div class="changes">${esc(changesNote(obj))}</div>`);
       out.push(`<div class="files">${files.filter(Boolean).join(' · ')}</div>`);
       const uri = await pinUri(line, ver);

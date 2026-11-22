@@ -118,13 +118,26 @@ export function ownFiles(inv, ver, obj) {
   return files;
 }
 
+export function withdrawnVersions(inv, objOf, at = inv.head) {
+  const out = new Map();
+  const held = [];
+  for (const ver of versionsOf(inv)) {
+    const obj = objOf(ver);
+    const n = obj?.documentVersion;
+    if (Number.isInteger(n) && !held.includes(n)) held.push(n);
+    if (obj?.status === 'withdrawn') for (const k of held) if (!out.has(k)) out.set(k, ver);
+    if (ver === at) break;
+  }
+  return out;
+}
+
 export function documentVersionErrors(inv, objOf) {
   const errors = [];
   const add = (ver, message) => errors.push({ ver, message });
   const versions = versionsOf(inv);
   const seen = new Map(), filesOfDoc = new Map(), missingOf = new Map();
   const fieldsOf = new Map(), externalOf = new Map();
-  let highest = 0, hadHistory = false, notices = [], prevVer = null;
+  let highest = 0, hadHistory = false, notices = [], prevVer = null, prevObj = null;
   const currentBefore = (at) => {
     if (!at) return null;
     const n = objOf(currentVersion(inv, objOf, at))?.documentVersion;
@@ -134,6 +147,7 @@ export function documentVersionErrors(inv, objOf) {
     const obj = objOf(ver);
     if (!obj || (obj.kind !== 'document' && obj.kind !== 'collection')) return errors;
     const n = obj.documentVersion;
+    const newDoc = !seen.has(n);
     const own = ownFiles(inv, ver, obj);
     const change = obj.changes?.text ?? null;
     if (!seen.size && obj.parent) highest = (Number.isInteger(n) ? n : 1) - 1;
@@ -179,6 +193,11 @@ export function documentVersionErrors(inv, objOf) {
     }
     fieldsOf.set(n, fields);
     externalOf.set(n, external);
+    if (newDoc && obj.status === 'withdrawn') {
+      add(ver, 'is a new document version and a withdrawal: a withdrawal is a description-only version (section 13.1)');
+    } else if (!newDoc && prevObj?.status === 'withdrawn' && (obj.status !== 'withdrawn' || !same(obj.withdrawal ?? null, prevObj.withdrawal ?? null))) {
+      add(ver, `drops or changes the withdrawal of ${prevVer}: only a new document version reinstates a line (section 13.1)`);
+    }
     const hist = obj.history;
     if (hadHistory && hist == null) add(ver, 'lacks the history of earlier versions');
     if (hist != null) {
@@ -212,6 +231,7 @@ export function documentVersionErrors(inv, objOf) {
     }
     notices = current;
     prevVer = ver;
+    prevObj = obj;
   }
   return errors;
 }

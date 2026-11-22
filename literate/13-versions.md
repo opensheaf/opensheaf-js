@@ -122,6 +122,28 @@ known at that version (section 8.3).
       return hist[hist.length - 1] || at;
     }
 
+A withdrawal (section 13.1) withdraws every document version deposited
+before it, in the order of deposit, and later description-only versions
+keep it; a new document version reinstates the line, and the versions
+withdrawn stay withdrawn. Which versions are withdrawn is read from the
+object versions themselves, up to `at`: each document version goes to the
+first withdrawal after the object version that first held it, as
+`withdrawn_versions` of opensheaf-py computes it.
+
+    // in the rules of document versions:
+    export function withdrawnVersions(inv, objOf, at = inv.head) {
+      const out = new Map();
+      const held = [];
+      for (const ver of versionsOf(inv)) {
+        const obj = objOf(ver);
+        const n = obj?.documentVersion;
+        if (Number.isInteger(n) && !held.includes(n)) held.push(n);
+        if (obj?.status === 'withdrawn') for (const k of held) if (!out.has(k)) out.set(k, ver);
+        if (ver === at) break;
+      }
+      return out;
+    }
+
 What each object version did
 ----------------------------
 
@@ -280,7 +302,7 @@ parent version, and the numbering continues from there.
       const versions = versionsOf(inv);
       const seen = new Map(), filesOfDoc = new Map(), missingOf = new Map();
       const fieldsOf = new Map(), externalOf = new Map();
-      let highest = 0, hadHistory = false, notices = [], prevVer = null;
+      let highest = 0, hadHistory = false, notices = [], prevVer = null, prevObj = null;
       const currentBefore = (at) => {
         if (!at) return null;
         const n = objOf(currentVersion(inv, objOf, at))?.documentVersion;
@@ -290,14 +312,17 @@ parent version, and the numbering continues from there.
         const obj = objOf(ver);
         if (!obj || (obj.kind !== 'document' && obj.kind !== 'collection')) return errors;
         const n = obj.documentVersion;
+        const newDoc = !seen.has(n);
         const own = ownFiles(inv, ver, obj);
         const change = obj.changes?.text ?? null;
         if (!seen.size && obj.parent) highest = (Number.isInteger(n) ? n : 1) - 1;
         <<check the number and the files of a document version>>
         <<check the fields that belong to a document version>>
+        <<check that a withdrawal is kept until a new document version>>
         <<check the history recorded in an object version>>
         <<check that an object version keeps the earlier notices>>
         prevVer = ver;
+        prevObj = obj;
       }
       return errors;
     }
@@ -371,6 +396,18 @@ The fields, in the order they are reported:
 
     // in the rules of document versions:
     const DOCUMENT_VERSION_FIELDS = ['mainSource', 'sourceFormat', 'sourcesMissing', 'renditions', 'toolchain'];
+
+A withdrawal is a description-only version: a new document version is
+never one. Once a line is withdrawn, every later object version keeps
+`status` `withdrawn` and the same `withdrawal` until a new document
+version reinstates it (section 13.1).
+
+    // in check that a withdrawal is kept until a new document version:
+    if (newDoc && obj.status === 'withdrawn') {
+      add(ver, 'is a new document version and a withdrawal: a withdrawal is a description-only version (section 13.1)');
+    } else if (!newDoc && prevObj?.status === 'withdrawn' && (obj.status !== 'withdrawn' || !same(obj.withdrawal ?? null, prevObj.withdrawal ?? null))) {
+      add(ver, `drops or changes the withdrawal of ${prevVer}: only a new document version reinstates a line (section 13.1)`);
+    }
 
 The history, once present, must stay; it may name only object versions
 that exist at that point; it must list each document version known so far

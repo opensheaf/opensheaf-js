@@ -185,7 +185,9 @@ export async function deposit(f, a) {
     prevObj = await f.readObjectJson(dir, inv, OBJ);
     prevDc = await f.readObjectJson(dir, inv, 'datacite.json');
     if (prevObj.kind !== 'document') exit(`${label} is not a document`);
-    if (prevObj.status === 'withdrawn') exit(`${label} is withdrawn (section 13.1): a withdrawn document gets no new versions`);
+    if (prevObj.status === 'withdrawn') {
+      f.env.err(`Note: ${label} is withdrawn; this version reinstates it, and the versions withdrawn stay withdrawn (section 13.1)`);
+    }
     let most = 0;
     for (const v of Object.keys(inv.versions)) most = Math.max(most, await docVersionOf(f, dir, inv, v));
     docVersion = most + 1;

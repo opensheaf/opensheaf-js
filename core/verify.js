@@ -1,7 +1,7 @@
 // Generated from literate/17-verify.md by opensheaf-literate: edit the document, not this file.
 import { sha512, pool, LIMITS, parseJson } from './http.js';
 import { Archive } from './archive.js';
-import { versionsOf, filesOf, documentVersionErrors, noticeWarnings, historyOf } from './versions.js';
+import { versionsOf, filesOf, documentVersionErrors, noticeWarnings, historyOf, withdrawnVersions } from './versions.js';
 import { versionNumber, logicalPathProblem, OWNER_NAME_LAYOUT, HASHED_LAYOUT, LAYOUT_FILE } from './paths.js';
 import { finding, schemaFindings, descriptionErrors, memberErrors, memberPins, indexEntries, INDEX_KEY } from './rules.js';
 import { readGenesis, nameOf, isNameOf, algorithm, objectId, parseId, isObject, OWNER_NAME } from './names.js';
@@ -418,6 +418,10 @@ class Verification {
       else {
         this.add('result', place, `latest signed version v${signed}`, { object: id });
         if (o.objs.get(`v${signed}`)?.status === 'withdrawn') this.add('result', place, 'withdrawn (section 13.1)', { object: id });
+        else {
+          const withdrawn = withdrawnVersions(o.inv, (v) => o.objs.get(v) ?? null, `v${signed}`);
+          if (withdrawn.size) this.add('result', place, `reinstated; withdrawn: document version(s) ${[...withdrawn.keys()].sort((x, y) => x - y).join(', ')} (section 13.1)`, { object: id });
+        }
       }
     }
     for (const ids of genesisNames.values()) {
@@ -527,7 +531,7 @@ class Verification {
         const context = { object: id, ver };
         for (const message of memberErrors(type, m)) this.add('error', who, message, context);
         if (this.found.has(mid)) {
-          await this.memberHeld(m, mid, who, type, context);
+          await this.memberHeld(m, mid, who, type, context, ver === o.inv.head);
         } else if (ver === o.inv.head) {
           await this.memberElsewhere(m, mid, who, context);
         }
@@ -535,7 +539,7 @@ class Verification {
     }
   }
 
-  async memberHeld(m, mid, who, type, context) {
+  async memberHeld(m, mid, who, type, context, inHead = false) {
     const a = this.archive;
     const held = this.found.get(mid);
     const sts = this.statuses.get(mid) || [];
@@ -559,6 +563,13 @@ class Verification {
       const s = k <= sts.length ? sts[k - 1] : null;
       if (s === UNSIGNED || s === INVALID) this.add('error', `${who} ${pv}`, 'not a version: a collection pins only signed versions (section 8.5)', context);
       else if (s === UNCHECKED || s === CONTESTED) this.add('warning', `${who} ${pv}`, `${s} (section 8.5)`, context);
+      const signed = latestSigned(sts);
+      if (inHead && signed) {
+        const withdrawn = withdrawnVersions(held.inv, (v) => held.objs.get(v) ?? null, `v${signed}`);
+        if (withdrawn.has(pobj.documentVersion)) {
+          this.add('result', `${who} ${pv}`, `document version ${pobj.documentVersion} is withdrawn, in ${withdrawn.get(pobj.documentVersion)} (section 13.1)`, context);
+        }
+      }
     }
     if (type === 'selection' && sts.length) {
       const signed = latestSigned(sts);

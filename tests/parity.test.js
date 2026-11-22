@@ -130,6 +130,15 @@ test('an archive made by opensheaf-py passes the verification of opensheaf-js, w
     assert.equal(j.status, 1);
     assert.match(p.stderr, /paper: these are the files and the change note of the current version, document version 3: nothing new to deposit \(section 4\.2\)/);
     assert.equal(j.stderr.trim(), p.stderr.trim());
+    ok(s.py(['withdraw', 'paper', '--reason', 'An error.'], { cwd: arch }), 'py withdraw');
+    const back = ok(s.js(['deposit', 'paper', '../paper.tex', ...DEPOSIT, '--pdf', '../paper2.pdf', '--changes', 'Back.'],
+                         { cwd: arch }), 'js deposit on a withdrawn py line');
+    assert.match(back.stderr, /Note: paper is withdrawn; this version reinstates it/);
+    const reinstated = findings(ok(s.py(['verify', '--json'], { cwd: arch }), 'py verify'));
+    assert.ok(reinstated.some((f) => f.includes('reinstated; withdrawn: document version(s) 1, 2, 3 (section 13.1)')),
+              reinstated.join('\n'));
+    assert.deepEqual(reinstated.filter((f) => !f.startsWith('result: ')), []);
+    assert.deepEqual(findings(s.js(['verify', '--json'], { cwd: arch })), reinstated);
   } finally {
     await s.done();
   }
@@ -342,6 +351,8 @@ test('descriptions and deposits from a file, by both, give the same files', { sk
       ['relicense', 'paper', '--rights', 'cc0-1.0', '--method', 'confirmed by email'],
       ['describe', 'paper', '--title', 'Another title', '--keyword', 'a', '--keyword', 'b', '--author', 'Roe, Richard|Elsewhere'],
       ['complete', 'bare', '--version', '1', '--source', '../paper.tex', '--extra-source', '../refs.bib=bib/refs.bib'],
+      ['deposit', 'paper', '../paper.tex', ...DEPOSIT, '--pdf', '../paper2.pdf', '--changes', 'Corrected; the error is fixed.'],
+      ['withdraw', 'paper', '--reason', 'Another error.'],
     ];
     for (const args of runs) {
       const { a, b } = await both(s, arch, args);
@@ -383,7 +394,7 @@ test('the website written by both is the same', { skip }, async () => {
     await papers(s);
     ok(s.py(await initArgs('arch', path.join(s.root, 'keys'))), 'py init');
     const arch = path.join(s.root, 'arch');
-    for (const label of ['one', 'two', 'three']) {
+    for (const label of ['one', 'two', 'three', 'four']) {
       ok(s.py(['deposit', label, '../paper.tex', ...DEPOSIT, '--title', `Paper ${label} on $x < y$ & "z"`, '--new',
                '--issued', '2024-0' + (label.length) + '-01'], { cwd: arch }), `py deposit ${label}`);
     }
@@ -394,6 +405,9 @@ test('the website written by both is the same', { skip }, async () => {
     ok(s.py(['notice', 'one', '--about', '1', '--replaces', '1', '--text', 'The erratum is withdrawn.'], { cwd: arch }),
        'py notice --replaces');
     ok(s.py(['withdraw', 'three', '--reason', 'Wrong.'], { cwd: arch }), 'py withdraw');
+    ok(s.py(['withdraw', 'four', '--reason', 'Wrong too.'], { cwd: arch }), 'py withdraw four');
+    ok(s.py(['deposit', 'four', '../paper.tex', ...DEPOSIT, '--pdf', '../paper2.pdf', '--changes', 'Back.'], { cwd: arch }),
+       'py deposit four, reinstated');
     ok(s.py(['collect'], { cwd: arch }), 'py collect');
     ok(s.py(['collection', 'new', 'picks', '--type', 'selection', '--title', 'Picks', '--description', 'Chosen.'],
             { cwd: arch }), 'py collection new');
@@ -402,6 +416,8 @@ test('the website written by both is the same', { skip }, async () => {
     assert.ok(pages.has('paper/one/index.html') && pages.has('paper/picks/index.html') && pages.has('sitemap.xml'));
     const landing = pages.get('paper/one/index.html').toString();
     assert.ok(!landing.includes('An erratum.') && landing.includes('Notice 3') && landing.includes('replacing notice 1'));
+    const four = pages.get('paper/four/index.html').toString();
+    assert.equal(four.split('class="withdrawn"').length - 1, 1);
     const cfg = JSON.parse(await readFile(path.join(arch, 'osheaf.json'), 'utf-8'));
     cfg.index.html.featured = 'picks';
     await writeFile(path.join(arch, 'osheaf.json'), JSON.stringify(cfg, null, 2) + '\n');

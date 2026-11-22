@@ -171,6 +171,10 @@ date its author issued it, today unless `--date` says otherwise.
 
 A withdrawal (section 13.1) sets the status `withdrawn`, with the date and
 the reason, and the date `Withdrawn` in `datacite.json`; the content stays.
+The withdrawal covers the versions deposited so far; the description-only
+versions after it (notices, relations) keep it, and a new document version
+(chapter [26](26-deposit.md)) reinstates the document, the versions
+withdrawn staying withdrawn.
 
     // in notices and withdrawals:
     export async function withdraw(f, a) {

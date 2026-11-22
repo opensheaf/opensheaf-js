@@ -231,6 +231,11 @@ archive; `new` makes the draft, and without it the draft must exist. A
 draft has no owner, no name, no genesis record and no landing page, and
 is not listed among the labels.
 
+A withdrawn document may get a new version: it reinstates the line, while
+the versions withdrawn stay withdrawn (section 13.1), and the new
+version's change note should say why the work is back. The new version is
+written afresh, `active` and without the withdrawal; the deposit says so.
+
     // in a deposit:
     export async function deposit(f, a) {
       const label = a.label;
@@ -267,7 +272,9 @@ is not listed among the labels.
         prevObj = await f.readObjectJson(dir, inv, OBJ);
         prevDc = await f.readObjectJson(dir, inv, 'datacite.json');
         if (prevObj.kind !== 'document') exit(`${label} is not a document`);
-        if (prevObj.status === 'withdrawn') exit(`${label} is withdrawn (section 13.1): a withdrawn document gets no new versions`);
+        if (prevObj.status === 'withdrawn') {
+          f.env.err(`Note: ${label} is withdrawn; this version reinstates it, and the versions withdrawn stay withdrawn (section 13.1)`);
+        }
         let most = 0;
         for (const v of Object.keys(inv.versions)) most = Math.max(most, await docVersionOf(f, dir, inv, v));
         docVersion = most + 1;

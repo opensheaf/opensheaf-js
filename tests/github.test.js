@@ -921,9 +921,18 @@ test('acting for another owner: a new version of its line goes into a branch', a
   const cfg = JSON.parse(text(await m.read('osheaf.json')));
   const [a, b] = [cfg.owner, cfg.owners[0]];
   const label = `first-${b.slice(0, 8)}`;
+  const catalogue = async (o) => {
+    const disc = JSON.parse(text(await m.read('opensheaf.json')));
+    const id = disc.owners.find((e) => e.owner === o).catalogue;
+    return disc.objects.find((x) => x.id === id);
+  };
+  const before = await catalogue(a);
+  assert.equal((await catalogue(b)).head, 'v1');
 
   const r1 = await carryOut(m, env, 'deposit', again, files(2), { schemas, owner: b });
   assert.ok(r1.ok, r1.message);
+  assert.deepEqual(await catalogue(a), before);
+  assert.equal((await catalogue(b)).head, 'v2');
   assert.ok(r1.done.includes(`in the new branch \`${label}\``), r1.done);
   assert.deepEqual([(await line(label)).owner, (await line(label)).head], [b, 'v2']);
   assert.deepEqual([(await line('first')).owner, (await line('first')).head], [a, 'v1']);

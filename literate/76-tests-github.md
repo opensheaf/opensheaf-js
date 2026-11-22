@@ -1443,8 +1443,10 @@ latest signed version, or from a version chosen and under a label
 chosen), then into that branch; the originator continuing a branch
 deposits into its own line; notices and members of collections are their
 owner's; a new paper and a new collection are the acting owner's; an
-owner the archive does not host is refused. The archive verifies after
-each.
+owner the archive does not host is refused. Each change touches the
+owner catalogue of the acting owner only (section 8.1): the first owner's
+stays as it was, and no key of the first owner signs anything for the
+second. The archive verifies after each.
 
     // in tests of the Manager's core:
     test('acting for another owner: a new version of its line goes into a branch', async () => {
@@ -1467,9 +1469,18 @@ each.
       const cfg = JSON.parse(text(await m.read('osheaf.json')));
       const [a, b] = [cfg.owner, cfg.owners[0]];
       const label = `first-${b.slice(0, 8)}`;
+      const catalogue = async (o) => {
+        const disc = JSON.parse(text(await m.read('opensheaf.json')));
+        const id = disc.owners.find((e) => e.owner === o).catalogue;
+        return disc.objects.find((x) => x.id === id);
+      };
+      const before = await catalogue(a);
+      assert.equal((await catalogue(b)).head, 'v1');
 
       const r1 = await carryOut(m, env, 'deposit', again, files(2), { schemas, owner: b });
       assert.ok(r1.ok, r1.message);
+      assert.deepEqual(await catalogue(a), before);
+      assert.equal((await catalogue(b)).head, 'v2');
       assert.ok(r1.done.includes(`in the new branch \`${label}\``), r1.done);
       assert.deepEqual([(await line(label)).owner, (await line(label)).head], [b, 'v2']);
       assert.deepEqual([(await line('first')).owner, (await line('first')).head], [a, 'v1']);

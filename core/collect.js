@@ -77,11 +77,10 @@ export async function collectOwner(f, owner, { curated = false, iKnow = false } 
     const m = { kind: 'document', name: obj.name, owner: obj.owner, at: [f.archive.baseUrl], version: signed,
                 inventorySha512: await sha512hex(await f.storage.read(joinPath(dir, signed, 'inventory.json'))),
                 follow: 'latest', cite };
-    m.cite.available = dateOf(dc, 'Available', 'Created');
+    if (dateOf(dc, 'Available', 'Created')) m.cite.available = dateOf(dc, 'Available', 'Created');
     members.push(m);
   }
   members = isCurated ? [] : memberOrder(members);
-  for (const m of members) delete m.cite.available;
   const today = f.env.today();
   let version = 1, issued = today;
   if (cinv) {

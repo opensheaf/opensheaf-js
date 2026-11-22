@@ -77,7 +77,11 @@ The order
 A catalogue in the order `issued-desc` (section 8.2) lists its members by
 their Issued date, then their Available date, newest first; members with
 neither come last; ties go by name and then owner. The Available date
-orders only: it is not part of the citation kept in the member. A
+(or `Created`, for a version not public at the time) is kept in the
+member's cached citation beside the Issued date (section 8.2): it is that
+of the current version, and changes with a new version of the member,
+which moves its pin anyway; keeping it lets any later sort of the written
+list give the same order. A
 collection of another order, `issued-asc`, gives it to `memberOrder`
 (chapter [30](30-collections.md)), as opensheaf-py sets its `ORDER` for a
 while.
@@ -155,11 +159,10 @@ when the owner gets a label later.
         const m = { kind: 'document', name: obj.name, owner: obj.owner, at: [f.archive.baseUrl], version: signed,
                     inventorySha512: await sha512hex(await f.storage.read(joinPath(dir, signed, 'inventory.json'))),
                     follow: 'latest', cite };
-        m.cite.available = dateOf(dc, 'Available', 'Created');
+        if (dateOf(dc, 'Available', 'Created')) m.cite.available = dateOf(dc, 'Available', 'Created');
         members.push(m);
       }
       members = isCurated ? [] : memberOrder(members);
-      for (const m of members) delete m.cite.available;
       const today = f.env.today();
       let version = 1, issued = today;
       if (cinv) {

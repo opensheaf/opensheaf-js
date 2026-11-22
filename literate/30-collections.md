@@ -99,7 +99,9 @@ Members and revisions
 
 A member caches a citation of its line (section 8.2) as of the version it
 pins: the title, the creators and the year of the current document version
-then, and the date `Issued`. A revision of a selection gives the document
+then, and the dates `Issued` and `Available` (or `Created`, for a version
+not public at the time), so that the members can be ordered again without
+resolving them. A revision of a selection gives the document
 version, the object version and its digest, and the DOI of that version.
 
     // in members and revisions:
@@ -108,6 +110,7 @@ version, the object version and its digest, and the DOI of that version.
       const out = { title: (dc.titles || [{}])[0]?.title ?? '', creators: (dc.creators || []).map(displayName) };
       if (Number.isInteger(dc.publicationYear)) out.year = dc.publicationYear;
       if (dateOf(dc, 'Issued')) out.issued = dateOf(dc, 'Issued');
+      if (dateOf(dc, 'Available', 'Created')) out.available = dateOf(dc, 'Available', 'Created');
       return out;
     }
 

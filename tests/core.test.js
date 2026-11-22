@@ -11,7 +11,7 @@ import { base32, utf8 } from '../core/crypto.js';
 import { ArchiveFolder, environment, Stop } from '../core/folder.js';
 import { init } from '../core/init.js';
 import { deposit, creator, checkRights } from '../core/deposit.js';
-import { collect } from '../core/collect.js';
+import { collect, memberOrder } from '../core/collect.js';
 import { verifyFolder } from '../core/check.js';
 import { loadSchemas } from '../core/schema.js';
 import { notice, withdraw, relate, relicense, describe, complete } from '../core/describe.js';
@@ -494,6 +494,19 @@ test('a notice replaces an earlier one, once (section 4.2)', async () => {
   const h = await head(f, 'p');
   assert.deepEqual(h.json.notices.map((n) => n.replaces ?? null), [null, null, 1]);
   assert.deepEqual(await errorsOf(storage), []);
+});
+
+test('the order of an owner catalogue is reproducible from its member list (section 8.2)', async () => {
+  const { storage, f } = await newArchive();
+  for (const [label, available, pdf] of [['pa', '2026-01-03', 'a'], ['pb', '2026-01-05', 'b'], ['pc', '2026-01-04', 'c']]) {
+    await deposit(f, paper(label, { issued: '2026-01-01', available, pdf: { name: 'paper.pdf', bytes: utf8(`%PDF-1.4 ${pdf}`) } }));
+  }
+  await collect(f);
+  await readableIndex(f);
+  assert.deepEqual(await errorsOf(storage), []);
+  const members = (await head(f, 'main', 'members.json')).json.members;
+  assert.deepEqual(members.map((m) => m.cite.available), ['2026-01-05', '2026-01-04', '2026-01-03']);
+  assert.deepEqual(memberOrder(structuredClone(members).reverse()), members);
 });
 
 test('collections of the archive, and the website', async () => {

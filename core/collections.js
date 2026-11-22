@@ -46,6 +46,7 @@ export async function cite(c, k) {
   const out = { title: (dc.titles || [{}])[0]?.title ?? '', creators: (dc.creators || []).map(displayName) };
   if (Number.isInteger(dc.publicationYear)) out.year = dc.publicationYear;
   if (dateOf(dc, 'Issued')) out.issued = dateOf(dc, 'Issued');
+  if (dateOf(dc, 'Available', 'Created')) out.available = dateOf(dc, 'Available', 'Created');
   return out;
 }
 

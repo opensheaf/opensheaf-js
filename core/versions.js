@@ -51,8 +51,8 @@ export function rolesOf(inv, objOf) {
   for (const ver of versionsOf(inv)) {
     const obj = objOf(ver);
     const n = obj?.documentVersion;
-    if (!obj || obj.kind !== 'document') {
-      roles[ver] = obj ? (obj.kind === 'owner' ? 'owner' : 'collection') : 'unknown';
+    if (!obj || (obj.kind !== 'document' && obj.kind !== 'collection')) {
+      roles[ver] = obj ? 'owner' : 'unknown';
       continue;
     }
     const files = Object.keys(ownFiles(inv, ver, obj)).length;
@@ -123,6 +123,7 @@ export function documentVersionErrors(inv, objOf) {
   const add = (ver, message) => errors.push({ ver, message });
   const versions = versionsOf(inv);
   const seen = new Map(), filesOfDoc = new Map(), missingOf = new Map();
+  const fieldsOf = new Map(), externalOf = new Map();
   let highest = 0, hadHistory = false, notices = [], prevVer = null;
   const currentBefore = (at) => {
     if (!at) return null;
@@ -131,7 +132,7 @@ export function documentVersionErrors(inv, objOf) {
   };
   for (const ver of versions) {
     const obj = objOf(ver);
-    if (!obj || obj.kind !== 'document') return errors;
+    if (!obj || (obj.kind !== 'document' && obj.kind !== 'collection')) return errors;
     const n = obj.documentVersion;
     const own = ownFiles(inv, ver, obj);
     const change = obj.changes?.text ?? null;
@@ -158,6 +159,26 @@ export function documentVersionErrors(inv, objOf) {
       filesOfDoc.set(n, own);
       missingOf.set(n, Boolean(obj.sourcesMissing));
     }
+    const fields = Object.fromEntries(DOCUMENT_VERSION_FIELDS.map((k) => [k, obj[k] ?? null]));
+    const external = Array.isArray(obj.external) ? obj.external : [];
+    if (fieldsOf.has(n)) {
+      const before = fieldsOf.get(n);
+      if (before.sourcesMissing) {
+        const now = Array.isArray(fields.renditions) ? fields.renditions : [];
+        if ((Array.isArray(before.renditions) ? before.renditions : []).some((r) => !now.some((x) => same(r, x)))) {
+          add(ver, `removes a rendition of document version ${n} (section 4.2)`);
+        }
+      } else {
+        for (const k of DOCUMENT_VERSION_FIELDS) {
+          if (!same(fields[k], before[k])) add(ver, `changes ${k} of document version ${n}, which belongs to it (section 4.2)`);
+        }
+      }
+      if (externalOf.get(n).some((e) => !external.some((x) => same(e, x)))) {
+        add(ver, `drops or changes an external record of document version ${n} (section 4.2)`);
+      }
+    }
+    fieldsOf.set(n, fields);
+    externalOf.set(n, external);
     const hist = obj.history;
     if (hadHistory && hist == null) add(ver, 'lacks the history of earlier versions');
     if (hist != null) {
@@ -184,3 +205,5 @@ export function documentVersionErrors(inv, objOf) {
   }
   return errors;
 }
+
+const DOCUMENT_VERSION_FIELDS = ['mainSource', 'sourceFormat', 'sourcesMissing', 'renditions', 'toolchain'];

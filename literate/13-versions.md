@@ -129,7 +129,9 @@ The explorer shows, for every object version, what it did to the
 document: deposited a new document version, completed one that lacked its
 sources, or only described one (a description-only version, section 4.2,
 which also covers notices and withdrawals). A version of a key log does
-none of these: it is a version of an owner (section 6). This is read from the same
+none of these: it is a version of an owner (section 6). A collection is a
+document whose source is `members.json` (section 4.2), and its versions
+have the same roles. This is read from the same
 data as the rules below: a document version seen before, with files added
 while its sources were missing, is a completion; seen before otherwise, a
 description.
@@ -141,8 +143,8 @@ description.
       for (const ver of versionsOf(inv)) {
         const obj = objOf(ver);
         const n = obj?.documentVersion;
-        if (!obj || obj.kind !== 'document') {
-          roles[ver] = obj ? (obj.kind === 'owner' ? 'owner' : 'collection') : 'unknown';
+        if (!obj || (obj.kind !== 'document' && obj.kind !== 'collection')) {
+          roles[ver] = obj ? 'owner' : 'unknown';
           continue;
         }
         const files = Object.keys(ownFiles(inv, ver, obj)).length;
@@ -264,9 +266,10 @@ description of the object, like `rightsList` in `datacite.json`: a
 description-only version may add or replace the file of the licence
 terms. The note of missing sources stays with the document version (a
 completion "changes or removes no file of the version", section 4.2).
-The check stops at the first object version that is not a document (a
-collection has no document versions) or whose `object.json` could not be
-read, as opensheaf-py does. A branch numbers on from its branch point
+A collection is a document whose source is `members.json` (section 4.2),
+and is checked the same way. The check stops at the first object version
+that is neither a document nor a collection or whose `object.json` could
+not be read, as opensheaf-py does. A branch numbers on from its branch point
 (section 9.4): its first version holds the document version of its
 parent version, and the numbering continues from there.
 
@@ -276,6 +279,7 @@ parent version, and the numbering continues from there.
       const add = (ver, message) => errors.push({ ver, message });
       const versions = versionsOf(inv);
       const seen = new Map(), filesOfDoc = new Map(), missingOf = new Map();
+      const fieldsOf = new Map(), externalOf = new Map();
       let highest = 0, hadHistory = false, notices = [], prevVer = null;
       const currentBefore = (at) => {
         if (!at) return null;
@@ -284,12 +288,13 @@ parent version, and the numbering continues from there.
       };
       for (const ver of versions) {
         const obj = objOf(ver);
-        if (!obj || obj.kind !== 'document') return errors;
+        if (!obj || (obj.kind !== 'document' && obj.kind !== 'collection')) return errors;
         const n = obj.documentVersion;
         const own = ownFiles(inv, ver, obj);
         const change = obj.changes?.text ?? null;
         if (!seen.size && obj.parent) highest = (Number.isInteger(n) ? n : 1) - 1;
         <<check the number and the files of a document version>>
+        <<check the fields that belong to a document version>>
         <<check the history recorded in an object version>>
         <<check that an object version keeps the earlier notices>>
         prevVer = ver;
@@ -330,6 +335,42 @@ the same check, with the same message.
       filesOfDoc.set(n, own);
       missingOf.set(n, Boolean(obj.sourcesMissing));
     }
+
+The fields that say what the files of a document version are belong to it,
+like its change note (section 4.2): every object version holding the
+document version has the same `mainSource`, `sourceFormat`,
+`sourcesMissing`, `renditions` and `toolchain`, except while its sources
+are missing, when a completion names them and may add renditions but drop
+none. The records at external services of a document version are only
+added to: each stays, unchanged, in every later object version holding it.
+opensheaf-py makes the same check, with the same messages.
+
+    // in check the fields that belong to a document version:
+    const fields = Object.fromEntries(DOCUMENT_VERSION_FIELDS.map((k) => [k, obj[k] ?? null]));
+    const external = Array.isArray(obj.external) ? obj.external : [];
+    if (fieldsOf.has(n)) {
+      const before = fieldsOf.get(n);
+      if (before.sourcesMissing) {
+        const now = Array.isArray(fields.renditions) ? fields.renditions : [];
+        if ((Array.isArray(before.renditions) ? before.renditions : []).some((r) => !now.some((x) => same(r, x)))) {
+          add(ver, `removes a rendition of document version ${n} (section 4.2)`);
+        }
+      } else {
+        for (const k of DOCUMENT_VERSION_FIELDS) {
+          if (!same(fields[k], before[k])) add(ver, `changes ${k} of document version ${n}, which belongs to it (section 4.2)`);
+        }
+      }
+      if (externalOf.get(n).some((e) => !external.some((x) => same(e, x)))) {
+        add(ver, `drops or changes an external record of document version ${n} (section 4.2)`);
+      }
+    }
+    fieldsOf.set(n, fields);
+    externalOf.set(n, external);
+
+The fields, in the order they are reported:
+
+    // in the rules of document versions:
+    const DOCUMENT_VERSION_FIELDS = ['mainSource', 'sourceFormat', 'sourcesMissing', 'renditions', 'toolchain'];
 
 The history, once present, must stay; it may name only object versions
 that exist at that point; it must list each document version known so far

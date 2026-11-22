@@ -375,7 +375,7 @@ class Verification {
         const dc = await a.json(id, o.inv, ver, 'datacite.json', this.options).catch((e) => { if (this.aborted(e)) throw e; return null; });
         for (const message of descriptionErrors(o.inv, ver, obj, dc)) this.add('error', `${place} ${ver}`, message, { object: id, ver });
       }
-      if (head.kind === 'document') {
+      if (head.kind === 'document' || head.kind === 'collection') {
         for (const e of documentVersionErrors(o.inv, (v) => o.objs.get(v) ?? null)) this.add('error', place, `${e.ver} ${e.message}`, { object: id, ver: e.ver });
       }
       let log = this.logs.get(owner) ?? null;

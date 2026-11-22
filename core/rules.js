@@ -35,11 +35,11 @@ export function descriptionErrors(inv, ver, obj, dc) {
   if (obj.kind === 'document') {
     if (obj.mainSource && !logical.includes(obj.mainSource)) out.push('main source not in the version');
     if (obj.sourcesMissing && obj.mainSource) out.push('sourcesMissing together with a main source');
-    for (const r of Array.isArray(obj.renditions) ? obj.renditions : []) {
-      if (!logical.includes(r?.path)) out.push(`rendition ${r?.path} not in the version`);
-    }
   } else if (obj.kind === 'collection' && !logical.includes('members.json')) {
     out.push('collection without members.json');
+  }
+  for (const r of Array.isArray(obj.renditions) ? obj.renditions : []) {
+    if (!logical.includes(r?.path)) out.push(`rendition ${r?.path} not in the version`);
   }
   return out;
 }

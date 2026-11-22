@@ -23,6 +23,7 @@ import { mirror } from '../core/mirror.js';
 import { branch } from '../core/branch.js';
 import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
 import { takedown } from '../core/takedown.js';
+import { currentVersion, versionsOf } from '../core/versions.js';
 
 const schemas = await loadSchemas(async (url) => JSON.parse(await readFile(fileURLToPath(url), 'utf-8')));
 
@@ -257,6 +258,61 @@ test('a deposit of the current files is refused; a revert is a new version (sect
   assert.deepEqual((await errorsOf(storage)).filter((e) => e.includes('section 4.2')),
                    ['p: v4 document version 4 holds the same files and change note as the current version 3: ' +
                     'it is no new document version (section 4.2)']);
+});
+
+async function again(f, label, change, replace = {}) {
+  const h = await head(f, label);
+  const files = new Map();
+  for (const p of Object.values(h.inv.versions[h.inv.head].state).flat()) {
+    if (p !== 'object.json') files.set(p, await f.readLogical(h.dir, h.inv, p));
+  }
+  for (const [p, bytes] of Object.entries(replace)) files.set(p, bytes);
+  const obj = structuredClone(h.json);
+  change(obj);
+  return f.addVersion(f.labels.get(label), files, obj, 'a version written by hand');
+}
+
+test('a description-only version keeps the fields of its document version (section 4.2)', async () => {
+  const { storage, f } = await newArchive();
+  const arxiv = { role: 'source', service: 'arXiv', record: 'https://arxiv.org/abs/2601.00001v1' };
+  const zenodo = { role: 'deposit', service: 'Zenodo', record: 'https://zenodo.org/records/1' };
+  for (const label of ['pa', 'pb', 'pc', 'pd']) await deposit(f, paper(label));
+  await again(f, 'pa', (o) => { o.renditions = o.renditions.map((r) => ({ ...r, mediaType: 'application/octet-stream' })); });
+  await again(f, 'pb', (o) => { o.external = [arxiv]; });
+  await again(f, 'pb', (o) => { o.external = [arxiv, zenodo]; });
+  await again(f, 'pc', (o) => { o.external = [arxiv]; });
+  await again(f, 'pc', (o) => { delete o.external; });
+  await again(f, 'pd', (o) => { o.toolchain = [{ name: 'TeX Live', version: '2026' }]; });
+  assert.deepEqual((await errorsOf(storage)).filter((e) => e.includes('section 4.2')).sort(), [
+    'pa: v2 changes renditions of document version 1, which belongs to it (section 4.2)',
+    'pc: v3 drops or changes an external record of document version 1 (section 4.2)',
+    'pd: v2 changes toolchain of document version 1, which belongs to it (section 4.2)',
+  ]);
+});
+
+test('collections follow the rules of documents (section 4.2)', async () => {
+  const { storage, f } = await newArchive();
+  await deposit(f, paper('one'));
+  await deposit(f, paper('two'));
+  await collect(f);
+  await collections.newCollection(f, { label: 'list', type: 'catalogue', title: 'List' });
+  await collections.add(f, { collection: 'list', uri: ['one'] });
+  await collections.add(f, { collection: 'list', uri: ['two'] });
+  let h = await head(f, 'list');
+  assert.equal(h.json.documentVersion, 3);
+  const at = async (n, ver) => {
+    const dc = await f.readObjectJson(h.dir, h.inv, 'datacite.json');
+    return { 'members.json': await f.readLogical(h.dir, h.inv, 'members.json', ver),
+             'datacite.json': utf8(jsonText({ ...dc, version: String(n) })) };
+  };
+  await again(f, 'list', (o) => { o.documentVersion = 2; }, await at(2, 'v2'));
+  h = await head(f, 'list');
+  const objs = new Map();
+  for (const v of versionsOf(h.inv)) objs.set(v, await f.readObjectJson(h.dir, h.inv, 'object.json', v));
+  assert.equal(currentVersion(h.inv, (v) => objs.get(v)), 'v3');
+  assert.deepEqual((await errorsOf(storage)).filter((e) => e.startsWith('list:')), []);
+  await again(f, 'list', (o) => { o.documentVersion = 3; }, await at(3, 'v1'));
+  assert.ok((await errorsOf(storage)).includes('list: v5 has other files than document version 3'));
 });
 
 test('a file changed behind the archive', async () => {

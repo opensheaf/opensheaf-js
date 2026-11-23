@@ -328,6 +328,26 @@ when the checksum file states the digest of the bytes served.
         return sidecarDigest(await this.sidecarBytes(id, ver, options)) ?? '';
       }
 
+The root inventory is not signed: a signature signs the copy in a version
+folder (section 7.1). What is read of a line, its versions and their
+files, is therefore read through the copy in the folder of the head
+version, as opensheaf-py's resolver does: the root inventory only names
+the head, and the copy of that version must be one of the same object
+and of that version.
+
+    // in core/archive.js:
+      async headInventory(id, options = {}) {
+        const root = await this.inventory(id, null, options);
+        if (!isVersion(root.head)) {
+          throw new FetchError('json', this.inventoryUrl(id, null), 'names no head version (section 4.1)');
+        }
+        const inv = await this.inventory(id, root.head, options);
+        if (inv.id !== root.id || inv.head !== root.head) {
+          throw new FetchError('json', this.inventoryUrl(id, root.head), `is not the inventory of ${root.head} of the object`);
+        }
+        return inv;
+      }
+
 Files
 -----
 
@@ -336,6 +356,13 @@ state of the version and the manifest (chapter [13](13-versions.md)). JSON
 files are read with the limit on JSON; other small files (a genesis
 record, a key log's `keys.json`, the evidence of a branch) as bytes.
 
+Every file read has the digest the inventory states for it, or is not
+read: a server, a mirror above all, may serve other bytes at the content
+path, and what the signatures sign is the inventory, which binds the
+content only through these digests (section 4.1). A file whose bytes do
+not have that digest is refused with an error of kind `digest`, as
+opensheaf-py refuses a copy with such a file.
+
     // in core/archive.js:
       fileUrl(id, inv, ver, logical) {
         const cp = contentPath(inv, ver, logical);
@@ -343,17 +370,20 @@ record, a key log's `keys.json`, the evidence of a branch) as bytes.
       }
 
       async json(id, inv, ver, logical, options = {}) {
-        await this.locate(id);
-        const url = this.fileUrl(id, inv, ver, logical);
-        if (!url) return null;
-        return this.http.json(url, { ...options, limit: LIMITS.json });
+        const bytes = await this.bytes(id, inv, ver, logical, options);
+        return bytes === null ? null : parseJson(bytes, this.fileUrl(id, inv, ver, logical));
       }
 
       async bytes(id, inv, ver, logical, options = {}) {
         await this.locate(id);
         const url = this.fileUrl(id, inv, ver, logical);
         if (!url) return null;
-        return this.http.cached(url, { ...options, limit: LIMITS.json });
+        const bytes = await this.http.cached(url, { ...options, limit: LIMITS.json });
+        const digest = filesOf(inv, ver)[logical];
+        if (typeof digest !== 'string' || (await sha512(bytes)) !== digest.toLowerCase()) {
+          throw new FetchError('digest', url, `does not have the digest its inventory states for ${logical} (section 4.1)`);
+        }
+        return bytes;
       }
 
       async descriptions(id, inv, ver, options = {}) {
@@ -375,7 +405,7 @@ record, a key log's `keys.json`, the evidence of a branch) as bytes.
       }
 
       async history(id, at, options = {}) {
-        const inv = await this.inventory(id, null, options);
+        const inv = await this.headInventory(id, options);
         const objs = await this.objectsOf(id, inv, options);
         const objOf = (v) => objs.get(v) ?? null;
         return { inv, objs, hist: historyOf(inv, objOf, at || inv.head), current: currentVersion(inv, objOf, at || inv.head) };
@@ -533,7 +563,8 @@ versions they name are not reached; a version without signature files,
 which it finds unsigned, the explorer cannot tell from one whose files
 it could not name, and also calls unchecked).
 
-The answer is kept for the session: `inv`, the root inventory; `versions`,
+The answer is kept for the session: `inv`, the inventory of the head
+version (the copy in its folder, not the root inventory); `versions`,
 for each object version, its digest and `object.json`; `log`, `statuses`,
 `judgements`; `latest`, the latest signed version (`vN` or `null`); and
 `unnamed` when the signature files could not be named.
@@ -552,7 +583,7 @@ for each object version, its digest and `object.json`; `log`, `statuses`,
 
       async readLine(id, { log, signal } = {}) {
         const options = { signal };
-        const inv = await this.inventory(id, null, options);
+        const inv = await this.headInventory(id, options);
         const names = versionsOf(inv);
         const objs = await this.objectsOf(id, inv, options);
         const versions = await Promise.all(names.map(async (ver) => {

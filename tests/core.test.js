@@ -685,6 +685,46 @@ test('copies that disagree with a pin (section 12.3)', async () => {
   assert.equal((await r.pin(name, owner, 'v1', digest, [tampered])).status, 'mismatch');
 });
 
+test('a mirror serving a root inventory or content of its own (section 12.3)', async () => {
+  const one = await newArchive();
+  await deposit(one.f, paper('first'));
+  const id = one.f.labels.get('first'), [, name, owner] = id.split(':');
+  const dir = await one.f.dirOf(id);
+  const root = await readJson(one.storage, `${dir}/inventory.json`);
+  const genuine = Object.entries(root.versions.v1.state).find(([, ps]) => ps.includes('datacite.json'))[0];
+  const dc = await readJson(one.storage, `${dir}/${root.manifest[genuine][0]}`);
+  const forged = utf8(JSON.stringify({ ...dc, titles: [{ title: 'A forged title' }] }));
+  const d = await sha512hex(forged);
+  const state = root.versions.v1.state;
+  state[genuine] = state[genuine].filter((p) => p !== 'datacite.json');
+  if (!state[genuine].length) delete state[genuine];
+  state[d] = ['datacite.json'];
+  root.manifest[d] = ['v1/content/forged.json'];
+  const inner = storageFetch(one.storage, 'https://example.org/papers/');
+  const genuinePath = (await readJson(one.storage, `${dir}/inventory.json`)).manifest[genuine][0];
+  const fetch = async (url, init = {}) => {
+    const u = String(url);
+    for (const [mirror, served] of [['rootinv', { 'inventory.json': utf8(JSON.stringify(root)), 'v1/content/forged.json': forged }],
+                                    ['swapped', { [genuinePath]: forged }]]) {
+      if (!u.startsWith(`https://example.org/${mirror}/`)) continue;
+      const real = u.replace(`/${mirror}/`, '/papers/');
+      for (const [rel, bytes] of Object.entries(served)) {
+        if (real.endsWith(`${dir}/${rel}`)) return new Response(bytes, { status: 200 });
+      }
+      return inner(real, init);
+    }
+    return inner(u, init);
+  };
+  const fresh = () => new Resolver(new Http({ fetch, budget: null }));
+  let r = fresh();
+  let res = await r.latest(name, owner, ['https://example.org/rootinv/']);
+  assert.equal(res.status, 'verified');
+  assert.equal((await r.describe(res)).title, 'A paper');
+  r = fresh();
+  res = await r.latest(name, owner, ['https://example.org/swapped/']);
+  await assert.rejects(r.describe(res), (e) => e.kind === 'digest' && /does not have the digest/.test(e.message));
+});
+
 test('the objects of the discovery document in pages (section 3.1)', async () => {
   const { storage, f, env } = await newArchive();
   PAGING.perPage = 2;

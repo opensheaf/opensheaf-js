@@ -199,23 +199,38 @@ export class Archive {
     return sidecarDigest(await this.sidecarBytes(id, ver, options)) ?? '';
   }
 
+  async headInventory(id, options = {}) {
+    const root = await this.inventory(id, null, options);
+    if (!isVersion(root.head)) {
+      throw new FetchError('json', this.inventoryUrl(id, null), 'names no head version (section 4.1)');
+    }
+    const inv = await this.inventory(id, root.head, options);
+    if (inv.id !== root.id || inv.head !== root.head) {
+      throw new FetchError('json', this.inventoryUrl(id, root.head), `is not the inventory of ${root.head} of the object`);
+    }
+    return inv;
+  }
+
   fileUrl(id, inv, ver, logical) {
     const cp = contentPath(inv, ver, logical);
     return cp ? this.contentUrl(id, inv, cp) : null;
   }
 
   async json(id, inv, ver, logical, options = {}) {
-    await this.locate(id);
-    const url = this.fileUrl(id, inv, ver, logical);
-    if (!url) return null;
-    return this.http.json(url, { ...options, limit: LIMITS.json });
+    const bytes = await this.bytes(id, inv, ver, logical, options);
+    return bytes === null ? null : parseJson(bytes, this.fileUrl(id, inv, ver, logical));
   }
 
   async bytes(id, inv, ver, logical, options = {}) {
     await this.locate(id);
     const url = this.fileUrl(id, inv, ver, logical);
     if (!url) return null;
-    return this.http.cached(url, { ...options, limit: LIMITS.json });
+    const bytes = await this.http.cached(url, { ...options, limit: LIMITS.json });
+    const digest = filesOf(inv, ver)[logical];
+    if (typeof digest !== 'string' || (await sha512(bytes)) !== digest.toLowerCase()) {
+      throw new FetchError('digest', url, `does not have the digest its inventory states for ${logical} (section 4.1)`);
+    }
+    return bytes;
   }
 
   async descriptions(id, inv, ver, options = {}) {
@@ -237,7 +252,7 @@ export class Archive {
   }
 
   async history(id, at, options = {}) {
-    const inv = await this.inventory(id, null, options);
+    const inv = await this.headInventory(id, options);
     const objs = await this.objectsOf(id, inv, options);
     const objOf = (v) => objs.get(v) ?? null;
     return { inv, objs, hist: historyOf(inv, objOf, at || inv.head), current: currentVersion(inv, objOf, at || inv.head) };
@@ -355,7 +370,7 @@ export class Archive {
 
   async readLine(id, { log, signal } = {}) {
     const options = { signal };
-    const inv = await this.inventory(id, null, options);
+    const inv = await this.headInventory(id, options);
     const names = versionsOf(inv);
     const objs = await this.objectsOf(id, inv, options);
     const versions = await Promise.all(names.map(async (ver) => {

@@ -658,7 +658,7 @@ is needed; several are ambiguous, and listed (section 12.2).
 
       async originator(archive, id, options = {}) {
         try {
-          const inv = await archive.inventory(id, null, options);
+          const inv = await archive.headInventory(id, options);
           const genesis = await archive.bytes(id, inv, 'v1', 'genesis.json', options);
           return genesis ? (await readGenesis(genesis)).originator ?? null : null;
         } catch (error) {

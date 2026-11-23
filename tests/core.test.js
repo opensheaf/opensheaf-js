@@ -686,6 +686,46 @@ test('only http and https addresses become links', async () => {
   assert.equal(link('https://x/?a=1&b', 'x'), '<a href="https://x/?a=1&amp;b">x</a>');
 });
 
+test('a member elsewhere whose files are not those pinned', async () => {
+  const p = await newArchive();
+  await deposit(p.f, paper('one', { title: 'One' }));
+  const a = await newArchive({ baseUrl: 'https://example.org/author/' });
+  a.f.env.fetch = storageFetch(p.storage, 'https://example.org/papers/');
+  const id = p.f.labels.get('one');
+  await collections.sync(a.f, { collection: 'list', fromFile: { name: 'list.yaml', given: 'list.yaml',
+    text: `title: A list\ntype: catalogue\nmembers:\n  - uri: '${id}'\n    at: ['https://example.org/papers/']\n` } });
+  a.f.index.html = { ...(a.f.index.html || {}), featured: 'list' };
+  const home = async () => {
+    await readableIndex(a.f);
+    return new TextDecoder().decode(await a.storage.read('index.html'));
+  };
+  let page = await home();
+  assert.ok(page.includes('>One</a>') && !page.includes('cached citation'), page);
+  const d = await p.f.dirOf(id);
+  const inv = await readJson(p.storage, `${d}/inventory.json`);
+  const [dig, [cp]] = Object.entries(inv.manifest).find(([k]) => inv.versions.v1.state[k]?.includes('datacite.json'));
+  const saved = await p.storage.read(`${d}/${cp}`);
+  await p.storage.write(`${d}/${cp}`, utf8(new TextDecoder().decode(saved).replace('"One"', '"Forged"')));
+  page = await home();
+  assert.ok(!page.includes('Forged') && page.includes('archive unavailable: cached citation'), page);
+  const dc = JSON.parse(new TextDecoder().decode(saved));
+  dc.titles = [];
+  const forged = utf8(JSON.stringify(dc)), fd = await sha512hex(forged);
+  await p.storage.write(`${d}/${cp}`, forged);
+  delete inv.manifest[dig];
+  inv.manifest[fd] = [cp];
+  inv.versions.v1.state[fd] = inv.versions.v1.state[dig];
+  delete inv.versions.v1.state[dig];
+  const raw = utf8(JSON.stringify(inv));
+  await p.storage.write(`${d}/v1/inventory.json`, raw);
+  await p.storage.write(`${d}/inventory.json`, raw);
+  const mem = (await head(a.f, 'list', 'members.json')).json;
+  mem.members[0].inventorySha512 = await sha512hex(raw);
+  await collections.write(a.f, a.f.labels.get('list'), mem, { message: 'a pin by hand' });
+  page = await home();
+  assert.ok(page.includes('archive unavailable: cached citation') && page.includes('>One<'), page);
+});
+
 test('a pin to a key-log version that is not one', async () => {
   const { storage, f, env } = await newArchive();
   const owner = f.archive.owner;

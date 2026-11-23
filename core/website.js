@@ -604,15 +604,9 @@ async function remoteEntry(site, m, root = '', showOwner = false) {
     ({ archive: archiveName, at } = view);
     links.push('<span class="contested">mismatch: its archive holds another version under this pin</span>');
   } else {
-    ({ archive: archiveName, at } = view);
-    const dc = view.dc;
-    title = dc.titles[0].title;
-    by = authorsOf(dc);
-    abstract = abstractHtml(dc);
+    ({ archive: archiveName, at, title, by, abstract, withdrawn, landing } = view);
     if (view.pdf) links.push(link(view.pdf, 'PDF'));
-    landing = safeUrl(dc.url);
     if (landing) links.unshift(link(landing, 'landing page'));
-    withdrawn = withdrawalHtml(view.state || {}, ' by its owner');
   }
   return [
     `<li class="paper member${withdrawn ? ' withdrawn' : ''}">`,
@@ -671,12 +665,15 @@ async function remoteView(site, m) {
       const path = src.root + (await pathOf(id, src.disc.storageLayout)).join('/');
       const data = await src.get(`${path}/${pinVer}/inventory.json`);
       if (data === null) continue;
-      const view = { archive: src.disc.name || at, at: src.at || at };
+      const name = src.disc.name;
+      const view = { archive: typeof name === 'string' && name ? name : at, at: src.at || at };
       if ((await sha512hex(data)) !== pin) return { ...view, mismatch: true };
       const inv = JSON.parse(new TextDecoder().decode(data));
       const read = async (ver, logical, from = inv) => {
-        const cp = contentPathOf(from, ver, logical);
+        const dig = Object.entries(from.versions[ver].state).find(([, ps]) => ps.includes(logical))?.[0] ?? null;
+        const cp = dig ? from.manifest[dig][0] : null;
         const raw = cp && safePath(cp) ? await src.get(`${path}/${cp}`) : null;
+        if (raw !== null && (await sha512hex(raw)) !== dig) throw new Error(`${cp}: not the file its inventory names`);
         return raw ? JSON.parse(new TextDecoder().decode(raw)) : null;
       };
       let shown;
@@ -707,6 +704,10 @@ async function remoteView(site, m) {
         view.state = state?.status === 'withdrawn' ? state : { status: 'withdrawn' };
       }
       if (!view.dc) continue;
+      const dc = view.dc;
+      Object.assign(view, { title: dc.titles[0].title, by: authorsOf(dc), abstract: abstractHtml(dc),
+                            landing: safeUrl(dc.url), withdrawn: withdrawalHtml(view.state || {}, ' by its owner') });
+      if (typeof view.title !== 'string' || typeof view.by !== 'string') continue;
       return view;
     } catch {
       continue;

@@ -15,9 +15,31 @@ export class DiskStorage {
     return p ? path.join(this.root, ...p.split('/')) : this.root;
   }
 
+  async linked(p, { last = true } = {}) {
+    const parts = p ? p.split('/') : [];
+    if (!last) parts.pop();
+    let f = this.root;
+    for (const part of parts) {
+      f = path.join(f, part);
+      try {
+        if ((await fs.lstat(f)).isSymbolicLink()) return true;
+      } catch (error) {
+        if (MISSING.includes(error.code)) return false;
+        throw error;
+      }
+    }
+    return false;
+  }
+
+  async unlinked(p, options) {
+    if (await this.linked(p, options)) throw new StorageError(`${p} passes through a symbolic link`);
+    return this.full(p);
+  }
+
   async read(p) {
     const f = this.full(checkPath(p));
     try {
+      if (await this.linked(p)) return null;
       const st = await fs.lstat(f);
       if (!st.isFile()) return null;
       return new Uint8Array(await fs.readFile(f));
@@ -28,7 +50,7 @@ export class DiskStorage {
   }
 
   async write(p, bytes, { exclusive = false } = {}) {
-    const f = this.full(checkPath(p));
+    const f = await this.unlinked(checkPath(p));
     await fs.mkdir(path.dirname(f), { recursive: true });
     try {
       await fs.writeFile(f, bytes, { flag: exclusive ? 'wx' : 'w' });
@@ -61,14 +83,15 @@ export class DiskStorage {
   }
 
   async rename(from, to) {
-    const target = this.full(checkPath(to));
+    const target = await this.unlinked(checkPath(to));
+    const source = await this.unlinked(checkPath(from));
     if ((await this.kind(to)) === 'dir') throw new StorageError(`${to} exists already`);
     await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.rename(this.full(checkPath(from)), target);
+    await fs.rename(source, target);
   }
 
   async remove(p) {
-    const f = this.full(checkPath(p));
+    const f = await this.unlinked(checkPath(p), { last: false });
     if ((await this.kind(p)) === 'dir') await fs.rmdir(f);
     else await fs.unlink(f);
   }

@@ -24,12 +24,13 @@ listener's refusals. The module is `tests/owners.test.js`.
     // in tests/owners.test.js:
     import { test } from 'node:test';
     import assert from 'node:assert/strict';
-    import { mkdtemp, rm, readdir, readFile, writeFile, cp, mkdir } from 'node:fs/promises';
+    import { mkdtemp, rm, readdir, readFile, writeFile, cp, mkdir, symlink, realpath } from 'node:fs/promises';
     import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
     import os from 'node:os';
     import path from 'node:path';
     import { main } from '../cli/osheaf.js';
-    import { keyStore } from '../cli/keystore.js';
+    import { keyStore, exportFolder } from '../cli/keystore.js';
+    import { DiskStorage } from '../cli/disk.js';
     import { ask } from '../cli/unlock.js';
     import * as passkey from '../core/passkey.js';
     import { passkeySalt, keyFileText, keyText, readKey, exampleKey, removePasskeys, passkeysOf, passkeyKek, Passkey,
@@ -746,6 +747,41 @@ forgotten is gone from it.
         assert.equal(sec.items.size, 0);
       } finally {
         await box.done();
+      }
+    });
+
+Links on a disk: a folder cloned with `opensheaf.json` linked to a file
+outside it, and `site` linked to a folder outside it, has neither written
+through (chapter [40](40-cli.md)); and a folder of exported keys that is
+a link into an archive is inside that archive.
+
+    // in tests of the key stores:
+    test('links are not followed: writing through them is refused, and an export folder linked into an archive is inside it', async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'osheaf-links-'));
+      try {
+        await mkdir(path.join(root, 'arch', 'sub'), { recursive: true });
+        await mkdir(path.join(root, 'out'));
+        await writeFile(path.join(root, 'out', 'target'), 'secret\n');
+        await symlink(path.join(root, 'out', 'target'), path.join(root, 'arch', 'opensheaf.json'));
+        await symlink(path.join(root, 'out'), path.join(root, 'arch', 'site'));
+        const disk = new DiskStorage(path.join(root, 'arch'));
+        assert.equal(await disk.read('opensheaf.json'), null);
+        assert.equal(await disk.read('site/target'), null);
+        await assert.rejects(disk.write('opensheaf.json', utf8('x')), /symbolic link/);
+        await assert.rejects(disk.write('site/new.html', utf8('x')), /symbolic link/);
+        await disk.write('sub/a', utf8('a'));
+        await assert.rejects(disk.rename('sub/a', 'site/a'), /symbolic link/);
+        assert.equal(await readFile(path.join(root, 'out', 'target'), 'utf-8'), 'secret\n');
+        assert.deepEqual(await readdir(path.join(root, 'out')), ['target']);
+        await disk.remove('site');
+        assert.deepEqual(await readdir(path.join(root, 'out')), ['target']);
+        await writeFile(path.join(root, 'arch', 'osheaf.json'), '{}');
+        await symlink(path.join(root, 'arch', 'sub'), path.join(root, 'keys'));
+        const arch = await realpath(path.join(root, 'arch'));
+        assert.equal(await exportFolder(null).inside(path.join(root, 'keys')), arch);
+        assert.equal(await exportFolder(path.join(root, 'arch')).inside(path.join(root, 'keys', 'new')), arch);
+      } finally {
+        await rm(root, { recursive: true, force: true });
       }
     });
 

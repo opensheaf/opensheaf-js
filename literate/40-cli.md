@@ -34,7 +34,14 @@ The storage of chapter [20](20-storage.md) over a folder. Paths are
 checked before they reach the disk, and joined with the separator of the
 system. A symbolic link is listed as such, and never read or followed:
 an archive is plain files, and a link in it could lead a command outside
-it.
+it. A path that passes through a link (a folder of the archive that is a
+link, or a file that is one) is not there for reading, and is refused
+for writing, renaming and removing: an archive cloned with
+`opensheaf.json` linked to a file of the home folder, or `site` linked
+to another folder, would otherwise have that file or folder written.
+`linked` looks at each part of the path below the root, in turn, and
+stops at the first that does not exist. A link itself may be removed:
+that touches nothing outside.
 
     // in cli/disk.js:
     import { promises as fs } from 'node:fs';
@@ -53,9 +60,31 @@ it.
         return p ? path.join(this.root, ...p.split('/')) : this.root;
       }
 
+      async linked(p, { last = true } = {}) {
+        const parts = p ? p.split('/') : [];
+        if (!last) parts.pop();
+        let f = this.root;
+        for (const part of parts) {
+          f = path.join(f, part);
+          try {
+            if ((await fs.lstat(f)).isSymbolicLink()) return true;
+          } catch (error) {
+            if (MISSING.includes(error.code)) return false;
+            throw error;
+          }
+        }
+        return false;
+      }
+
+      async unlinked(p, options) {
+        if (await this.linked(p, options)) throw new StorageError(`${p} passes through a symbolic link`);
+        return this.full(p);
+      }
+
       async read(p) {
         const f = this.full(checkPath(p));
         try {
+          if (await this.linked(p)) return null;
           const st = await fs.lstat(f);
           if (!st.isFile()) return null;
           return new Uint8Array(await fs.readFile(f));
@@ -66,7 +95,7 @@ it.
       }
 
       async write(p, bytes, { exclusive = false } = {}) {
-        const f = this.full(checkPath(p));
+        const f = await this.unlinked(checkPath(p));
         await fs.mkdir(path.dirname(f), { recursive: true });
         try {
           await fs.writeFile(f, bytes, { flag: exclusive ? 'wx' : 'w' });
@@ -99,14 +128,15 @@ it.
       }
 
       async rename(from, to) {
-        const target = this.full(checkPath(to));
+        const target = await this.unlinked(checkPath(to));
+        const source = await this.unlinked(checkPath(from));
         if ((await this.kind(to)) === 'dir') throw new StorageError(`${to} exists already`);
         await fs.mkdir(path.dirname(target), { recursive: true });
-        await fs.rename(this.full(checkPath(from)), target);
+        await fs.rename(source, target);
       }
 
       async remove(p) {
-        const f = this.full(checkPath(p));
+        const f = await this.unlinked(checkPath(p), { last: false });
         if ((await this.kind(p)) === 'dir') await fs.rmdir(f);
         else await fs.unlink(f);
       }
@@ -323,15 +353,27 @@ exclusively, readable by its owner only, and not through a link.
 The rotation keys exported by `init` go to a folder outside the archive:
 the folder is refused if it is inside an archive (this one, or any folder
 with an `osheaf.json` above it); it is made readable by its owner only,
-and each file is written once, never replacing another.
+and each file is written once, never replacing another. Both paths are
+taken with their links followed, as `Path.resolve` takes them in
+opensheaf-py (the part that does not exist yet as it is written), so that
+a link to a folder of the archive is inside it.
 
     // in cli/keystore.js:
+    async function realPath(p) {
+      try {
+        return await fs.realpath(p);
+      } catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].includes(error.code) || path.dirname(p) === p) throw error;
+        return path.join(await realPath(path.dirname(p)), path.basename(p));
+      }
+    }
+
     export function exportFolder(archiveRoot = null) {
       return {
         async inside(folder) {
-          const p = path.resolve(folder);
+          const p = await realPath(path.resolve(folder));
           if (archiveRoot) {
-            const root = path.resolve(archiveRoot);
+            const root = await realPath(path.resolve(archiveRoot));
             if (p === root || p.startsWith(root + path.sep)) return root;
           }
           for (let d = p; ; d = path.dirname(d)) {

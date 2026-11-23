@@ -164,12 +164,21 @@ export function keyStore({ env = process.env, warn = () => {}, err = warn, secur
 
 export const fileKeyStore = keyStore;
 
+async function realPath(p) {
+  try {
+    return await fs.realpath(p);
+  } catch (error) {
+    if (!['ENOENT', 'ENOTDIR'].includes(error.code) || path.dirname(p) === p) throw error;
+    return path.join(await realPath(path.dirname(p)), path.basename(p));
+  }
+}
+
 export function exportFolder(archiveRoot = null) {
   return {
     async inside(folder) {
-      const p = path.resolve(folder);
+      const p = await realPath(path.resolve(folder));
       if (archiveRoot) {
-        const root = path.resolve(archiveRoot);
+        const root = await realPath(path.resolve(archiveRoot));
         if (p === root || p.startsWith(root + path.sep)) return root;
       }
       for (let d = p; ; d = path.dirname(d)) {

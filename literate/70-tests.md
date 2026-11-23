@@ -976,6 +976,35 @@ verifies.
       assert.deepEqual(await errorsOf(two.storage), []);
     });
 
+The status of a member elsewhere is read from the discovery document of
+its archive, from its pages of objects when it pages them (#19), as
+opensheaf-py's `test_a_withdrawn_member_of_a_paged_archive`: a line
+withdrawn in an archive with a page per object is shown withdrawn, with
+its reason, on the home page of the archive that features it.
+
+    // in tests of keepers and of options read from files:
+    test('a withdrawn member of a paged archive', async () => {
+      PAGING.perPage = 1;
+      try {
+        const p = await newArchive();
+        await deposit(p.f, paper('one'));
+        await deposit(p.f, paper('two'));
+        const a = await newArchive({ baseUrl: 'https://example.org/author/' });
+        a.f.env.fetch = storageFetch(p.storage, 'https://example.org/papers/');
+        await collections.sync(a.f, { collection: 'list', fromFile: { name: 'list.yaml', given: 'list.yaml',
+          text: `title: A list\ntype: catalogue\nmembers:\n  - uri: '${p.f.labels.get('one')}'\n    at: ['https://example.org/papers/']\n` } });
+        await withdraw(p.f, { label: 'one', reason: 'a mistake', file: null });
+        const disc = await readJson(p.storage, 'opensheaf.json');
+        assert.ok(!('objects' in disc) && disc.objectPages.length);
+        a.f.index.html = { ...(a.f.index.html || {}), featured: 'list' };
+        await readableIndex(a.f);
+        const home = new TextDecoder().decode(await a.storage.read('index.html'));
+        assert.ok(home.includes('Withdrawn by its owner') && home.includes('a mistake'), home);
+      } finally {
+        PAGING.perPage = 1000;
+      }
+    });
+
 A pin of a key-log version resolves only to a version of the key log, as
 opensheaf-py's `test_a_pin_to_a_key_log_version_that_is_not_one`: once
 the signatures of v2 are gone, v2 is still held with the number and

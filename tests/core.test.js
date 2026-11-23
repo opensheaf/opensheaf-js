@@ -764,6 +764,28 @@ test('a mirror copies what it judged', async () => {
   assert.deepEqual(await errorsOf(two.storage), []);
 });
 
+test('a withdrawn member of a paged archive', async () => {
+  PAGING.perPage = 1;
+  try {
+    const p = await newArchive();
+    await deposit(p.f, paper('one'));
+    await deposit(p.f, paper('two'));
+    const a = await newArchive({ baseUrl: 'https://example.org/author/' });
+    a.f.env.fetch = storageFetch(p.storage, 'https://example.org/papers/');
+    await collections.sync(a.f, { collection: 'list', fromFile: { name: 'list.yaml', given: 'list.yaml',
+      text: `title: A list\ntype: catalogue\nmembers:\n  - uri: '${p.f.labels.get('one')}'\n    at: ['https://example.org/papers/']\n` } });
+    await withdraw(p.f, { label: 'one', reason: 'a mistake', file: null });
+    const disc = await readJson(p.storage, 'opensheaf.json');
+    assert.ok(!('objects' in disc) && disc.objectPages.length);
+    a.f.index.html = { ...(a.f.index.html || {}), featured: 'list' };
+    await readableIndex(a.f);
+    const home = new TextDecoder().decode(await a.storage.read('index.html'));
+    assert.ok(home.includes('Withdrawn by its owner') && home.includes('a mistake'), home);
+  } finally {
+    PAGING.perPage = 1000;
+  }
+});
+
 test('a pin to a key-log version that is not one', async () => {
   const { storage, f, env } = await newArchive();
   const owner = f.archive.owner;

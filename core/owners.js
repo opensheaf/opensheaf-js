@@ -179,7 +179,14 @@ export class KeyLog {
     return keyLogPin(this.owner, number, this.versions[number - 1].digest);
   }
 
+  ready() {
+    if (!this.checked?.result) {
+      throw new Error(`the key log of ${this.owner} is read before it is checked (check() first)`);
+    }
+  }
+
   side() {
+    this.ready();
     return this.versions.filter((v) => v.isVersion && !v.forkRecord);
   }
 
@@ -191,6 +198,7 @@ export class KeyLog {
   }
 
   get forkRecord() {
+    this.ready();
     return this.versions.find((v) => v.forkRecord && v.isVersion) || this.met || null;
   }
 
@@ -214,6 +222,7 @@ export class KeyLog {
   }
 
   lookup(number, digest) {
+    this.ready();
     for (const v of this.versions) if (v.number === number && v.digest === digest) return v;
     for (const c of this.forkRecord?.carried || []) if (c.number === number && c.digest === digest) return c;
     return null;
@@ -226,7 +235,13 @@ export class KeyLog {
   }
 
   async check() {
-    if (!this.checked) this.checked = this.checkNow();
+    if (!this.checked) {
+      const checking = this.checkNow().then((result) => {
+        checking.result = result;
+        return result;
+      });
+      this.checked = checking;
+    }
     return this.checked;
   }
 
@@ -377,9 +392,9 @@ export class KeyLog {
   }
 
   async meet(other) {
-    await this.check();
+    const { errors } = await this.check();
     await other.check();
-    if (!sameBytes(this.genesis, other.genesis)) return this;
+    if (errors.length || !sameBytes(this.genesis, other.genesis)) return this;
     const mine = this.side(), theirs = other.side();
     for (let k = 0; k < Math.min(mine.length, theirs.length); k++) {
       if (mine[k].digest !== theirs[k].digest) return this.withFork(theirs.slice(k));
@@ -388,7 +403,8 @@ export class KeyLog {
     if (theirs.length > mine.length) {
       if (this.forkRecord) return this;
       const log = new KeyLog(this.genesis, this.owner, [...mine, ...theirs.slice(mine.length), ...(theirFork ? [theirFork] : [])]);
-      log.checked = Promise.resolve({ errors: [], warnings: [] });
+      const result = { errors: [], warnings: [] };
+      log.checked = Object.assign(Promise.resolve(result), { result });
       log.met = other.met;
       return log;
     }

@@ -243,6 +243,7 @@ file can be checked, and every signature file that verifies is unchecked.
 
     // in core/signatures.js:
     export async function lineStatusesOf(objectId, owner, versions, log) {
+      if (log) await log.check();
       const lookup = log ? (n, d) => log.lookup(n, d) : () => null;
       const judgements = await Promise.all(versions.map(({ version, digest, witnesses }) =>
         judgeFolder(witnesses, { objectId, version, inventory: digest, owner, lookup })));

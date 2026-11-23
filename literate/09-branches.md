@@ -146,6 +146,7 @@ unchecked one with why.
         problems.push("the parent is the originator's line, or a branch with its own parent (section 9.3)");
       }
       const log = await logs(p.owner);
+      if (log) await log.check();
       const pid = NAME.test(pname) && OWNER_NAME.test(p.owner || '') ? objectId(pname, p.owner) : null;
       if (pid === null) return [INCONSISTENT, [...problems, 'parent does not name a line']];
       const witnesses = new Map();

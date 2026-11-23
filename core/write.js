@@ -139,7 +139,9 @@ export async function newOwner(current, rotation, { threshold = 1, nextThreshold
     nextThreshold: nextThreshold || Math.floor(rotation.length / 2) + 1,
     keeper, extensions, created, nonce,
   });
-  return KeyLog.of(genesis);
+  const log = await KeyLog.of(genesis);
+  await log.check();
+  return log;
 }
 
 export async function writeKeyLog(storage, dir, log) {

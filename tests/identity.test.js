@@ -8,7 +8,8 @@ import { firstVersion, KeyLog, Version, keyRules, ownerObject, jsonOrNull } from
 import { message, fileName, judge, lineStatuses, latestSigned, readSignatureFile, GOOD, UNCHECKED, INVALID }
   from '../core/signatures.js';
 import { Key, exampleKey } from '../core/keys.js';
-import { genesisRecord, signatureFile as writeSignatureFile } from '../core/write.js';
+import { genesisRecord, signatureFile as writeSignatureFile, newOwner } from '../core/write.js';
+import { rotate } from '../core/keylogs.js';
 
 const A = '56wo6cdpjsxk7ddgnqfp2quipfghukhtmvjuahvwzko7m4tkz3pa';
 const N = 'zzgdggwlldcrw4bdeuvntiaobtw2kge6bc4go737pfekhfc5oz4q';
@@ -221,6 +222,26 @@ test('the computed first version (sections 6.1 and C.1)', async () => {
   const j = await judge(signatureFile(s), `signature-${s.file}.json`, { objectId: OWNER_ID, version: 'v2',
     inventory: KL2, owner: A, lookup: (n, d) => log.lookup(n, d), keyLog: true });
   assert.deepEqual([j.status, j.key, j.keyLog, j.threshold], [GOOD, R1, [1, KL1], 2]);
+});
+
+test('a key log answers once checked; a broken copy meets no other (section 6.5)', async () => {
+  const [a, r1, r2, b] = await Promise.all(['a', 'r1', 'r2', 'b'].map((x) => exampleKey(`checked first ${x}`)));
+  const log = await newOwner([a], [r1]);
+  await rotate(log, [r1], { nextKeys: [r2], nextThreshold: 1, add: [b], user: { name: 'Doe, Jane' },
+                            created: '2026-01-01T00:00:00Z' });
+  const v2 = log.versions[1];
+  const forged = await Version.make(2, v2.files, v2.inventory, v2.sidecar, new Map());
+  const copy = new KeyLog(log.genesis, log.owner, [log.versions[0], forged]);
+  assert.throws(() => copy.lookup(2, forged.digest), /before it is checked/);
+  assert.throws(() => copy.side(), /before it is checked/);
+  assert.throws(() => copy.latest(), /before it is checked/);
+  const { errors } = await copy.check();
+  assert.ok(errors.some((e) => e.startsWith('v2: signed by 0 rotation keys')), errors.join('\n'));
+  assert.deepEqual(copy.side().map((v) => v.number), [1]);
+  const met = await copy.meet(log);
+  assert.equal(met, copy);
+  assert.deepEqual(met.side().map((v) => v.number), [1]);
+  assert.deepEqual((await log.meet(copy)).side().map((v) => v.number), [1, 2]);
 });
 
 test('the rules of keys across versions (section 6.1, rules 1 to 4)', async () => {

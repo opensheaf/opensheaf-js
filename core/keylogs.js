@@ -301,6 +301,7 @@ export async function loadKeyLog(storage, dir, where = dir) {
   }
   const log = await KeyLog.of(versions[0].files.get(GENESIS), versions, problems);
   if (rootInv.id !== log.id) problems.push(`the identifier of the object is not ${log.id}, that of the owner its genesis record names`);
+  await log.check();
   return log;
 }
 

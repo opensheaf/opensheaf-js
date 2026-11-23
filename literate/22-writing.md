@@ -245,7 +245,8 @@ The key log of a new owner
 A new owner (section 6.2) is its genesis record: its current keys and the
 digests of its rotation keys, with their thresholds. The first version of
 its key log is computed from the record (chapter [07](07-owners.md)), so
-the whole key log of a new owner is `KeyLog.of(genesis)`. The default
+the whole key log of a new owner is `KeyLog.of(genesis)`, checked before it
+is given (chapter [07](07-owners.md): a key log answers only once checked). The default
 `nextThreshold` is a majority of the rotation keys, as in opensheaf-py.
 
     // in writing a key log:
@@ -257,7 +258,9 @@ the whole key log of a new owner is `KeyLog.of(genesis)`. The default
         nextThreshold: nextThreshold || Math.floor(rotation.length / 2) + 1,
         keeper, extensions, created, nonce,
       });
-      return KeyLog.of(genesis);
+      const log = await KeyLog.of(genesis);
+      await log.check();
+      return log;
     }
 
 A key log is written into its OCFL object folder (`dir`, a path in a

@@ -439,7 +439,7 @@ export class Http {
   }
 }
 
-function nesting(text) {
+export function nesting(text) {
   let depth = 0, most = 0, inString = false;
   for (let k = 0; k < text.length; k++) {
     const c = text.charCodeAt(k);

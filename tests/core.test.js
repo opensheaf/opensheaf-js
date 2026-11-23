@@ -382,6 +382,20 @@ test('digests in upper case are reported (section 4.1)', async () => {
   assert.ok(errors.includes('pb: the inventory has digests not in lower case (section 4.1)'), errors.join('\n'));
 });
 
+test('JSON nested too deep is a finding (section 15.2)', async () => {
+  const { storage, f } = await newArchive();
+  await deposit(f, paper('deep'));
+  const dir = await f.dirOf(f.labels.get('deep'));
+  const deep = '['.repeat(20000) + ']'.repeat(20000);
+  for (const p of [`${dir}/inventory.json`, `${dir}/v1/inventory.json`]) {
+    const t = new TextDecoder().decode(await storage.read(p)).replace(/"state": \{/, `"state": { "x": ${deep},`);
+    await storage.write(p, utf8(t));
+    await storage.write(`${p}.sha512`, utf8(`${await sha512hex(utf8(t))}  inventory.json\n`));
+  }
+  const errors = await errorsOf(storage);
+  assert.ok(errors.some((e) => e.includes('an object without a readable inventory')), errors.join('\n'));
+});
+
 test('a file changed behind the archive', async () => {
   const { storage, f } = await newArchive();
   await deposit(f, paper('changed'));

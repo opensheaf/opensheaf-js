@@ -1,5 +1,5 @@
 // Generated from literate/07-owners.md by opensheaf-literate: edit the document, not this file.
-import { sha512, parseIntegers } from './http.js';
+import { sha512, parseIntegers, nesting, LIMITS } from './http.js';
 import { sha256, base32, sameBytes, utf8 } from './crypto.js';
 import { readGenesis, nameOf, objectId, keyLogPin, keyDigest, keyRulesOfRecord, jcsBytes, isObject,
          OWNER_NAME, DID_KEY, GENESIS } from './names.js';
@@ -38,6 +38,7 @@ export function jsonOrNull(bytes, { integers = false } = {}) {
   if (!bytes) return null;
   try {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (nesting(text) > LIMITS.nesting) return null;
     return integers ? parseIntegers(text) : JSON.parse(text);
   } catch {
     return null;

@@ -510,6 +510,27 @@ and state are rewritten in upper case, are each reported as such.
       assert.ok(errors.includes('pb: the inventory has digests not in lower case (section 4.1)'), errors.join('\n'));
     });
 
+JSON nested deeper than `LIMITS.nesting` is a finding, as the HTTP
+client refuses it (chapter [10](10-http.md)), not a stack overflow of
+the verification: an inventory with arrays nested twenty thousand deep,
+in the root and in the version folder, with checksum files that state
+its digest, is an object without a readable inventory.
+
+    // in tests of an archive in memory:
+    test('JSON nested too deep is a finding (section 15.2)', async () => {
+      const { storage, f } = await newArchive();
+      await deposit(f, paper('deep'));
+      const dir = await f.dirOf(f.labels.get('deep'));
+      const deep = '['.repeat(20000) + ']'.repeat(20000);
+      for (const p of [`${dir}/inventory.json`, `${dir}/v1/inventory.json`]) {
+        const t = new TextDecoder().decode(await storage.read(p)).replace(/"state": \{/, `"state": { "x": ${deep},`);
+        await storage.write(p, utf8(t));
+        await storage.write(`${p}.sha512`, utf8(`${await sha512hex(utf8(t))}  inventory.json\n`));
+      }
+      const errors = await errorsOf(storage);
+      assert.ok(errors.some((e) => e.includes('an object without a readable inventory')), errors.join('\n'));
+    });
+
     test('a file changed behind the archive', async () => {
       const { storage, f } = await newArchive();
       await deposit(f, paper('changed'));

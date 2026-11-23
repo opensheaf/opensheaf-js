@@ -29,7 +29,7 @@ report the same problems.
 The module is `core/owners.js`.
 
     // in core/owners.js:
-    import { sha512, parseIntegers } from './http.js';
+    import { sha512, parseIntegers, nesting, LIMITS } from './http.js';
     import { sha256, base32, sameBytes, utf8 } from './crypto.js';
     import { readGenesis, nameOf, objectId, keyLogPin, keyDigest, keyRulesOfRecord, jcsBytes, isObject,
              OWNER_NAME, DID_KEY, GENESIS } from './names.js';
@@ -82,6 +82,7 @@ files.
       if (!bytes) return null;
       try {
         const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        if (nesting(text) > LIMITS.nesting) return null;
         return integers ? parseIntegers(text) : JSON.parse(text);
       } catch {
         return null;

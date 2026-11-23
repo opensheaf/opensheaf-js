@@ -778,10 +778,12 @@ expected: an error of kind `html`, which says what probably happened
 JSON nested deeper than `LIMITS.nesting` levels is refused as
 `too-large` before it is parsed. The depth is found in one pass over the
 text: brackets count only outside strings, and a string ends at a
-quotation mark that no backslash escapes.
+quotation mark that no backslash escapes. The depth is also what readers
+of bytes already at hand look at (`jsonOrNull`, chapter
+[07](07-owners.md)).
 
     // in decoding JSON:
-    function nesting(text) {
+    export function nesting(text) {
       let depth = 0, most = 0, inString = false;
       for (let k = 0; k < text.length; k++) {
         const c = text.charCodeAt(k);

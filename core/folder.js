@@ -120,6 +120,9 @@ export class ArchiveFolder {
       const paged = new Archive(new Http({ fetch: storageFetch(this.storage, ORIGIN), budget: null }), ORIGIN, disc);
       await paged.loadPages();
       listed = paged.pageProblems.length ? [] : paged.listed();
+      this.unreadPages = paged.pageProblems[0] ?? null;
+    } else {
+      this.unreadPages = null;
     }
     this.labels = new Map(listed.filter((o) => o && typeof o === 'object' && o.label).map((o) => [o.label, o.id]));
     this.catalogues = new Map((disc.owners || []).filter((e) => e && typeof e === 'object' && e.owner && e.catalogue)
@@ -131,6 +134,14 @@ export class ArchiveFolder {
   archiveOwners() {
     const out = [this.archive.owner];
     return out.concat((this.archive.owners || []).filter((o) => !out.includes(o)));
+  }
+
+  refuseUnreadPages() {
+    if (this.unreadPages) {
+      exit(`opensheaf.json: ${this.unreadPages}: the labels of the lines are not known, and writing ` +
+           'the discovery document or the website now would lose them; nothing is written ' +
+           '(restore the pages of objects, from git for instance, and run the command again)');
+    }
   }
 
   labelOf(id) {

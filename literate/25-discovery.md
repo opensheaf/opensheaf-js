@@ -229,6 +229,7 @@ its pages of objects when it has many (below).
     }
 
     export async function writeDiscovery(f) {
+      f.refuseUnreadPages?.();
       await writeIndexes(f);
       let doc = await discovery(f);
       const pages = objectPages(doc.objects);

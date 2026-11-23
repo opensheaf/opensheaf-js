@@ -498,6 +498,37 @@ read back and forgotten.
       }
     });
 
+When a page of objects of the discovery document cannot be read, the
+commands that change the archive, and `index`, stop before anything is
+changed, the discovery document left as it was; the verification still
+runs and reports the page (as opensheaf-py's `test_object_pages`, #19).
+
+    // in tests of wallets:
+    test('a command that writes stops when a page of objects cannot be read (#19)', async () => {
+      const { PAGING } = await import('../core/discovery.js');
+      const box = await sandbox();
+      PAGING.perPage = 1;
+      try {
+        const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+        await deposit(box, a, 'one', 'one', true);
+        await deposit(box, a, 'two', 'two', true);
+        const disc = JSON.parse(await readFile(path.join(a.dir, 'opensheaf.json'), 'utf-8'));
+        await rm(path.join(a.dir, disc.objectPages[0]));
+        const before = await readFile(path.join(a.dir, 'opensheaf.json'));
+        for (const argv of [['index'], ['deposit', 'two', '--pdf', path.join(box.root, 'two.pdf'), '--no-source', 'x',
+                                       '--title', 'Two', '--author', 'Doe, J']]) {
+          const r = await box.run([...a.r, ...argv]);
+          assert.equal(r.status, 1, r.said);
+          assert.match(r.err, /the labels of the lines are not known/);
+        }
+        assert.deepEqual(await readFile(path.join(a.dir, 'opensheaf.json')), before);
+        assert.ok((await errorsOf(box, a)).some((e) => /is missing \(section 3\.1\)/.test(e)));
+      } finally {
+        PAGING.perPage = 1000;
+        await box.done();
+      }
+    });
+
 Key files for wallets, and the texts for password managers, read back:
 an envelope opens with its passphrase and with each passkey, never with a
 key-encryption key that is not its own; passkey locks are removed by

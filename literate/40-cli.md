@@ -903,10 +903,26 @@ the status 1.
       return env;
     }
 
+Commands that change the archive, and `index`, open it only when its pages
+of objects can be read (`refuseUnreadPages`, chapter [23](23-folder.md)),
+before anything is changed; the others, `verify` first, still run. The
+commands that do not change the archive are those of opensheaf-py's
+`READ_ONLY`.
+
+    // in running a command:
+    const READ_ONLY = new Set(['help-config', 'verify', 'resolve', 'index', 'init', 'key']);
+    const READ_ONLY_ACTIONS = new Set(['owner show', 'collection status', 'arxiv fetch']);
+
+    function changesArchive(cmd, action, args) {
+      if (READ_ONLY.has(cmd) || READ_ONLY_ACTIONS.has(`${cmd} ${action}`)) return false;
+      return !(cmd === 'zenodo' && !args.production);
+    }
+
     async function openArchive(root, env) {
       const where = await findRoot(root || process.cwd());
       const f = await ArchiveFolder.open(new DiskStorage(where), env);
       if (f.old) throw new Stop(REBUILD);
+      if (env.changesArchive) f.refuseUnreadPages();
       env.locations = f.archive.locations || {};
       env.archiveRoot = where;
       env.exportFolder = exportFolder(where);
@@ -1250,6 +1266,7 @@ next to the program (a binary made by `deno compile` carries them, with
         return 0;
       }
       try {
+        env.changesArchive = changesArchive(cmd, action, args) || cmd === 'index';
         return await RUN[cmd](root, { ...args, action }, env);
       } catch (error) {
         if (error instanceof Stop) {

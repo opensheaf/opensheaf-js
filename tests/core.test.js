@@ -881,6 +881,14 @@ test('the objects of the discovery document in pages (section 3.1)', async () =>
     const first = disc.objectPages[0], saved = await storage.read(first);
     await storage.remove(first);
     assert.ok((await errorsOf(storage)).some((e) => /is missing \(section 3\.1\)/.test(e)));
+    await readableIndex(f);
+    const before = await storage.read('opensheaf.json');
+    const g = await ArchiveFolder.open(storage, env);
+    assert.throws(() => g.refuseUnreadPages(), /the labels of the lines are not known/);
+    await assert.rejects(writeDiscovery(g), /the labels of the lines are not known/);
+    await assert.rejects(readableIndex(g), /the labels of the lines are not known/);
+    assert.deepEqual(await storage.read('opensheaf.json'), before);
+    assert.equal(await storage.kind('paper/two/index.html'), 'file');
     await storage.write(first, saved);
     PAGING.perPage = 1000;
     await writeDiscovery(f);

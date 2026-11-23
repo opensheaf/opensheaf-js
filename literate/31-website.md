@@ -468,6 +468,7 @@ collection. It returns the number of landing pages.
     const text = async (f, name) => new TextDecoder().decode(await template(f, name));
 
     export async function render(f, members, { home = true, featured = null, keeperFetch = null, groups = null } = {}) {
+      f.refuseUnreadPages?.();
       const site = new Site(f, { keeperFetch, home });
       members = members.filter((m) => !removed(f, m));
       const base = f.archive.baseUrl;

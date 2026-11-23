@@ -485,10 +485,19 @@ export function makeEnvironment(archiveRoot = null, given = {}) {
   return env;
 }
 
+const READ_ONLY = new Set(['help-config', 'verify', 'resolve', 'index', 'init', 'key']);
+const READ_ONLY_ACTIONS = new Set(['owner show', 'collection status', 'arxiv fetch']);
+
+function changesArchive(cmd, action, args) {
+  if (READ_ONLY.has(cmd) || READ_ONLY_ACTIONS.has(`${cmd} ${action}`)) return false;
+  return !(cmd === 'zenodo' && !args.production);
+}
+
 async function openArchive(root, env) {
   const where = await findRoot(root || process.cwd());
   const f = await ArchiveFolder.open(new DiskStorage(where), env);
   if (f.old) throw new Stop(REBUILD);
+  if (env.changesArchive) f.refuseUnreadPages();
   env.locations = f.archive.locations || {};
   env.archiveRoot = where;
   env.exportFolder = exportFolder(where);
@@ -941,6 +950,7 @@ export async function main(argv, given = {}) {
     return 0;
   }
   try {
+    env.changesArchive = changesArchive(cmd, action, args) || cmd === 'index';
     return await RUN[cmd](root, { ...args, action }, env);
   } catch (error) {
     if (error instanceof Stop) {

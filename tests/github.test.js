@@ -995,6 +995,14 @@ test('acting for another owner: a new version of its line goes into a branch', a
   assert.deepEqual([v1.parent.owner, v1.parent.documentVersion], [a, 1]);
   const stranger = await carryOut(m, env, 'deposit', again, files(7), { owner: 'c'.repeat(51) + 'a' });
   assert.match(stranger.message, /not an owner this archive hosts/);
+  assert.ok((await carryOut(m, env, 'add', { 'In collection': 'reading', 'New member': 'mine' }, {},
+                            { schemas, owner: a })).ok);
+  const reading = (await line('reading')).head;
+  const into = await carryOut(m, env, 'add', { 'In collection': 'mine', 'New member': 'second',
+                                               'Versions you vet (selection)': '1' }, {}, { schemas, owner: b });
+  assert.ok(into.ok, into.message);
+  assert.equal((await line('reading')).head, reading);
+  assert.ok(into.said.some((l) => /^reading: a collection of the owner .*left for its owner to renew/.test(l)), into.said);
   assert.deepEqual((await verifyFolder(m, { schemas })).findings.filter((x) => x.level === 'error'), []);
 });
 

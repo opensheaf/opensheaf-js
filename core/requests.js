@@ -336,10 +336,15 @@ async function sync(r, label, message) {
   }
 }
 
-async function propagate(r, label, message, seen = new Set()) {
+async function propagate(r, label, message, acting, seen = new Set()) {
   for (const parent of await parents(r, label)) {
     if (seen.has(parent)) continue;
     seen.add(parent);
+    const entry = (await labels(r)).get(parent);
+    if (entry && entry.owner !== acting) {
+      r.env.out(`${parent}: a collection of the owner ${entry.owner.slice(0, 8)}, left for its owner to renew`);
+      continue;
+    }
     const data = await load(r, parent);
     const member = data.members.find((m) => m && typeof m === 'object' && m.label === label);
     if (data.type === 'selection') {
@@ -352,7 +357,7 @@ async function propagate(r, label, message, seen = new Set()) {
     }
     await save(r, parent, data);
     await sync(r, parent, message);
-    await propagate(r, parent, message, seen);
+    await propagate(r, parent, message, acting, seen);
   }
 }
 
@@ -973,10 +978,11 @@ export async function carryOut(storage, env, operation, fields, files = {}, { or
     let [cid, message, title, done] = await op(r, form, origin);
     const why = field(form, 'Why (optional)');
     if (why) message += `: ${why}`;
-    await osheaf(r, (f) => collect(f, { owner: owner || f.archive.owner }));
+    const acting = owner || (await r.folder()).archive.owner;
+    await osheaf(r, (f) => collect(f, { owner: acting }));
     if (cid) {
       await sync(r, cid, message);
-      await propagate(r, cid, message);
+      await propagate(r, cid, message, acting);
     }
     await osheaf(r, async (f) => {
       await writeDiscovery(f);

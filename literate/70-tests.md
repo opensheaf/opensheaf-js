@@ -51,6 +51,8 @@ The tests are written with `node:test` and `node:assert`, which both
     import { takedown } from '../core/takedown.js';
     import { Resolver } from '../core/resolve.js';
     import { Http } from '../core/http.js';
+    import { verify } from '../core/verify.js';
+    import { Archive } from '../core/archive.js';
     import { writeDiscovery, PAGING } from '../core/discovery.js';
     import { ownerRotate } from '../core/owner.js';
     import { loadKeyLog } from '../core/keylogs.js';
@@ -909,6 +911,29 @@ no temporary file is left behind.
       assert.deepEqual(direct, []);
       assert.deepEqual([...storage.files.keys()].filter((p) => p.endsWith('.tmp')), []);
       assert.deepEqual(await errorsOf(storage), []);
+    });
+
+A verification cancelled while it reads a copy of an inventory stops
+there: the cancellation is not taken for a copy that is missing, and
+reported as one.
+
+    // in tests of keepers and of options read from files:
+    test('a cancelled verification reports no file missing', async () => {
+      const { storage, f } = await newArchive();
+      await deposit(f, paper('one'));
+      const controller = new AbortController();
+      const plain = storageFetch(storage, 'https://example.org/papers/');
+      const fetch = async (url, init) => {
+        if (/\/v1\/inventory\.json$/.test(String(url))) {
+          controller.abort();
+          throw new DOMException('cancelled', 'AbortError');
+        }
+        return plain(url, init);
+      };
+      const archive = await Archive.open(new Http({ fetch, budget: null }), 'https://example.org/papers/');
+      const report = await verify(archive, { schemas, signal: controller.signal, pages: false });
+      assert.equal(report.cancelled, true);
+      assert.deepEqual(report.findings.filter((x) => x.level === 'error').map((x) => x.message), []);
     });
 
 Only `http` and `https` addresses become links, as opensheaf-py's

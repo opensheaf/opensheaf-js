@@ -11,7 +11,7 @@ import { memberOrder, catalogueLabel } from './collect.js';
 import { readJson, writeText } from './storage.js';
 import { LABEL } from './names.js';
 import { same } from './schema.js';
-import { writeDiscovery } from './discovery.js';
+import { writeDiscovery, listedObjects } from './discovery.js';
 import { lineOf } from './describe.js';
 import { displayName, nameAddress } from './deposit.js';
 import { keeperOf, keeperLink, successorClaim, CONFIRMED } from './keepers.js';
@@ -640,6 +640,7 @@ async function remoteSource(site, at) {
       if (raw === null) throw new Error('no discovery document');
       const disc = JSON.parse(new TextDecoder().decode(raw));
       if (disc === null || typeof disc !== 'object' || disc.specification !== '0.2') throw new Error('not 0.2');
+      if (Object.hasOwn(disc, 'objectPages')) disc.objects = await listedObjects(disc, get);
       const root = disc.storageRoot ?? 'ocfl/';
       if (typeof root !== 'string' || root.includes(':') || !safePath(root.replace(/\/+$/, '')) || !root.endsWith('/')) {
         throw new Error('storage root');

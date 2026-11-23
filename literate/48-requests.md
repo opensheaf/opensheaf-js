@@ -38,7 +38,7 @@ The module is `core/requests.js`.
     import { collect } from './collect.js';
     import { notice, withdraw, relicense } from './describe.js';
     import * as collections from './collections.js';
-    import { writeDiscovery } from './discovery.js';
+    import { writeDiscovery, listedObjects } from './discovery.js';
     import { present, readableIndex, hasWebsite } from './website.js';
     import { verifyFolder } from './check.js';
     import { readJson, readText, writeText, joinPath, MemoryStorage } from './storage.js';
@@ -167,7 +167,10 @@ The archive, its lines and its collections
 What the script reads of the archive, read here from the storage: the
 configuration, the lines of the discovery document by their labels, the
 files of collections (`collections/LABEL.yaml`, YAML 1.1 as PyYAML reads
-it), and a file of the head version of a line.
+it), and a file of the head version of a line. The lines of the discovery
+document are those of its pages when it has pages (section 3.1, read by
+`listedObjects`, chapter [25](25-discovery.md)), here as in the discovery
+document of another archive.
 
     // in the archive, its lines and its collections:
     const COLLECTIONS = 'collections';
@@ -179,7 +182,13 @@ it), and a file of the head version of a line.
 
     async function labels(r) {
       const disc = (await readJson(r.storage, 'opensheaf.json')) || {};
-      return new Map((disc.objects || []).filter((o) => o.label).map((o) => [o.label, o]));
+      let listed;
+      try {
+        listed = await listedObjects(disc, (path) => r.storage.read(path));
+      } catch (error) {
+        throw new Problem(`The discovery document of this archive cannot be read: ${error.message}.`);
+      }
+      return new Map(listed.filter((o) => o.label).map((o) => [o.label, o]));
     }
 
     async function catalogues(r) {
@@ -299,7 +308,16 @@ document, read with the `fetch` of the environment.
       try {
         const res = await r.env.fetch(base + 'opensheaf.json');
         if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
-        return await res.json();
+        const disc = await res.json();
+        if (disc && typeof disc === 'object' && Object.hasOwn(disc, 'objectPages')) {
+          disc.objects = await listedObjects(disc, async (path) => {
+            const page = await r.env.fetch(base + path);
+            if (page.status === 404 || page.status === 410) return null;
+            if (!page.ok) throw new Error(`HTTP Error ${page.status}`);
+            return new Uint8Array(await page.arrayBuffer());
+          });
+        }
+        return disc;
       } catch (error) {
         throw new Problem(`The archive at \`${base}\` could not be read (${error.message}): give the address of an ` +
                           'OpenSheaf archive of specification 0.2, the folder that holds its `opensheaf.json`.');

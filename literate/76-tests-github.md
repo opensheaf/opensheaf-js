@@ -51,7 +51,8 @@ The tests of chapters [47](47-github-storage.md) and
     import process from 'node:process';
     import { fakeGitHub } from './fake-github.js';
     import { GitHub, GitHubStorage, CommitConflict, oneCommit, gitBlobSha } from '../core/github.js';
-    import { MemoryStorage, StorageError } from '../core/storage.js';
+    import { MemoryStorage, StorageError, storageFetch } from '../core/storage.js';
+    import { PAGING } from '../core/discovery.js';
     import { DiskStorage } from '../cli/disk.js';
     import { environment } from '../core/folder.js';
     import { init } from '../core/init.js';
@@ -1585,6 +1586,56 @@ first's only: no owner signs for another (section 8.1).
       assert.ok(r2.ok, r2.message);
       assert.notEqual(await head(a), a1);
       assert.equal(await head(b), b2);
+    });
+
+Labels are read from the pages of a discovery document (section 3.1), as
+opensheaf-py's `listed_objects` reads them: in an archive whose objects
+are listed in pages of one entry, a collection takes a member by its label
+here, and another by its label in another archive, itself in pages,
+reached through the environment's `fetch`; that member withdrawn, the
+page of the collection says so, from the entry in the other archive's
+pages.
+
+    // in tests of the Manager's core:
+    test('labels read from the pages of the discovery documents, here and elsewhere (section 3.1)', async () => {
+      const env = requestEnvironment();
+      const cost = { opslimit: 1, memlimit: 8192 };
+      const [m, other] = [new MemoryStorage(), new MemoryStorage()];
+      const files = (n) => ({ 'PDF of this version': [{ name: 'paper.pdf', bytes: PDF(n) }], Sources: [{ name: 'paper.tex', bytes: TEX }] });
+      const paper = (label) => ({ 'This deposit': NEW_PAPER, Label: label, Title: 'A paper', Authors: 'Doe, Jane',
+                                  Licence: 'CC BY 4.0 (cc-by-4.0)' });
+      PAGING.perPage = 1;
+      try {
+        for (const [s, at] of [[m, 'papers'], [other, 'other']]) {
+          await init(s, env, { name: `Papers at ${at}`, baseUrl: `https://example.org/${at}/`, curator: 'Doe, Jane',
+                               newOwner: true, export: `/keys-${at}`, yes: true, cost }, '/archive');
+          for (const [n, label] of [[1, `${at}-one`], [2, `${at}-two`]]) {
+            const r = await carryOut(s, env, 'deposit', paper(label), files(n), { schemas });
+            assert.ok(r.ok, r.message);
+          }
+          const disc = JSON.parse(text(await s.read('opensheaf.json')));
+          assert.ok(!('objects' in disc) && disc.objectPages.length > 1);
+        }
+        env.fetch = storageFetch(other, 'https://example.org/other/');
+        const made = await carryOut(m, env, 'new_collection', { 'Label of the new collection': 'reading',
+          'Title of the collection': 'Reading', Kind: 'Catalogue' }, {}, { schemas });
+        assert.ok(made.ok, made.message);
+        const here = await carryOut(m, env, 'add', { 'In collection': 'reading', 'New member': 'papers-two' }, {}, { schemas });
+        assert.ok(here.ok, here.message);
+        const there = await carryOut(m, env, 'add', { 'In collection': 'reading', 'New member': 'other-two',
+          'Archive of the new member': 'https://example.org/other/' }, {}, { schemas });
+        assert.ok(there.ok, there.message);
+        const list = text(await m.read('collections/reading.yaml'));
+        assert.ok(list.includes('label: papers-two') && list.includes('https://example.org/other/'), list);
+        const gone = await carryOut(other, env, 'withdraw', { Label: 'other-two', 'Reason for the withdrawal': 'A duplicate.' }, {});
+        assert.ok(gone.ok, gone.message);
+        const again = await carryOut(m, env, 'add', { 'In collection': 'reading', 'New member': 'papers-one' }, {}, { schemas });
+        assert.ok(again.ok, again.message);
+        assert.match(text(await m.read('paper/reading/index.html')),
+                     /<li class="paper member withdrawn">[^]*Withdrawn by its owner [^<]*:<\/strong> A duplicate\./);
+      } finally {
+        PAGING.perPage = 1000;
+      }
     });
 
 A request written directly: an archive made in memory is pushed to the

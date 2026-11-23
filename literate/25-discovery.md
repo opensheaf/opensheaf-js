@@ -280,3 +280,42 @@ verified.
       }
       return Object.fromEntries([...groups.keys()].sort(compareText).map((p) => [`${OBJECT_PAGES}/${p}.json`, groups.get(p)]));
     }
+
+What reads the entries of a discovery document without the reader of an
+archive (the requests of chapter [48](48-requests.md), the members of
+other archives in the website, chapter [31](31-website.md)) reads them
+with `listedObjects`, as opensheaf-py's `listed_objects`: the entries of
+`objects`, or those of every page `objectPages` names, `read(path)`
+giving the bytes of a page or `null`. A page that is missing, is not
+JSON, is not a page, or whose path is not one below the discovery
+document is an error, with the message of opensheaf-py.
+
+    // in writing the discovery document and the indexes:
+    export function pagePathOk(path) {
+      return typeof path === 'string' && path.endsWith('.json') && !path.startsWith('/') && !path.includes('\\') &&
+        !path.split('/')[0].includes(':') && path.split('/').every((x) => x !== '' && x !== '.' && x !== '..');
+    }
+
+    export async function listedObjects(disc, read) {
+      const entries = (list) => (Array.isArray(list) ? list : []).filter((o) => o && typeof o === 'object' && !Array.isArray(o));
+      if (!Object.hasOwn(disc, 'objectPages')) return entries(disc.objects);
+      const out = [];
+      for (const path of Array.isArray(disc.objectPages) ? disc.objectPages : []) {
+        if (!pagePathOk(path)) {
+          throw new Error(`${JSON.stringify(path)} is not the path of a page below the discovery document (section 3.1)`);
+        }
+        const data = await read(path);
+        if (data === null || data === undefined) throw new Error(`the page of objects ${path} is missing (section 3.1)`);
+        let page;
+        try {
+          page = JSON.parse(new TextDecoder().decode(data));
+        } catch {
+          throw new Error(`the page of objects ${path} is not JSON`);
+        }
+        if (!page || typeof page !== 'object' || !Array.isArray(page.objects)) {
+          throw new Error(`${path} is not a page of objects (section 3.1)`);
+        }
+        out.push(...entries(page.objects));
+      }
+      return out;
+    }

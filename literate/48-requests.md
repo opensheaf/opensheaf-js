@@ -550,7 +550,11 @@ central directory, then each member, stored or compressed with deflate
 (`DecompressionStream`). A member that is encrypted, or in ZIP64, is
 refused; a name not in UTF-8 is read as UTF-8 with replacement
 characters. The paths are those of Python's `zipfile` for the script:
-`.` segments and doubled slashes left out.
+`.` segments and doubled slashes left out. As `zipfile`, a member is
+read only whole and intact: its size and CRC-32 are those the central
+directory states, and offsets or lengths that lead out of the zip, or a
+deflate stream that does not end, make the zip damaged, a problem
+reported to the person rather than an error of the program.
 
     // in attachments:
     async function inflate(bytes) {
@@ -558,7 +562,34 @@ characters. The paths are those of Python's `zipfile` for the script:
       return new Uint8Array(await new Response(stream).arrayBuffer());
     }
 
-    export async function readZip(bytes) {
+    const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      return c >>> 0;
+    });
+
+    function crc32(bytes) {
+      let c = 0xffffffff;
+      for (const b of bytes) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    }
+
+    const DAMAGED = 'The zip of the sources is damaged.';
+
+    async function intact(read) {
+      try {
+        return await read();
+      } catch (error) {
+        if (error instanceof Problem) throw error;
+        throw new Problem(DAMAGED);
+      }
+    }
+
+    export function readZip(bytes) {
+      return intact(() => zipMembers(bytes));
+    }
+
+    async function zipMembers(bytes) {
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       let end = -1;
       for (let k = bytes.length - 22; k >= Math.max(0, bytes.length - 22 - 65535); k--) {
@@ -573,8 +604,9 @@ characters. The paths are those of Python's `zipfile` for the script:
       const out = [];
       const text = new TextDecoder('utf-8');
       for (let n = 0; n < count; n++) {
-        if (view.getUint32(at, true) !== 0x02014b50) throw new Problem('The zip of the sources is damaged.');
+        if (view.getUint32(at, true) !== 0x02014b50) throw new Problem(DAMAGED);
         const flags = view.getUint16(at + 8, true), method = view.getUint16(at + 10, true);
+        const crc = view.getUint32(at + 16, true), size = view.getUint32(at + 24, true);
         const csize = view.getUint32(at + 20, true), nameLength = view.getUint16(at + 28, true);
         const extra = view.getUint16(at + 30, true), comment = view.getUint16(at + 32, true);
         const local = view.getUint32(at + 42, true);
@@ -582,13 +614,20 @@ characters. The paths are those of Python's `zipfile` for the script:
         at += 46 + nameLength + extra + comment;
         if (csize === 0xffffffff || local === 0xffffffff) throw new Problem('The zip of the sources is a ZIP64 archive: make an ordinary zip.');
         if (flags & 1) throw new Problem('The zip of the sources is encrypted.');
+        if (at > bytes.length || view.getUint32(local, true) !== 0x04034b50) throw new Problem(DAMAGED);
         const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+        if (start + csize > bytes.length) throw new Problem(DAMAGED);
         const raw = bytes.subarray(start, start + csize);
-        out.push({ name, read: async () => {
-          if (method === 0) return raw.slice();
-          if (method === 8) return inflate(raw);
-          throw new Problem(`The zip of the sources compresses ${name} with a method other than deflate.`);
-        } });
+        out.push({ name, read: () => intact(async () => {
+          let data;
+          if (method === 0) data = raw.slice();
+          else if (method === 8) data = await inflate(raw);
+          else throw new Problem(`The zip of the sources compresses ${name} with a method other than deflate.`);
+          if (data.length !== size || crc32(data) !== crc) {
+            throw new Problem(`The zip of the sources is damaged: ${name} does not have the size and CRC-32 it states.`);
+          }
+          return data;
+        }) });
       }
       return out;
     }

@@ -340,6 +340,12 @@ test('a zip of sources is read as zipfile reads it', async () => {
   assert.deepEqual(members.map((m) => m.name), ['src/', 'src/paper.tex', 'src/fig/a.txt']);
   assert.equal(text(await members[1].read()), '\\documentclass');
   assert.equal(text(await members[2].read()), 'figur');
+  const changed = new Uint8Array(zip);
+  changed[zip.indexOf('figur') + 4] = 'x'.charCodeAt(0);
+  await assert.rejects((await readZip(changed))[2].read(), /damaged: src\/fig\/a\.txt does not have the size and CRC-32/);
+  const astray = new Uint8Array(zip);
+  new DataView(astray.buffer).setUint32(astray.length - 6, 0x7fffffff, true);
+  await assert.rejects(readZip(astray), (e) => e.constructor.name === 'Problem' && /damaged/.test(e.message));
   assert.equal(await yamlText({ members: [] }), 'members: []\n');
 });
 

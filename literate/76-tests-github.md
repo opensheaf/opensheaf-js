@@ -746,7 +746,10 @@ and the head of the repository hold the same files after each.
     });
 
 Sources in a zip: the central directory is read, stored and deflated
-members alike, and the paths are those `zipfile` gives.
+members alike, and the paths are those `zipfile` gives. As `zipfile`, a
+member whose bytes do not have their CRC-32 is refused when read, and a
+central directory at an offset out of the zip makes it damaged: both are
+problems told to the person.
 
     // in tests of the same requests on a disk and on GitHub:
     test('a zip of sources is read as zipfile reads it', async () => {
@@ -760,6 +763,12 @@ members alike, and the paths are those `zipfile` gives.
       assert.deepEqual(members.map((m) => m.name), ['src/', 'src/paper.tex', 'src/fig/a.txt']);
       assert.equal(text(await members[1].read()), '\\documentclass');
       assert.equal(text(await members[2].read()), 'figur');
+      const changed = new Uint8Array(zip);
+      changed[zip.indexOf('figur') + 4] = 'x'.charCodeAt(0);
+      await assert.rejects((await readZip(changed))[2].read(), /damaged: src\/fig\/a\.txt does not have the size and CRC-32/);
+      const astray = new Uint8Array(zip);
+      new DataView(astray.buffer).setUint32(astray.length - 6, 0x7fffffff, true);
+      await assert.rejects(readZip(astray), (e) => e.constructor.name === 'Problem' && /damaged/.test(e.message));
       assert.equal(await yamlText({ members: [] }), 'members: []\n');
     });
 

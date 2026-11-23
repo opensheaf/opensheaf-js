@@ -3,7 +3,7 @@ import { Http, FetchError, sha512 } from './http.js';
 import { Resolver, Copy } from './resolve.js';
 import { parseSheaf, objectId, LABEL } from './names.js';
 import { sidecarDigest } from './owners.js';
-import { fileName, WITNESSES } from './signatures.js';
+import { fileName, WITNESSES, lineStatusesOf, latestSigned, INVALID } from './signatures.js';
 import { joinPath, readJson, writeText, ORIGIN } from './storage.js';
 import { jsonText, sidecar } from './write.js';
 import { hex } from './crypto.js';
@@ -82,7 +82,7 @@ export function checksumWarning(where, id, n) {
 }
 
 export async function fetchObject(storage, archive, id, dest, { upto = null, witnessNames = null, where = archive.base,
-                                                                warn = null } = {}) {
+                                                                warn = null, expect = null } = {}) {
   await archive.locate(id);
   const fetched = { files: 0, bytes: 0 };
   const get = async (url) => {
@@ -117,6 +117,9 @@ export async function fetchObject(storage, archive, id, dest, { upto = null, wit
   for (let n = 1; n <= upto; n++) {
     const data = await get(archive.inventoryUrl(id, `v${n}`));
     if (data === null) throw new Unavailable(`${where}: ${id} v${n} has no inventory (section 4.1)`);
+    if (expect && (await sha512(data)) !== expect.get(n)) {
+      throw new Unavailable(`${where}: ${id} v${n}: the inventory fetched is not the one verified (section 12.3): not copied`);
+    }
     let sc = await get(archive.versionUrl(id, `v${n}`, 'inventory.json.sha512'));
     if (sc === null || sidecarDigest(sc) !== await sha512(data)) {
       if (warn) warn(checksumWarning(where, id, n));
@@ -258,10 +261,35 @@ export async function mirrorLine(f, name, owner, where, { licenceChecked = false
       await fetchObject(s, source.archive, id, fresh, {
         upto: target, witnessNames: lineWitnessNames(log), where: source.where,
         warn: (m) => env.err(`Warning: ${m}; the mirror gets a checksum file that states it`),
+        expect: new Map(Array.from({ length: target }, (_, k) => [k + 1, source.digest(k + 1)])),
       });
     } catch (error) {
       if (error instanceof Unavailable) exit(error.message);
       throw error;
+    }
+    const staged = async () => {
+      const versions = [];
+      for (let n = 1; n <= target; n++) {
+        const wdir = joinPath(fresh, WITNESSES, `v${n}`);
+        const witnesses = new Map();
+        for (const e of (await s.list(wdir)) || []) if (e.kind === 'file') witnesses.set(e.name, await s.read(joinPath(wdir, e.name)));
+        versions.push({ version: `v${n}`, digest: await sha512(await s.read(joinPath(fresh, `v${n}`, 'inventory.json'))), witnesses });
+      }
+      return lineStatusesOf(id, owner, versions, log);
+    };
+    const { judgements } = await staged();
+    for (const [k, js] of judgements.entries()) {
+      const wdir = joinPath(fresh, WITNESSES, `v${k + 1}`);
+      for (const j of js) {
+        if (j.status !== INVALID) continue;
+        env.err(`warning: ${id} v${k + 1}: ${j.file} at ${source.where}: ${j.reason}: not copied`);
+        for (const e of (await s.list(wdir)) || []) {
+          if (e.name === j.file || e.name.startsWith(`${j.file}.`)) await s.remove(joinPath(wdir, e.name));
+        }
+      }
+    }
+    if (latestSigned((await staged()).statuses) !== target) {
+      exit(`${id}: the copy at ${source.where} is no longer signed up to v${target}: not copied`);
     }
     if (!held) {
       await s.rename(fresh, dir);

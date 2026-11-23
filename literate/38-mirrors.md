@@ -23,7 +23,7 @@ storage root, every file checked, and the open licences. The module is
     import { Resolver, Copy } from './resolve.js';
     import { parseSheaf, objectId, LABEL } from './names.js';
     import { sidecarDigest } from './owners.js';
-    import { fileName, WITNESSES } from './signatures.js';
+    import { fileName, WITNESSES, lineStatusesOf, latestSigned, INVALID } from './signatures.js';
     import { joinPath, readJson, writeText, ORIGIN } from './storage.js';
     import { jsonText, sidecar } from './write.js';
     import { hex } from './crypto.js';
@@ -138,7 +138,13 @@ opensheaf-py's `fetch_object` does:
    so that a copy stopping before the head is a valid object of its own.
 
 One copy brings `MAX_FETCH_FILES` files and `MAX_FETCH_BYTES` bytes at
-most (section 15.2), and a file `MAX_BYTES`.
+most (section 15.2), and a file `MAX_BYTES`. A caller that has already
+judged the copy, and copies what it judged, gives `expect`, the digest of
+the inventory of each version it verified, as opensheaf-py's
+`fetch_object` takes it: an inventory fetched with other bytes (the copy
+changed between the two readings, or another server answered) makes the
+copy unavailable, never a copy of versions that were not the ones
+verified.
 
     // in mirrors: copying an object from another archive:
     export const MAX_BYTES = 2 ** 30, MAX_FETCH_BYTES = 4 * 2 ** 30, MAX_FETCH_FILES = 20000;
@@ -159,7 +165,7 @@ most (section 15.2), and a file `MAX_BYTES`.
     }
 
     export async function fetchObject(storage, archive, id, dest, { upto = null, witnessNames = null, where = archive.base,
-                                                                    warn = null } = {}) {
+                                                                    warn = null, expect = null } = {}) {
       await archive.locate(id);
       const fetched = { files: 0, bytes: 0 };
       const get = async (url) => {
@@ -194,6 +200,9 @@ most (section 15.2), and a file `MAX_BYTES`.
       for (let n = 1; n <= upto; n++) {
         const data = await get(archive.inventoryUrl(id, `v${n}`));
         if (data === null) throw new Unavailable(`${where}: ${id} v${n} has no inventory (section 4.1)`);
+        if (expect && (await sha512(data)) !== expect.get(n)) {
+          throw new Unavailable(`${where}: ${id} v${n}: the inventory fetched is not the one verified (section 12.3): not copied`);
+        }
         let sc = await get(archive.versionUrl(id, `v${n}`, 'inventory.json.sha512'));
         if (sc === null || sidecarDigest(sc) !== await sha512(data)) {
           if (warn) warn(checksumWarning(where, id, n));
@@ -396,7 +405,15 @@ The checks before copying.
       exit(`${id} was taken down here: it returns only from a copy holding the version its tombstone pins (section 13.2)`);
     }
 
-The copy, through a staging folder of the archive.
+The copy, through a staging folder of the archive. What is copied is
+what was judged, as opensheaf-py's mirror copies it: every inventory
+fetched must have the digest of the version of that number judged above
+(`expect`). The signature files fetched are judged against the key log:
+one that is invalid is left out of the copy, with the files that go with
+it (`signature-...json.*`, a timestamp), and reported, so that a mirror
+never takes in a signature file its source could not have made good; and
+the versions copied must still be signed up to the target, or nothing is
+copied.
 
     // in mirrors: copy the versions into the storage root:
     const stage = `.staging-${hex(randomBytes(6))}`;
@@ -407,10 +424,35 @@ The copy, through a staging folder of the archive.
         await fetchObject(s, source.archive, id, fresh, {
           upto: target, witnessNames: lineWitnessNames(log), where: source.where,
           warn: (m) => env.err(`Warning: ${m}; the mirror gets a checksum file that states it`),
+          expect: new Map(Array.from({ length: target }, (_, k) => [k + 1, source.digest(k + 1)])),
         });
       } catch (error) {
         if (error instanceof Unavailable) exit(error.message);
         throw error;
+      }
+      const staged = async () => {
+        const versions = [];
+        for (let n = 1; n <= target; n++) {
+          const wdir = joinPath(fresh, WITNESSES, `v${n}`);
+          const witnesses = new Map();
+          for (const e of (await s.list(wdir)) || []) if (e.kind === 'file') witnesses.set(e.name, await s.read(joinPath(wdir, e.name)));
+          versions.push({ version: `v${n}`, digest: await sha512(await s.read(joinPath(fresh, `v${n}`, 'inventory.json'))), witnesses });
+        }
+        return lineStatusesOf(id, owner, versions, log);
+      };
+      const { judgements } = await staged();
+      for (const [k, js] of judgements.entries()) {
+        const wdir = joinPath(fresh, WITNESSES, `v${k + 1}`);
+        for (const j of js) {
+          if (j.status !== INVALID) continue;
+          env.err(`warning: ${id} v${k + 1}: ${j.file} at ${source.where}: ${j.reason}: not copied`);
+          for (const e of (await s.list(wdir)) || []) {
+            if (e.name === j.file || e.name.startsWith(`${j.file}.`)) await s.remove(joinPath(wdir, e.name));
+          }
+        }
+      }
+      if (latestSigned((await staged()).statuses) !== target) {
+        exit(`${id}: the copy at ${source.where} is no longer signed up to v${target}: not copied`);
       }
       if (!held) {
         await s.rename(fresh, dir);

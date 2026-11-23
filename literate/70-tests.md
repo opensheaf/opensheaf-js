@@ -53,7 +53,7 @@ The tests are written with `node:test` and `node:assert`, which both
     import { writeDiscovery, PAGING } from '../core/discovery.js';
     import { ownerRotate } from '../core/owner.js';
     import { loadKeyLog } from '../core/keylogs.js';
-    import { WITNESSES } from '../core/signatures.js';
+    import { WITNESSES, fileName } from '../core/signatures.js';
     import { currentVersion, versionsOf, withdrawnVersions, dateOf } from '../core/versions.js';
 
     <<an environment for the tests>>
@@ -927,6 +927,53 @@ only, the rest of the website being written.
       await collections.write(a.f, a.f.labels.get('list'), mem, { message: 'a pin by hand' });
       page = await home();
       assert.ok(page.includes('archive unavailable: cached citation') && page.includes('>One<'), page);
+    });
+
+A mirror copies what it judged, as opensheaf-py's
+`test_mirror_copies_what_it_judged`: when the authors' copy changes
+between the reading that judges it and the fetch that copies it (the
+inventory of v2 gets another byte), nothing is copied. A signature file
+that does not verify, beside the good one and named after a key of the
+key log (a server lists no folders), is left out of the mirror, which
+verifies.
+
+    // in tests of keepers and of options read from files:
+    test('a mirror copies what it judged', async () => {
+      const one = await newArchive();
+      await deposit(one.f, paper('open'));
+      await deposit(one.f, paper('open', { new: false, pdf: { name: 'v2.pdf', bytes: utf8('%PDF-1.4 two') } }));
+      const id = one.f.labels.get('open'), dir = await one.f.dirOf(id);
+      const at = ['https://example.org/papers/'];
+      const two = await newArchive({ baseUrl: 'https://example.org/two/' });
+      const inner = storageFetch(one.storage, at[0]);
+      let changing = true, reads = 0;
+      two.f.env.fetch = async (url, init = {}) => {
+        const res = await inner(url, init);
+        if (changing && res.ok && init.method !== 'HEAD' && String(url).endsWith(`${dir}/v2/inventory.json`) && ++reads > 1) {
+          return new Response(new Uint8Array([...new Uint8Array(await res.arrayBuffer()), 10]), { status: 200 });
+        }
+        return res;
+      };
+      await assert.rejects(mirror(two.f, { uri: id, at }), /not the one verified/);
+      assert.equal(await two.storage.kind(`${dir}/inventory.json`), null);
+      changing = false;
+      const extra = await exampleKey('a key added');
+      one.env.readText = async (p) => one.env.exported.get(p);
+      const keys = [...one.env.exported.keys()].filter((p) => p.startsWith('/keys/')).sort();
+      await ownerRotate(one.f, { rotationKey: keys.slice(0, 2), export: '/k2', add: [extra.did], yes: true });
+      const w = `${dir}/${WITNESSES}/v1`;
+      const [good] = (await one.storage.list(w)).map((e) => e.name);
+      const forged = await readJson(one.storage, `${w}/${good}`);
+      forged.inventorySha512 = '0'.repeat(128);
+      const name = await fileName(extra.did);
+      await one.storage.write(`${w}/${name}`, utf8(JSON.stringify(forged)));
+      two.env.said.length = 0;
+      await mirror(two.f, { uri: id, at });
+      assert.ok(two.env.said.some((l) => l.includes(name) && l.includes('not copied')), two.env.said.join('\n'));
+      const mw = `${dir}/${WITNESSES}/v1`;
+      assert.equal(await two.storage.kind(`${mw}/${good}`), 'file');
+      assert.equal(await two.storage.kind(`${mw}/${name}`), null);
+      assert.deepEqual(await errorsOf(two.storage), []);
     });
 
 A pin of a key-log version resolves only to a version of the key log, as

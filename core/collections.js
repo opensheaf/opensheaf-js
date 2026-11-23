@@ -95,8 +95,12 @@ export async function target(f, r, text, where) {
   return { name, owner, u, places };
 }
 
+export function httpsBases(places) {
+  return places.filter((w) => typeof w === 'string' && w.startsWith('https://') && w.endsWith('/'));
+}
+
 export function recordedAt(f, r, found, places) {
-  const out = places.filter((w) => typeof w === 'string' && w.startsWith('https://') && w.endsWith('/'));
+  const out = httpsBases(places);
   const c = found.copy;
   if (c && c.archive === r.home) out.push(f.archive.baseUrl);
   else if (c && c.where.startsWith('https://')) out.push(c.where);
@@ -418,7 +422,9 @@ async function syncMember(f, r, entry, kind, oldMembers) {
   const old = oldMembers.find((m) => m.name === name && m.owner === owner) ?? null;
   if (old !== null && !u?.sha512) {
     const m = JSON.parse(JSON.stringify(old));
-    if (at.length) m.at = [...new Set([...at, ...m.at])];
+    const added = httpsBases(at);
+    for (const w of at) if (!added.includes(w)) f.env.out(`${text}: at ${w}: not an https base URL ending in /: not recorded`);
+    if (added.length) m.at = [...new Set([...added, ...m.at])];
     if (kind === 'catalogue') {
       delete m.follow;
       if (follow) m.follow = 'latest';

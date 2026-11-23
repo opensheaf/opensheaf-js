@@ -16,7 +16,7 @@ import { verifyFolder } from '../core/check.js';
 import { loadSchemas } from '../core/schema.js';
 import { notice, withdraw, relate, relicense, describe, complete } from '../core/describe.js';
 import * as collections from '../core/collections.js';
-import { esc, fmtDate, pyJson, namesJoined, readableIndex } from '../core/website.js';
+import { esc, fmtDate, pyJson, namesJoined, readableIndex, safeUrl, link } from '../core/website.js';
 import { keeperLink, successorClaim, CONFIRMED, CLAIMED, NOT_CHECKED, KeeperUnreachable } from '../core/keepers.js';
 import { loadEntries, merge, normalise } from '../core/inputs.js';
 import { mirror } from '../core/mirror.js';
@@ -659,6 +659,28 @@ test('mirrors, branches, drafts and takedowns, in memory', async () => {
   const found = await errorsOf(two.storage);
   assert.ok(found.some((x) => x.includes('kept v1: unchecked branch point')), found.join('\n'));
   assert.ok(!found.some((x) => x.startsWith('error')), found.join('\n'));
+});
+
+test('only http and https addresses become links', async () => {
+  const p = await newArchive();
+  await deposit(p.f, paper('one'));
+  const a = await newArchive({ baseUrl: 'https://example.org/author/' });
+  a.f.env.fetch = storageFetch(p.storage, 'https://example.org/papers/');
+  const id = p.f.labels.get('one');
+  const sync = (at) => collections.sync(a.f, { collection: 'list', fromFile: { name: 'list.yaml', given: 'list.yaml',
+    text: `title: A list\nmembers:\n  - uri: '${id}'\n    at: [${at.map((w) => `'${w}'`).join(', ')}]\n` } });
+  await sync(['https://example.org/papers/']);
+  const before = (await head(a.f, 'list', 'members.json')).json.members[0].at;
+  a.env.said.length = 0;
+  await sync(['javascript:alert(1)//', 'http://example.com/']);
+  assert.deepEqual((await head(a.f, 'list', 'members.json')).json.members[0].at, before);
+  assert.equal(a.env.said.filter((l) => l.includes('not recorded')).length, 2, a.env.said.join('\n'));
+  assert.equal(safeUrl('javascript:alert(1)'), '');
+  assert.equal(safeUrl(' https://x/'), '');
+  assert.equal(safeUrl('HTTP://x/'), 'HTTP://x/');
+  assert.equal(link('javascript:alert(1)', 'x'), 'x');
+  assert.equal(link('data:text/html,x', 'x', 'paper-title'), '<span class="paper-title">x</span>');
+  assert.equal(link('https://x/?a=1&b', 'x'), '<a href="https://x/?a=1&amp;b">x</a>');
 });
 
 test('copies that disagree with a pin (section 12.3)', async () => {

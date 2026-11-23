@@ -79,6 +79,28 @@ opensheaf-py gives them, with no interpretation of the text put in (a
         .replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
     }
 
+Escaping is not enough for an address. A URL read from the files, ours or
+another archive's (the `url` of a member's DataCite record, its `at`, the
+`record` of an external entry, a `rightsUri`, a keeper), becomes a link
+only if it is an `http` or `https` URL, as opensheaf-py's `safe_url` and
+`link` decide: a `javascript:` or `data:` URL, escaped, is still a script
+that runs when the reader clicks it. Plain `http` is let through because
+the licences of arXiv are named by `http` URIs; the bases in `at`, which
+are fetched, are held to `https` where they are recorded. Any other value
+is shown as text, without a link.
+
+    // in small pieces:
+    export function safeUrl(u) {
+      return typeof u === 'string' && /^https?:\/\//i.test(u) ? u : '';
+    }
+
+    export function link(u, label, cls = '') {
+      const safe = safeUrl(u);
+      const attr = cls ? ` class="${cls}"` : '';
+      if (safe) return `<a${attr} href="${esc(safe)}">${label}</a>`;
+      return cls ? `<span${attr}>${label}</span>` : label;
+    }
+
     export function fill(text, values) {
       for (const [k, v] of Object.entries(values)) text = text.split(`{{${k}}}`).join(v);
       return text;
@@ -329,7 +351,7 @@ The links to the files of a version, and the version itself:
       for (const e of obj.external || []) {
         if (e.record) {
           const label = e.service === 'arXiv' && arxiv ? `arXiv:${arxiv}` : e.service;
-          files.push(`<a href="${esc(e.record)}">${esc(label)}</a>`);
+          files.push(link(e.record, esc(label)));
         }
       }
       if (arxiv && !(obj.external || []).some((e) => e.service === 'arXiv')) {
@@ -398,14 +420,14 @@ Signposting links.
                 `<link rel="describedby" href="${esc(await fileUrl(f, base, line, cur, 'datacite.json'))}"` +
                 ' type="application/vnd.datacite.datacite+json">');
       if (pdf) tags.push(`<link rel="item" href="${esc(pdf)}" type="application/pdf">`);
-      if (rights.rightsUri) tags.push(`<link rel="license" href="${esc(rights.rightsUri)}">`);
+      if (safeUrl(rights.rightsUri)) tags.push(`<link rel="license" href="${esc(rights.rightsUri)}">`);
       const ld = { '@context': 'https://schema.org', '@type': 'ScholarlyArticle', name: dc.titles[0].title, url: landing,
                    author: dc.creators.map((c) => ({ '@type': 'Person', name: displayName(c) })),
                    datePublished: date, version: dc.version,
                    identifier: [...(dc.doi ? [`https://doi.org/${dc.doi}`] : []), fullUri(line)] };
       if (pdf) ld.encoding = { '@type': 'MediaObject', contentUrl: pdf, encodingFormat: 'application/pdf' };
       if (abstract) ld.abstract = abstract;
-      if (rights.rightsUri) ld.license = rights.rightsUri;
+      if (safeUrl(rights.rightsUri)) ld.license = rights.rightsUri;
       tags.push('<script type="application/ld+json">' + pyJson(ld).replace(/<\//g, '<\\/') + '</script>');
       return tags.join('\n');
     }
@@ -501,7 +523,7 @@ collection. It returns the number of landing pages.
             'what it holds may not be the owner\'s.</div>' : '';
         const rights = (dc.rightsList?.length ? dc.rightsList : [{}])[0];
         let licence = esc(rights.rights ?? '');
-        if (rights.rightsUri) licence = `<a href="${esc(rights.rightsUri)}">${licence}</a>`;
+        if (rights.rightsUri) licence = link(rights.rightsUri, licence);
         const citeUrl = dc.doi ? `https://doi.org/${dc.doi}` : `${base}paper/${line.slug}/`;
         const cite = esc(`${authorsOf(dc)}. ${dc.titles[0].title}. ${f.archive.name}, ` +
                          `${(issued || '').slice(0, 4)}, version ${obj.documentVersion}.`) +
@@ -755,19 +777,18 @@ citation cached in the member.
         title = dc.titles[0].title;
         by = authorsOf(dc);
         abstract = abstractHtml(dc);
-        if (view.pdf) links.push(`<a href="${esc(view.pdf)}">PDF</a>`);
-        landing = dc.url || '';
-        if (landing) links.unshift(`<a href="${esc(landing)}">landing page</a>`);
+        if (view.pdf) links.push(link(view.pdf, 'PDF'));
+        landing = safeUrl(dc.url);
+        if (landing) links.unshift(link(landing, 'landing page'));
         withdrawn = withdrawalHtml(view.state || {}, ' by its owner');
       }
       return [
         `<li class="paper member${withdrawn ? ' withdrawn' : ''}">`,
-        landing ? `<a class="paper-title" href="${esc(landing)}">${esc(title)}</a>`
-          : `<span class="paper-title">${esc(title)}</span>`,
+        link(landing, esc(title), 'paper-title'),
         `<div class="paper-authors">${esc(by)}</div>`,
         `<div class="paper-meta">${esc(String(year))}` +
           (showOwner ? ` · ${await ownerTag(site, m.owner, root)}` : '') +
-          ` · in <a href="${esc(at)}">${esc(archiveName)}</a>` +
+          ` · in ${link(at, esc(archiveName))}` +
           (m.revisions ? ` · ${versionsLine(m, {})}` : '') +
           (links.length ? ' · ' + links.join(' · ') : '') +
           ` · <span class="pin" title="${pin}">pin ${pin.slice(0, 32)}…</span></div>`,
@@ -888,7 +909,7 @@ told about it: an end, a fork, a successor, exposed keys.
       const keeper = await keeperOf(log);
       if (!keeper) return '';
       const mark = (await keeperLinkOf(site, log)).status === CONFIRMED ? ' (confirmed)' : '';
-      return `<a href="${esc(keeper)}">${esc(keeper)}</a>${mark}`;
+      return `${link(keeper, esc(keeper))}${mark}`;
     }
 
     async function ownerHtml(site, owner, root) {

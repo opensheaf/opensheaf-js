@@ -150,6 +150,15 @@ test('titles, abstracts and names from TeX, as opensheaf-py makes them', () => {
 });
 
 test('e-prints unpacked, within their limits', async () => {
+  const record = (key, value) => {
+    const rest = new TextEncoder().encode(` ${key}=${value}\n`).length;
+    let n = rest + 1;
+    while (String(n).length + rest !== n) n = String(n).length + rest;
+    return `${n} ${key}=${value}\n`;
+  };
+  const pax = tarGz([['PaxHeader', record('path', 'sources/\u00e9t\u00e9.tex') + record('mtime', '1'), 'x'],
+                     ['ignored.tex', '\\documentclass{article}']]);
+  assert.deepEqual(arxiv.tarMembers(new Uint8Array(zlib.gunzipSync(pax))).map((m) => m.name), ['sources/\u00e9t\u00e9.tex']);
   const ok = tarGz([['main.tex', '\\documentclass{article}'], ['../evil.tex', 'x']]);
   const { kind, files, notes } = await arxiv.unpack(ok, 'ok', '2611.14296');
   assert.equal(kind, 'tar');

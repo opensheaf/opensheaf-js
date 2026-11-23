@@ -447,12 +447,17 @@ export function tarMembers(raw, src = 'data') {
 
 function paxRecords(body) {
   const out = {};
-  const text = new TextDecoder().decode(body);
-  for (let k = 0; k < text.length;) {
-    const m = /^(\d+) ([^=]*)=/.exec(text.slice(k));
-    if (!m) break;
-    const length = Number(m[1]);
-    out[m[2]] = text.slice(k + m[0].length, k + length - 1);
+  const text = new TextDecoder();
+  for (let k = 0; k < body.length;) {
+    let space = k;
+    while (space < body.length && body[space] >= 0x30 && body[space] <= 0x39) space++;
+    if (space === k || body[space] !== 0x20) break;
+    const length = Number(text.decode(body.subarray(k, space)));
+    if (length <= space - k + 1 || k + length > body.length) break;
+    const record = text.decode(body.subarray(space + 1, k + length - 1));
+    const equals = record.indexOf('=');
+    if (equals < 0) break;
+    out[record.slice(0, equals)] = record.slice(equals + 1);
     k += length;
   }
   return out;

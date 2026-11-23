@@ -63,7 +63,7 @@ module of its own.
 
     export function tarGz(members) {
       const blocks = [];
-      for (const [name, text] of members) {
+      for (const [name, text, type = '0'] of members) {
         const data = typeof text === 'string' ? new TextEncoder().encode(text) : text;
         const h = new Uint8Array(512);
         const put = (at, s) => h.set(new TextEncoder().encode(s), at);
@@ -74,7 +74,7 @@ module of its own.
         put(124, data.length.toString(8).padStart(11, '0') + '\0');
         put(136, '00000000000\0');
         put(148, '        ');
-        h[156] = 0x30;
+        h[156] = type.charCodeAt(0);
         put(257, 'ustar\x0000');
         const sum = h.reduce((n, b) => n + b, 0);
         put(148, sum.toString(8).padStart(6, '0') + '\0 ');
@@ -242,12 +242,22 @@ affiliations.
 The sources
 -----------
 
-An e-print of a tar archive: its files under `source/`, an unsafe path
-skipped and noted; then the limits, lowered as opensheaf-py's tests lower
+An e-print of a tar archive: a path given by a pax header, whose record
+lengths count bytes, not characters (as Python's `tarfile` reads them);
+its files under `source/`, an unsafe path skipped and noted; then the limits, lowered as opensheaf-py's tests lower
 them: too many members, and a gzip bomb.
 
     // in services: the sources:
     test('e-prints unpacked, within their limits', async () => {
+      const record = (key, value) => {
+        const rest = new TextEncoder().encode(` ${key}=${value}\n`).length;
+        let n = rest + 1;
+        while (String(n).length + rest !== n) n = String(n).length + rest;
+        return `${n} ${key}=${value}\n`;
+      };
+      const pax = tarGz([['PaxHeader', record('path', 'sources/\u00e9t\u00e9.tex') + record('mtime', '1'), 'x'],
+                         ['ignored.tex', '\\documentclass{article}']]);
+      assert.deepEqual(arxiv.tarMembers(new Uint8Array(zlib.gunzipSync(pax))).map((m) => m.name), ['sources/\u00e9t\u00e9.tex']);
       const ok = tarGz([['main.tex', '\\documentclass{article}'], ['../evil.tex', 'x']]);
       const { kind, files, notes } = await arxiv.unpack(ok, 'ok', '2611.14296');
       assert.equal(kind, 'tar');

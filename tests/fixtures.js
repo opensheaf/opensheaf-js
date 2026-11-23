@@ -3,7 +3,7 @@ import zlib from 'node:zlib';
 
 export function tarGz(members) {
   const blocks = [];
-  for (const [name, text] of members) {
+  for (const [name, text, type = '0'] of members) {
     const data = typeof text === 'string' ? new TextEncoder().encode(text) : text;
     const h = new Uint8Array(512);
     const put = (at, s) => h.set(new TextEncoder().encode(s), at);
@@ -14,7 +14,7 @@ export function tarGz(members) {
     put(124, data.length.toString(8).padStart(11, '0') + '\0');
     put(136, '00000000000\0');
     put(148, '        ');
-    h[156] = 0x30;
+    h[156] = type.charCodeAt(0);
     put(257, 'ustar\x0000');
     const sum = h.reduce((n, b) => n + b, 0);
     put(148, sum.toString(8).padStart(6, '0') + '\0 ');

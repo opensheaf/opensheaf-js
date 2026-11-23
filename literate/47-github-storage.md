@@ -81,6 +81,13 @@ own message when it refuses. `fresh` asks the browser not to answer from
 its cache (GitHub's answers may be kept for a minute, and the head of a
 branch must be the current one). `raw` takes the body as bytes.
 
+A refusal for a rate limit (status 429, or 403 with `Retry-After` or no
+request left in `x-ratelimit-remaining`) is waited out and the request
+made again, up to three times, when the wait is a minute at most: the
+seconds of `Retry-After`, else until `x-ratelimit-reset`, else a minute,
+as GitHub asks for its secondary limits. A longer wait, or a fourth
+refusal, is a `RateLimited` error that says when to try again.
+
     // in the API of GitHub:
     export const GITHUB_API = 'https://api.github.com';
 
@@ -93,14 +100,43 @@ branch must be the current one). `raw` takes the body as bytes.
 
     export class CommitConflict extends GitHubError {}
 
+    export class RateLimited extends GitHubError {}
+
+    const MAX_WAIT = 60_000, TRIES = 3;
+
+    function rateLimitWait(r, now) {
+      const after = r.headers.get('retry-after'), reset = r.headers.get('x-ratelimit-reset');
+      if (r.status !== 429 && !(r.status === 403 && (after !== null || r.headers.get('x-ratelimit-remaining') === '0'))) return null;
+      if (after !== null && /^\d+$/.test(after.trim())) return Number(after) * 1000;
+      if (reset !== null && /^\d+$/.test(reset.trim())) return Math.max(0, Number(reset) * 1000 - now) + 1000;
+      return MAX_WAIT;
+    }
+
     export class GitHub {
-      constructor({ api = GITHUB_API, fetch = globalThis.fetch?.bind(globalThis), token = null } = {}) {
+      constructor({ api = GITHUB_API, fetch = globalThis.fetch?.bind(globalThis), token = null,
+                    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = () => Date.now() } = {}) {
         this.api = api.replace(/\/$/, '');
         this.fetch = fetch;
         this.token = token;
+        this.sleep = sleep;
+        this.now = now;
       }
 
-      async request(method, path, body = null, { raw = false, fresh = false } = {}) {
+      async request(method, path, body = null, options = {}) {
+        for (let tries = 1; ; tries++) {
+          const r = await this.once(method, path, body, options);
+          const wait = rateLimitWait(r, this.now());
+          if (wait === null) return this.answer(r, path, options);
+          if (wait > MAX_WAIT || tries >= TRIES) {
+            const when = new Date(this.now() + wait).toISOString().slice(0, 19) + 'Z';
+            throw new RateLimited(`GitHub API ${path}: rate limit reached; try again after ${when}`, r.status);
+          }
+          await r.body?.cancel();
+          await this.sleep(wait);
+        }
+      }
+
+      async once(method, path, body, { raw = false, fresh = false }) {
         const token = typeof this.token === 'function' ? await this.token() : this.token;
         const headers = { Accept: raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json',
                           'X-GitHub-Api-Version': '2022-11-28' };
@@ -113,6 +149,10 @@ branch must be the current one). `raw` takes the body as bytes.
         } catch (error) {
           throw new GitHubError(`GitHub API ${path}: ${error.message}`);
         }
+        return r;
+      }
+
+      async answer(r, path, { raw = false }) {
         if (r.ok && raw) return new Uint8Array(await r.arrayBuffer());
         const text = await r.text();
         let data = null;
@@ -198,7 +238,10 @@ serves the files of the branch at their paths.
       }
 
 The head: the reference, the commit, and the tree. A tree too large for
-one answer comes `truncated`; it is then read folder by folder. Only
+one answer comes `truncated`; it is then read one level down (that
+listing of one folder alone may not be truncated: a folder too large for
+it cannot be read), and each folder below is asked for whole, in turn,
+so that each tree is asked for at most twice, whatever its depth. Only
 blobs are kept: a submodule (`commit`) is not a file of the archive. A
 symbolic link is kept with its mode, listed as a link and never read, as
 the disk storage does (chapter [40](40-cli.md)).
@@ -211,19 +254,21 @@ the disk storage does (chapter [40](40-cli.md)).
         this.head = ref.object.sha;
         this.tree = (await this.github.request('GET', `${r}/commits/${this.head}`)).tree.sha;
         const entries = [];
+        const under = (prefix, e) => ({ ...e, path: prefix ? `${prefix}/${e.path}` : e.path });
         const walk = async (sha, prefix) => {
-          const t = await this.github.request('GET', `${r}/trees/${sha}${prefix === null ? '?recursive=1' : ''}`);
-          if (prefix === null && !t.truncated) {
-            entries.push(...t.tree);
+          const whole = await this.github.request('GET', `${r}/trees/${sha}?recursive=1`);
+          if (!whole.truncated) {
+            for (const e of whole.tree) entries.push(under(prefix, e));
             return;
           }
+          const t = await this.github.request('GET', `${r}/trees/${sha}`);
+          if (t.truncated) throw new GitHubError(`${this.repo}: the folder ${prefix || '/'} is too large for GitHub's API`);
           for (const e of t.tree) {
-            const path = prefix ? `${prefix}/${e.path}` : e.path;
-            if (e.type === 'tree') await walk(e.sha, path);
-            else entries.push({ ...e, path });
+            if (e.type === 'tree') await walk(e.sha, under(prefix, e).path);
+            else entries.push(under(prefix, e));
           }
         };
-        await walk(this.tree, null);
+        await walk(this.tree, '');
         this.base = new Map();
         for (const e of entries) {
           if (e.type === 'blob') this.base.set(e.path, { sha: e.sha, mode: e.mode, size: e.size ?? null });
@@ -381,7 +426,8 @@ the blob's), else from the API. Every blob is checked against its name.
 Prefetch: every file of the head up to `maxSize` bytes (a mebibyte by
 default) that the cache lacks, a few at a time; `skip(path, size)` leaves
 some out. A blob that cannot be read now is left to the command, which will
-say so if it needs it.
+say so if it needs it; a rate limit stops the prefetch, and is reported,
+since every read after it would be refused too.
 
     // in the storage of a branch:
       async prefetch({ maxSize = 1 << 20, skip = () => false, concurrency = 6 } = {}) {
@@ -391,13 +437,17 @@ say so if it needs it.
           if (e.size !== null && e.size > maxSize) continue;
           if (!skip(path, e.size)) todo.set(e.sha, path);
         }
+        let limited = null;
         await inTurn([...todo], async ([sha, path]) => {
+          if (limited) return;
           try {
             await this.blob(sha, path);
-          } catch {
-            // read again, or reported, when the command needs it
+          } catch (error) {
+            if (error instanceof RateLimited) limited = error;
+            // otherwise read again, or reported, when the command needs it
           }
         }, concurrency);
+        if (limited) throw limited;
         return todo.size;
       }
 

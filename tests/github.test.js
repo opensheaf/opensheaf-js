@@ -9,7 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
 import { fakeGitHub } from './fake-github.js';
-import { GitHub, GitHubStorage, CommitConflict, oneCommit, gitBlobSha } from '../core/github.js';
+import { GitHub, GitHubStorage, CommitConflict, RateLimited, oneCommit, gitBlobSha } from '../core/github.js';
 import { MemoryStorage, StorageError, storageFetch } from '../core/storage.js';
 import { PAGING } from '../core/discovery.js';
 import { DiskStorage } from '../cli/disk.js';
@@ -160,6 +160,49 @@ test('a truncated tree, the mirror and its check, prefetching', async () => {
   await u.read('ocfl/jane/p3/inventory.json');
   assert.deepEqual(u.reads, { cache: 1, mirror: 0, api: 0 });
   await assert.rejects(GitHubStorage.open(REPO, new GitHub({ api: g.api, fetch: g.fetch, token: 'wrong' })), /Bad credentials/);
+});
+
+test('a deep truncated tree is read once per tree; rate limits are waited out or reported', async () => {
+  const files = {};
+  for (let o = 0; o < 20; o++) for (let v = 1; v <= 3; v++) files[`ocfl/aa/o${o}/v${v}/content/a/b/c/x.txt`] = `x${o}${v}`;
+  const g = repository(files);
+  g.truncate = 100;
+  g.calls.length = 0;
+  const s = await GitHubStorage.open(REPO, client(g));
+  assert.equal((await s.list('ocfl/aa')).length, 20);
+  const trees = g.calls.filter((c) => c.path.includes('/git/trees/')).map((c) => c.path.replace(/\?.*/, ''));
+  const asked = new Map();
+  for (const t of trees) asked.set(t, (asked.get(t) || 0) + 1);
+  assert.ok(Math.max(...asked.values()) <= 2, JSON.stringify([...asked]));
+  assert.equal(trees.length, 26);
+  const cut = { api: g.api, token: g.token, fetch: async (url, init) => {
+    const r = await g.fetch(url, init);
+    if (!String(url).includes('/git/trees/') || String(url).includes('recursive')) return r;
+    return new Response(JSON.stringify({ ...(await r.json()), truncated: true }), { status: 200 });
+  } };
+  await assert.rejects(GitHubStorage.open(REPO, new GitHub(cut)), /too large for GitHub's API/);
+  const waits = [];
+  let refuse = 2;
+  const limited = (headers, status = 403) => new GitHub({ api: g.api, token: g.token, now: () => 1_700_000_000_000,
+    sleep: async (ms) => { waits.push(ms); },
+    fetch: async (url, init) => (refuse-- > 0 ? new Response('{"message": "API rate limit exceeded"}', { status, headers })
+                                             : g.fetch(url, init)) });
+  await GitHubStorage.open(REPO, limited({ 'retry-after': '3' }, 429));
+  assert.deepEqual(waits, [3000, 3000]);
+  refuse = 1;
+  waits.length = 0;
+  await GitHubStorage.open(REPO, limited({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1700000010' }));
+  assert.deepEqual(waits, [11000]);
+  refuse = 1;
+  await assert.rejects(GitHubStorage.open(REPO, limited({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1700003600' })),
+                       (e) => e instanceof RateLimited && /try again after 2023-11-14T23:13:21Z/.test(e.message));
+  refuse = 0;
+  const gh = limited({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1700003600' });
+  const t = await GitHubStorage.open(REPO, gh);
+  refuse = Infinity;
+  await assert.rejects(t.prefetch(), RateLimited);
+  refuse = 1;
+  await assert.rejects(GitHubStorage.open(REPO, limited({})), (e) => !(e instanceof RateLimited) && e.status === 403);
 });
 
 const schemas = await loadSchemas(async (url) => JSON.parse(await readFile(fileURLToPath(url), 'utf-8')));

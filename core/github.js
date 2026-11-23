@@ -14,14 +14,43 @@ export class GitHubError extends Error {
 
 export class CommitConflict extends GitHubError {}
 
+export class RateLimited extends GitHubError {}
+
+const MAX_WAIT = 60_000, TRIES = 3;
+
+function rateLimitWait(r, now) {
+  const after = r.headers.get('retry-after'), reset = r.headers.get('x-ratelimit-reset');
+  if (r.status !== 429 && !(r.status === 403 && (after !== null || r.headers.get('x-ratelimit-remaining') === '0'))) return null;
+  if (after !== null && /^\d+$/.test(after.trim())) return Number(after) * 1000;
+  if (reset !== null && /^\d+$/.test(reset.trim())) return Math.max(0, Number(reset) * 1000 - now) + 1000;
+  return MAX_WAIT;
+}
+
 export class GitHub {
-  constructor({ api = GITHUB_API, fetch = globalThis.fetch?.bind(globalThis), token = null } = {}) {
+  constructor({ api = GITHUB_API, fetch = globalThis.fetch?.bind(globalThis), token = null,
+                sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = () => Date.now() } = {}) {
     this.api = api.replace(/\/$/, '');
     this.fetch = fetch;
     this.token = token;
+    this.sleep = sleep;
+    this.now = now;
   }
 
-  async request(method, path, body = null, { raw = false, fresh = false } = {}) {
+  async request(method, path, body = null, options = {}) {
+    for (let tries = 1; ; tries++) {
+      const r = await this.once(method, path, body, options);
+      const wait = rateLimitWait(r, this.now());
+      if (wait === null) return this.answer(r, path, options);
+      if (wait > MAX_WAIT || tries >= TRIES) {
+        const when = new Date(this.now() + wait).toISOString().slice(0, 19) + 'Z';
+        throw new RateLimited(`GitHub API ${path}: rate limit reached; try again after ${when}`, r.status);
+      }
+      await r.body?.cancel();
+      await this.sleep(wait);
+    }
+  }
+
+  async once(method, path, body, { raw = false, fresh = false }) {
     const token = typeof this.token === 'function' ? await this.token() : this.token;
     const headers = { Accept: raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json',
                       'X-GitHub-Api-Version': '2022-11-28' };
@@ -34,6 +63,10 @@ export class GitHub {
     } catch (error) {
       throw new GitHubError(`GitHub API ${path}: ${error.message}`);
     }
+    return r;
+  }
+
+  async answer(r, path, { raw = false }) {
     if (r.ok && raw) return new Uint8Array(await r.arrayBuffer());
     const text = await r.text();
     let data = null;
@@ -99,19 +132,21 @@ export class GitHubStorage {
     this.head = ref.object.sha;
     this.tree = (await this.github.request('GET', `${r}/commits/${this.head}`)).tree.sha;
     const entries = [];
+    const under = (prefix, e) => ({ ...e, path: prefix ? `${prefix}/${e.path}` : e.path });
     const walk = async (sha, prefix) => {
-      const t = await this.github.request('GET', `${r}/trees/${sha}${prefix === null ? '?recursive=1' : ''}`);
-      if (prefix === null && !t.truncated) {
-        entries.push(...t.tree);
+      const whole = await this.github.request('GET', `${r}/trees/${sha}?recursive=1`);
+      if (!whole.truncated) {
+        for (const e of whole.tree) entries.push(under(prefix, e));
         return;
       }
+      const t = await this.github.request('GET', `${r}/trees/${sha}`);
+      if (t.truncated) throw new GitHubError(`${this.repo}: the folder ${prefix || '/'} is too large for GitHub's API`);
       for (const e of t.tree) {
-        const path = prefix ? `${prefix}/${e.path}` : e.path;
-        if (e.type === 'tree') await walk(e.sha, path);
-        else entries.push({ ...e, path });
+        if (e.type === 'tree') await walk(e.sha, under(prefix, e).path);
+        else entries.push(under(prefix, e));
       }
     };
-    await walk(this.tree, null);
+    await walk(this.tree, '');
     this.base = new Map();
     for (const e of entries) {
       if (e.type === 'blob') this.base.set(e.path, { sha: e.sha, mode: e.mode, size: e.size ?? null });
@@ -249,13 +284,17 @@ export class GitHubStorage {
       if (e.size !== null && e.size > maxSize) continue;
       if (!skip(path, e.size)) todo.set(e.sha, path);
     }
+    let limited = null;
     await inTurn([...todo], async ([sha, path]) => {
+      if (limited) return;
       try {
         await this.blob(sha, path);
-      } catch {
-        // read again, or reported, when the command needs it
+      } catch (error) {
+        if (error instanceof RateLimited) limited = error;
+        // otherwise read again, or reported, when the command needs it
       }
     }, concurrency);
+    if (limited) throw limited;
     return todo.size;
   }
 

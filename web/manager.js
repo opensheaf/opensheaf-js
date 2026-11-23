@@ -20,7 +20,7 @@ import { readableIndex, hasWebsite } from '../core/website.js';
 import { verifyFolder } from '../core/check.js';
 import { short, plural, Stop } from '../core/folder.js';
 
-export { GitHub, GitHubStorage, GitHubError, CommitConflict, oneCommit, gitBlobSha, GITHUB_API } from '../core/github.js';
+export { GitHub, GitHubStorage, GitHubError, CommitConflict, RateLimited, oneCommit, gitBlobSha, GITHUB_API } from '../core/github.js';
 export { carryOut, Problem, OPERATIONS, WORKFLOW_ONLY, NEW_PAPER, NEW_VERSION, ownLineOf } from '../core/requests.js';
 export { popupUrl, popupRequest, openPopupAnswer, openPopupAnswers, MAX_POPUP_OWNERS, sameCode, confirmationCode, POPUP, POPUP_ENROLL, POPUP_MESSAGES,
          UNLOCK_ORIGIN, UnlockFailed } from '../core/passkey.js';

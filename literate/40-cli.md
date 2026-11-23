@@ -147,12 +147,13 @@ to the store, so that the tests use one of their own and never touch the
 keychain of the person running them.
 
     // in cli/keystore.js:
-    import { promises as fs, existsSync } from 'node:fs';
+    import { promises as fs, existsSync, openSync } from 'node:fs';
     import path from 'node:path';
     import os from 'node:os';
     import process from 'node:process';
+    import tty from 'node:tty';
+    import { StringDecoder } from 'node:string_decoder';
     import { execSync, spawnSync } from 'node:child_process';
-    import { createInterface } from 'node:readline/promises';
     import { Key, KeyError, base64 } from '../core/keys.js';
     import { keyId } from '../core/names.js';
     import { unbase64 } from '../core/crypto.js';
@@ -363,34 +364,110 @@ twice, without echo; it is asked once per command (`known()` says
 whether it is given or asked already). Answers to questions
 are read from the standard input.
 
+The standard input is read through one buffer, line by line: what a read
+takes beyond its line is kept for the next, so that answers piped in
+(`printf 'pw\npw\n' | osheaf ...`) are read one after the other, and
+the whole of it (`key import --stdin`, `readStdin`) leaves the buffer
+ended. A passphrase is read without echo from the terminal: the standard
+input when it is one, else, once the standard input is used up (a key
+read from it), the terminal of the process (`/dev/tty`), as Python's
+`getpass` reads it; without a terminal, from what is left of the standard
+input, as `getpass` falls back to it.
+
     // in cli/keystore.js:
+    const stdin = { text: '', ended: false, decoder: new StringDecoder('utf8') };
+
+    function taken() {
+      const k = stdin.text.indexOf('\n');
+      if (k >= 0) {
+        const line = stdin.text.slice(0, k);
+        stdin.text = stdin.text.slice(k + 1);
+        return line.endsWith('\r') ? line.slice(0, -1) : line;
+      }
+      if (!stdin.ended) return null;
+      const rest = stdin.text;
+      stdin.text = '';
+      return rest;
+    }
+
+    function fromStdin(until) {
+      if (!stdin.ended && process.stdin.readableEnded) stdin.ended = true;
+      const now = until();
+      if (now !== null) return Promise.resolve(now);
+      return new Promise((resolve, reject) => {
+        const done = (error, value) => {
+          process.stdin.off('data', onData);
+          process.stdin.off('end', onEnd);
+          process.stdin.off('error', onError);
+          process.stdin.pause();
+          if (error) reject(error);
+          else resolve(value);
+        };
+        const onData = (chunk) => {
+          stdin.text += typeof chunk === 'string' ? chunk : stdin.decoder.write(chunk);
+          const value = until();
+          if (value !== null) done(null, value);
+        };
+        const onEnd = () => {
+          stdin.text += stdin.decoder.end();
+          stdin.ended = true;
+          done(null, until());
+        };
+        const onError = (error) => done(error);
+        process.stdin.on('data', onData);
+        process.stdin.on('end', onEnd);
+        process.stdin.on('error', onError);
+        process.stdin.resume();
+      });
+    }
+
     export async function readLine(prompt) {
-      const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
       process.stdout.write(prompt);
+      return fromStdin(taken);
+    }
+
+    export function readAllStdin() {
+      return fromStdin(() => {
+        if (!stdin.ended) return null;
+        const all = stdin.text;
+        stdin.text = '';
+        return all;
+      });
+    }
+
+    function terminal() {
       try {
-        for await (const line of rl) return line;
-        return '';
-      } finally {
-        rl.close();
+        return new tty.ReadStream(openSync('/dev/tty', 'r'));
+      } catch {
+        return null;
       }
     }
 
     function hidden(prompt) {
+      if (process.stdin.isTTY) return typed(process.stdin, prompt);
+      if ((stdin.ended || process.stdin.readableEnded) && !stdin.text) {
+        const input = terminal();
+        if (input) return typed(input, prompt).finally(() => input.destroy());
+      }
       process.stderr.write(prompt);
-      if (!process.stdin.isTTY) return readLine('');
+      return fromStdin(taken);
+    }
+
+    function typed(input, prompt) {
+      process.stderr.write(prompt);
       return new Promise((resolve, reject) => {
-        let typed = '';
+        let text = '';
         const done = () => {
-          process.stdin.setRawMode(false);
-          process.stdin.pause();
-          process.stdin.off('data', onData);
+          input.setRawMode(false);
+          input.pause();
+          input.off('data', onData);
           process.stderr.write('\n');
         };
         const onData = (chunk) => {
           for (const ch of chunk.toString('utf8')) {
             if (ch === '\r' || ch === '\n') {
               done();
-              resolve(typed);
+              resolve(text);
               return;
             }
             if (ch === '\u0003') {
@@ -398,12 +475,12 @@ are read from the standard input.
               reject(new Stop('Interrupted.'));
               return;
             }
-            typed = ch === '\u007f' || ch === '\b' ? typed.slice(0, -1) : typed + ch;
+            text = ch === '\u007f' || ch === '\b' ? text.slice(0, -1) : text + ch;
           }
         };
-        process.stdin.setRawMode(true);
-        process.stdin.resume();
-        process.stdin.on('data', onData);
+        input.setRawMode(true);
+        input.resume();
+        input.on('data', onData);
       });
     }
 
@@ -1407,10 +1484,10 @@ the archive:
     import os from 'node:os';
     import process from 'node:process';
     import { spawn, spawnSync } from 'node:child_process';
-    import { Buffer } from 'node:buffer';
     import { WalletError } from '../core/wallets.js';
     import { sha256hex } from '../core/write.js';
     import { utf8 } from '../core/crypto.js';
+    import { readAllStdin } from './keystore.js';
 
     export const CLEAR_AFTER = 60;
 
@@ -1518,11 +1595,7 @@ The wallets' side, and the rest:
                     token: async () => githubToken(vars) },
         },
         readText: given.readText || ((p) => fs.readFile(p, 'utf-8')),
-        readStdin: given.readStdin || (async () => {
-          const chunks = [];
-          for await (const chunk of process.stdin) chunks.push(chunk);
-          return Buffer.concat(chunks).toString('utf-8');
-        }),
+        readStdin: given.readStdin || readAllStdin,
         write: given.write || ((text) => process.stdout.write(text)),
       };
     }

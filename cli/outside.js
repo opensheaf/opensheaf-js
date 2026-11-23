@@ -4,10 +4,10 @@ import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
 import { spawn, spawnSync } from 'node:child_process';
-import { Buffer } from 'node:buffer';
 import { WalletError } from '../core/wallets.js';
 import { sha256hex } from '../core/write.js';
 import { utf8 } from '../core/crypto.js';
+import { readAllStdin } from './keystore.js';
 
 export const CLEAR_AFTER = 60;
 
@@ -112,11 +112,7 @@ export function outside(env, given = {}) {
                 token: async () => githubToken(vars) },
     },
     readText: given.readText || ((p) => fs.readFile(p, 'utf-8')),
-    readStdin: given.readStdin || (async () => {
-      const chunks = [];
-      for await (const chunk of process.stdin) chunks.push(chunk);
-      return Buffer.concat(chunks).toString('utf-8');
-    }),
+    readStdin: given.readStdin || readAllStdin,
     write: given.write || ((text) => process.stdout.write(text)),
   };
 }

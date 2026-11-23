@@ -432,6 +432,39 @@ test('key files, passkey locks and texts', async () => {
   }
 });
 
+test('passphrases piped in, and after a key read from the standard input', async () => {
+  const { spawn } = await import('node:child_process');
+  const isDeno = typeof globalThis.Deno !== 'undefined';
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'osheaf-stdin-'));
+  try {
+    const script = path.join(dir, 'ask.mjs');
+    await writeFile(script, [
+      "import process from 'node:process';",
+      `import { passphrases, readAllStdin } from ${JSON.stringify(new URL('../cli/keystore.js', import.meta.url).href)};`,
+      "const all = process.argv.includes('all');",
+      'try {',
+      "  if (all) console.log('read', (await readAllStdin()).length);",
+      "  console.log('got', JSON.stringify(await passphrases({})({ confirm: !all })));",
+      "} catch (e) { console.log('stop', e.message); }"].join('\n'));
+    const run = (args, input) => new Promise((resolve, reject) => {
+      const command = isDeno ? [process.execPath, 'run', '-A', script, ...args] : [process.execPath, script, ...args];
+      // detached: a session of its own, without the terminal of the tests
+      const child = spawn(command[0], command.slice(1), { detached: true, stdio: ['pipe', 'pipe', 'pipe'],
+                                                          env: { PATH: process.env.PATH, HOME: dir } });
+      let out = '';
+      child.stdout.on('data', (d) => { out += d; });
+      const timer = setTimeout(() => { child.kill(); reject(new Error(`no answer: ${out}`)); }, 30000);
+      child.on('close', () => { clearTimeout(timer); resolve(out); });
+      child.stdin.end(input);
+    });
+    assert.match(await run([], 'a passphrase\na passphrase\n'), /got "a passphrase"/);
+    const after = await run(['all'], 'the text of a key\n');
+    assert.match(after, /read 18\nstop An empty passphrase/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('passkeys: enroll, unlock, and keys opened by them', async () => {
   const box = await sandbox();
   try {

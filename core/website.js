@@ -42,7 +42,7 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 
 export function fmtDate(iso) {
   if (!iso) return '';
-  const parts = iso.split('/')[0].split('-');
+  const parts = iso.split('/')[0].split('T')[0].split('-');
   if (parts.length === 3) return `${Number(parts[2])} ${MONTHS[Number(parts[1]) - 1]} ${parts[0]}`;
   if (parts.length === 2) return `${MONTHS[Number(parts[1]) - 1]} ${parts[0]}`;
   return parts[0];
@@ -914,16 +914,20 @@ export function hasWebsite(f) {
 }
 
 export async function readableIndex(f, options = {}) {
-  if (f.index.template && !f.index.html) {
-    f.env.warn('the TeXmacs index (index.template) is written by opensheaf-py: run osheaf index of ' +
-               'opensheaf-py to write it and its landing pages again');
-    return;
-  }
   const groups = await catalogueGroups(f);
   if (groups === null) return;
   const members = groups.flatMap(([, ms]) => ms);
   if (!['together', 'by-owner'].includes(f.index.owners ?? 'together')) {
     exit(`osheaf.json: index.owners is together or by-owner, not ${f.index.owners}`);
+  }
+  if (f.index.template && !f.index.html) {
+    const { quiet = false, ...rest } = options;
+    const pages = await render(f, members, { ...rest, home: false });
+    if (quiet) return;
+    f.env.warn('the TeXmacs index (index.tm, from index.template) is typeset by opensheaf-py: run osheaf index of ' +
+               'opensheaf-py to write it again');
+    f.env.out(`Done: opensheaf.json, ${plural(pages, 'landing page')} and sitemap.xml written.`);
+    return;
   }
   const html = f.index.html && typeof f.index.html === 'object' ? f.index.html : {};
   const featured = html.featured || null;
@@ -945,7 +949,7 @@ export async function readableIndex(f, options = {}) {
 export async function present(f) {
   if (!hasWebsite(f) || f.old) return;
   try {
-    await readableIndex(f);
+    await readableIndex(f, f.index.html ? {} : { quiet: true });
   } catch (error) {
     f.env.err(`warning: the website was not regenerated (${error.message}); run osheaf index`);
   }

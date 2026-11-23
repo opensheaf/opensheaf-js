@@ -106,12 +106,18 @@ is shown as text, without a link.
       return text;
     }
 
+Dates are shown in words: a day (`3 June 2026`), a month (`June 2026`)
+or a year. A DataCite date may be a full date and time
+(`2026-06-03T10:00:00Z`) or a range (`2026-06-03/2026-07-01`); the
+date part of its start is shown.
+
+    // in small pieces:
     const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September',
                     'October', 'November', 'December'];
 
     export function fmtDate(iso) {
       if (!iso) return '';
-      const parts = iso.split('/')[0].split('-');
+      const parts = iso.split('/')[0].split('T')[0].split('-');
       if (parts.length === 3) return `${Number(parts[2])} ${MONTHS[Number(parts[1]) - 1]} ${parts[0]}`;
       if (parts.length === 2) return `${MONTHS[Number(parts[1]) - 1]} ${parts[0]}`;
       return parts[0];
@@ -1112,7 +1118,12 @@ groups them so, or in one list; `index.owners` is `together` or
 `by-owner`, and another value stops the command. `osheaf index` writes the discovery document, the indexes and
 the website; every command that changes the archive writes the website
 again (`present`), and a failure there leaves the change made and says to
-run `osheaf index`. A featured collection must be a collection of the
+run `osheaf index`. An archive whose home page is a TeXmacs index
+(`index.template`, without `index.html`) has its landing pages, its
+owner pages and its sitemap written all the same, without the home page
+(`home: false`, as opensheaf-py's `html.render(members, home=False)`);
+`index.tm` and the `index.html` typeset from it are opensheaf-py's to
+write, with TeXmacs, and `osheaf index` says so. A featured collection must be a collection of the
 archive.
 
     // in the website after a change:
@@ -1144,16 +1155,20 @@ archive.
     }
 
     export async function readableIndex(f, options = {}) {
-      if (f.index.template && !f.index.html) {
-        f.env.warn('the TeXmacs index (index.template) is written by opensheaf-py: run osheaf index of ' +
-                   'opensheaf-py to write it and its landing pages again');
-        return;
-      }
       const groups = await catalogueGroups(f);
       if (groups === null) return;
       const members = groups.flatMap(([, ms]) => ms);
       if (!['together', 'by-owner'].includes(f.index.owners ?? 'together')) {
         exit(`osheaf.json: index.owners is together or by-owner, not ${f.index.owners}`);
+      }
+      if (f.index.template && !f.index.html) {
+        const { quiet = false, ...rest } = options;
+        const pages = await render(f, members, { ...rest, home: false });
+        if (quiet) return;
+        f.env.warn('the TeXmacs index (index.tm, from index.template) is typeset by opensheaf-py: run osheaf index of ' +
+                   'opensheaf-py to write it again');
+        f.env.out(`Done: opensheaf.json, ${plural(pages, 'landing page')} and sitemap.xml written.`);
+        return;
       }
       const html = f.index.html && typeof f.index.html === 'object' ? f.index.html : {};
       const featured = html.featured || null;
@@ -1175,7 +1190,7 @@ archive.
     export async function present(f) {
       if (!hasWebsite(f) || f.old) return;
       try {
-        await readableIndex(f);
+        await readableIndex(f, f.index.html ? {} : { quiet: true });
       } catch (error) {
         f.env.err(`warning: the website was not regenerated (${error.message}); run osheaf index`);
       }

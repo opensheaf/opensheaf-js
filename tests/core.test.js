@@ -17,7 +17,7 @@ import { verifyFolder } from '../core/check.js';
 import { loadSchemas } from '../core/schema.js';
 import { notice, withdraw, relate, relicense, describe, complete } from '../core/describe.js';
 import * as collections from '../core/collections.js';
-import { esc, fmtDate, pyJson, namesJoined, readableIndex, safeUrl, link } from '../core/website.js';
+import { esc, fmtDate, pyJson, namesJoined, readableIndex, present, safeUrl, link } from '../core/website.js';
 import { keeperLink, successorClaim, CONFIRMED, CLAIMED, NOT_CHECKED, KeeperUnreachable } from '../core/keepers.js';
 import { loadEntries, merge, normalise } from '../core/inputs.js';
 import { mirror } from '../core/mirror.js';
@@ -568,10 +568,32 @@ test('collections of the archive, and the website', async () => {
   assert.ok((await errorsOf(storage)).some((e) => /no landing page giving the sheaf: URI of one/.test(e)));
 });
 
+test('a TeXmacs index: the landing pages are written, the home page left', async () => {
+  const { storage, f, env } = await newArchive();
+  const home = await storage.read('index.html');
+  f.index = { template: 'index.template' };
+  env.said.length = 0;
+  await deposit(f, paper('one'));
+  await collect(f);
+  await present(f);
+  const name = f.labels.get('one').split(':')[1];
+  assert.equal(await storage.kind(`paper/${name}/index.html`), 'file');
+  assert.equal(await storage.kind('sitemap.xml'), 'file');
+  assert.deepEqual(await storage.read('index.html'), home);
+  assert.ok(!env.said.some((l) => /TeXmacs/.test(l)), env.said.join('\n'));
+  await storage.remove(`paper/${name}/index.html`);
+  await readableIndex(f);
+  assert.equal(await storage.kind(`paper/${name}/index.html`), 'file');
+  assert.ok(env.said.some((l) => /index\.tm.*typeset by opensheaf-py/.test(l)), env.said.join('\n'));
+  assert.ok(env.said.some((l) => /^Done: opensheaf\.json, 4 landing pages and sitemap\.xml written\.$/.test(l)), env.said.join('\n'));
+});
+
 test('the small pieces of the pages', () => {
   assert.equal(esc(`<a href="x">'&'</a>`), '&lt;a href=&quot;x&quot;&gt;&#x27;&amp;&#x27;&lt;/a&gt;');
   assert.equal(fmtDate('2026-06-03'), '3 June 2026');
   assert.equal(fmtDate('2019-03'), 'March 2019');
+  assert.equal(fmtDate('2026-06-03T10:00:00Z'), '3 June 2026');
+  assert.equal(fmtDate('2026-06-03T23:30:00-05:00/2026-07-01'), '3 June 2026');
   assert.equal(namesJoined(['A', 'B', 'C']), 'A, B and C');
   assert.equal(pyJson({ a: [1, 'x'], b: { c: null } }), '{"a": [1, "x"], "b": {"c": null}}');
 });

@@ -1,6 +1,6 @@
 // Generated from literate/41-drafts.md by opensheaf-literate: edit the document, not this file.
 import { LABEL } from './names.js';
-import { joinPath } from './storage.js';
+import { joinPath, replaceFile } from './storage.js';
 import { jsonBytes } from './write.js';
 import { writeDiscovery } from './discovery.js';
 import { OBJ, GENESIS, exit } from './folder.js';
@@ -24,7 +24,7 @@ async function dropHead(f, dir, inv) {
   }
   await removeFolder(f.storage, joinPath(dir, `v${n}`));
   for (const name of ['inventory.json', 'inventory.json.sha512']) {
-    await f.storage.write(joinPath(dir, name), await f.storage.read(joinPath(dir, `v${n - 1}`, name)));
+    await replaceFile(f.storage, joinPath(dir, name), await f.storage.read(joinPath(dir, `v${n - 1}`, name)));
   }
 }
 

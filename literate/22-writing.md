@@ -22,7 +22,7 @@ and the versions of a key log. The module is `core/write.js`.
     import { GENESIS_FORMAT, KINDS, NONCE, CREATED, OWNER_NAME, keyRulesOfRecord, keeperValid, nameOf } from './names.js';
     import { KeyLog, INVENTORY_TYPE } from './owners.js';
     import { message, fileName, SIGNATURE_FORMAT, WITNESSES } from './signatures.js';
-    import { compareText, joinPath, StorageError } from './storage.js';
+    import { compareText, joinPath, replaceFile, StorageError } from './storage.js';
     import { base64, randomBytes } from './keys.js';
 
     <<JSON as opensheaf-py writes it>>
@@ -267,8 +267,9 @@ A key log is written into its OCFL object folder (`dir`, a path in a
 storage) as opensheaf-py's `write_key_log` writes it: the declaration of
 the object, then each version not held yet, its content files where its
 manifest puts them, its inventory and checksum file, its witness files
-(never replaced), and last the root inventory, by a rename, so that the
-object never names a version it does not have. A version already held
+(never replaced), and last the root inventory and its checksum file,
+each written under a name of its own and renamed over the old one, so
+that the object never names a version it does not have. A version already held
 must have the inventory the key log has, or the folder holds another key
 log.
 
@@ -306,10 +307,9 @@ log.
       }
       if (log.versions.length > held) {
         const head = log.versions[log.versions.length - 1];
-        await storage.write(joinPath(dir, 'inventory.json.tmp'), head.inventory);
-        await storage.rename(joinPath(dir, 'inventory.json.tmp'), joinPath(dir, 'inventory.json'));
-        await storage.write(joinPath(dir, 'inventory.json.sha512'),
-                            head.sidecar?.length ? head.sidecar : await sidecar(head.inventory));
+        await replaceFile(storage, joinPath(dir, 'inventory.json'), head.inventory);
+        await replaceFile(storage, joinPath(dir, 'inventory.json.sha512'),
+                          head.sidecar?.length ? head.sidecar : await sidecar(head.inventory));
       }
     }
 

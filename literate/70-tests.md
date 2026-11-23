@@ -853,6 +853,35 @@ it with opensheaf-py.
       assert.ok(!found.some((x) => x.startsWith('error')), found.join('\n'));
     });
 
+Files rewritten in place are written beside themselves and renamed
+(chapter [20](20-storage.md)): through a rotation of the owner's keys
+(the key log's root inventory), a draft replaced (the draft's) and a
+change of `osheaf.json`, none of them is written where it is read, and
+no temporary file is left behind.
+
+    // in tests of keepers and of options read from files:
+    test('root inventories and osheaf.json are replaced by a rename', async () => {
+      const { storage, f, env } = await newArchive();
+      const direct = [];
+      const write = storage.write.bind(storage);
+      storage.write = async (p, bytes, options) => {
+        if (/^osheaf\.json$|^ocfl\/(?:.*\/)?[^/]+\/inventory\.json(?:\.sha512)?$/.test(p) && !/\/v\d+\/inventory/.test(p)) direct.push(p);
+        return write(p, bytes, options);
+      };
+      const keys = [...env.exported.keys()].filter((p) => p.startsWith('/keys/')).sort();
+      env.readText = async (p) => env.exported.get(p);
+      await ownerRotate(f, { rotationKey: keys.slice(0, 2), export: '/k2', yes: true });
+      const draft = { label: 'notes', pdf: { name: 'd.pdf', bytes: utf8('%PDF-1.4 one') }, noSource: 'x', title: 'Notes',
+                      author: ['Doe, J'], type: 'Preprint' };
+      await draftDeposit(f, draft, true);
+      await draftDeposit(f, { ...draft, pdf: { name: 'd.pdf', bytes: utf8('%PDF-1.4 two') } });
+      await draftDeposit(f, { ...draft, pdf: { name: 'd.pdf', bytes: utf8('%PDF-1.4 three') }, replace: true });
+      await f.writeConfig(await readJson(storage, 'osheaf.json'));
+      assert.deepEqual(direct, []);
+      assert.deepEqual([...storage.files.keys()].filter((p) => p.endsWith('.tmp')), []);
+      assert.deepEqual(await errorsOf(storage), []);
+    });
+
 Only `http` and `https` addresses become links, as opensheaf-py's
 `test_only_http_links`: a file of members that adds a `javascript:` URL,
 or a plain `http` one, to the `at` of a member already in a collection

@@ -665,6 +665,28 @@ test('mirrors, branches, drafts and takedowns, in memory', async () => {
   assert.ok(!found.some((x) => x.startsWith('error')), found.join('\n'));
 });
 
+test('root inventories and osheaf.json are replaced by a rename', async () => {
+  const { storage, f, env } = await newArchive();
+  const direct = [];
+  const write = storage.write.bind(storage);
+  storage.write = async (p, bytes, options) => {
+    if (/^osheaf\.json$|^ocfl\/(?:.*\/)?[^/]+\/inventory\.json(?:\.sha512)?$/.test(p) && !/\/v\d+\/inventory/.test(p)) direct.push(p);
+    return write(p, bytes, options);
+  };
+  const keys = [...env.exported.keys()].filter((p) => p.startsWith('/keys/')).sort();
+  env.readText = async (p) => env.exported.get(p);
+  await ownerRotate(f, { rotationKey: keys.slice(0, 2), export: '/k2', yes: true });
+  const draft = { label: 'notes', pdf: { name: 'd.pdf', bytes: utf8('%PDF-1.4 one') }, noSource: 'x', title: 'Notes',
+                  author: ['Doe, J'], type: 'Preprint' };
+  await draftDeposit(f, draft, true);
+  await draftDeposit(f, { ...draft, pdf: { name: 'd.pdf', bytes: utf8('%PDF-1.4 two') } });
+  await draftDeposit(f, { ...draft, pdf: { name: 'd.pdf', bytes: utf8('%PDF-1.4 three') }, replace: true });
+  await f.writeConfig(await readJson(storage, 'osheaf.json'));
+  assert.deepEqual(direct, []);
+  assert.deepEqual([...storage.files.keys()].filter((p) => p.endsWith('.tmp')), []);
+  assert.deepEqual(await errorsOf(storage), []);
+});
+
 test('only http and https addresses become links', async () => {
   const p = await newArchive();
   await deposit(p.f, paper('one'));

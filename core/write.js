@@ -3,7 +3,7 @@ import { sha256, sha512bytes, hex, utf8 } from './crypto.js';
 import { GENESIS_FORMAT, KINDS, NONCE, CREATED, OWNER_NAME, keyRulesOfRecord, keeperValid, nameOf } from './names.js';
 import { KeyLog, INVENTORY_TYPE } from './owners.js';
 import { message, fileName, SIGNATURE_FORMAT, WITNESSES } from './signatures.js';
-import { compareText, joinPath, StorageError } from './storage.js';
+import { compareText, joinPath, replaceFile, StorageError } from './storage.js';
 import { base64, randomBytes } from './keys.js';
 
 export function jsonText(value) {
@@ -177,10 +177,9 @@ export async function writeKeyLog(storage, dir, log) {
   }
   if (log.versions.length > held) {
     const head = log.versions[log.versions.length - 1];
-    await storage.write(joinPath(dir, 'inventory.json.tmp'), head.inventory);
-    await storage.rename(joinPath(dir, 'inventory.json.tmp'), joinPath(dir, 'inventory.json'));
-    await storage.write(joinPath(dir, 'inventory.json.sha512'),
-                        head.sidecar?.length ? head.sidecar : await sidecar(head.inventory));
+    await replaceFile(storage, joinPath(dir, 'inventory.json'), head.inventory);
+    await replaceFile(storage, joinPath(dir, 'inventory.json.sha512'),
+                      head.sidecar?.length ? head.sidecar : await sidecar(head.inventory));
   }
 }
 

@@ -125,6 +125,13 @@ export async function writeText(storage, path, text, options) {
   return storage.write(path, utf8(text), options);
 }
 
+export async function replaceFile(storage, path, bytes) {
+  const salt = [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const tmp = `${path}.${salt}.tmp`;
+  await storage.write(tmp, bytes, { exclusive: true });
+  await storage.rename(tmp, path);
+}
+
 export const ORIGIN = 'https://archive.invalid/';
 
 export function storageFetch(storage, origin = ORIGIN, { fallback = null } = {}) {

@@ -204,6 +204,20 @@ an error the caller reports. A missing file is `null`.
       return storage.write(path, utf8(text), options);
     }
 
+A file the tools rewrite in place (a root inventory, its checksum file,
+`osheaf.json`) is written beside itself under a name of its own, then
+renamed over it, as opensheaf-py's `os.replace` does: a command
+interrupted midway leaves the old file or the new, never half of one,
+and two commands writing at once do not write into each other's file.
+
+    // in reading JSON and text from a storage:
+    export async function replaceFile(storage, path, bytes) {
+      const salt = [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
+      const tmp = `${path}.${salt}.tmp`;
+      await storage.write(tmp, bytes, { exclusive: true });
+      await storage.rename(tmp, path);
+    }
+
 Reading a storage over fetch
 ----------------------------
 

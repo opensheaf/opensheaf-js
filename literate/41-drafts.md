@@ -42,7 +42,7 @@ The module is `core/drafts.js`.
 
     // in core/drafts.js:
     import { LABEL } from './names.js';
-    import { joinPath } from './storage.js';
+    import { joinPath, replaceFile } from './storage.js';
     import { jsonBytes } from './write.js';
     import { writeDiscovery } from './discovery.js';
     import { OBJ, GENESIS, exit } from './folder.js';
@@ -59,8 +59,9 @@ The folder of a draft
 ---------------------
 
 A draft is named by its `<id>` alone, local to the archive. `dropHead`
-rewrites it, removing its head version; a draft of one version goes
-whole.
+rewrites it, removing its head version, and puts back the root inventory
+and checksum file of the version before, each by a rename (chapter
+[20](20-storage.md)); a draft of one version goes whole.
 
     // in drafts: the folder of a draft:
     export async function draftDir(f, draftId) {
@@ -80,7 +81,7 @@ whole.
       }
       await removeFolder(f.storage, joinPath(dir, `v${n}`));
       for (const name of ['inventory.json', 'inventory.json.sha512']) {
-        await f.storage.write(joinPath(dir, name), await f.storage.read(joinPath(dir, `v${n - 1}`, name)));
+        await replaceFile(f.storage, joinPath(dir, name), await f.storage.read(joinPath(dir, `v${n - 1}`, name)));
       }
     }
 

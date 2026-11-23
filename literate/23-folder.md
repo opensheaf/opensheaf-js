@@ -26,7 +26,7 @@ commands of the next chapters are its methods. The module is
     import { Archive } from './archive.js';
     import { SIGNED, VOUCHED } from './signatures.js';
     import { hex } from './crypto.js';
-    import { readJson, writeText, storageFetch, storageLister, compareText, joinPath, ORIGIN } from './storage.js';
+    import { readJson, writeText, replaceFile, storageFetch, storageLister, compareText, joinPath, ORIGIN } from './storage.js';
     import { jsonBytes, utcNow, today, genesisRecord, orderedInventory, inventoryFile, sidecar, sha512hex,
              sha256hex, md5hex, signatureFile, signatureFileName, WITNESSES, INVENTORY_TYPE } from './write.js';
     import { newKey, randomBytes } from './keys.js';
@@ -264,7 +264,7 @@ page.
       }
 
       async writeConfig(cfg) {
-        await this.storage.write(CONFIG_NAME, jsonBytes(cfg));
+        await replaceFile(this.storage, CONFIG_NAME, jsonBytes(cfg));
         this.archive = settingsOf(cfg);
         this.archive.profiles ??= [];
         this.archive.contact ??= this.archive.baseUrl;

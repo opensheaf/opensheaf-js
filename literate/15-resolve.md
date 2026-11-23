@@ -500,16 +500,18 @@ copy found; *mismatch* when copies were found and none holds it;
 *removed* or *unavailable* when none was found. A copy holding the
 version with another digest is noted with its location, whether another
 copy matches or not (section 12.3). A pin of a key log is
-verified when the key log met holds or carries that version (section
-12.3).
+verified when the key log met holds or carries that version as a version
+of the key log (`verified`, chapter [07](07-owners.md)); a version held
+with that number and digest that fails the checks of the key log (section
+14.3) is *not a version*.
 
     // in core/resolve.js:
       async pin(name, owner, version, digest, where = [], options = {}) {
         if (name === owner) {
           const log = await this.keyLog(owner, where, options);
           const v = log && isVersion(version) ? log.lookup(versionNumber(version), digest) : null;
-          if (v) return found('verified', null, version, digest, [], log);
-          return found(log ? 'mismatch' : 'unavailable', null, version, digest, [], log);
+          if (v && log.verified(versionNumber(version), digest)) return found('verified', null, version, digest, [], log);
+          return found(!log ? 'unavailable' : v ? 'not a version' : 'mismatch', null, version, digest, [], log);
         }
         const copies = await this.copies(name, owner, where, options);
         const n = isVersion(version) ? versionNumber(version) : 0;

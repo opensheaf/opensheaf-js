@@ -328,6 +328,20 @@ versions not yet checked.
         return null;
       }
 
+A judgement needs the version found even when it is not a version, to say
+why a signature is invalid; a pin does not. Whatever stands on a version
+of the key log for itself (a pin of a key-log version that resolves, a
+tombstone that lets a key log return) asks `verified`, as opensheaf-py
+does: only a version that passed the checks below, held, or carried by
+the valid fork record. A version held with the right number and digest
+but forged, unsigned or following a broken one is not enough.
+
+    // in core/owners.js:
+      verified(number, digest) {
+        const v = this.lookup(number, digest);
+        return v && v.isVersion ? v : null;
+      }
+
       extensions() {
         const side = this.side();
         if (side.length <= 1) return jsonOrNull(this.genesis)?.extensions ?? null;

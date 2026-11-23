@@ -565,6 +565,10 @@ class Verification {
       const s = k <= sts.length ? sts[k - 1] : null;
       if (s === UNSIGNED || s === INVALID) this.add('error', `${who} ${pv}`, 'not a version: a collection pins only signed versions (section 8.5)', context);
       else if (s === UNCHECKED || s === CONTESTED) this.add('warning', `${who} ${pv}`, `${s} (section 8.5)`, context);
+      const log = m.name === m.owner ? this.logs.get(m.owner) ?? null : null;
+      if (log && !log.verified(k, pin)) {
+        this.add('error', `${who} ${pv}`, 'not a version of the key log: a collection pins only versions (sections 6.1 and 8.5)', context);
+      }
       const signed = latestSigned(sts);
       if (inHead && signed) {
         const withdrawn = withdrawnVersions(held.inv, (v) => held.objs.get(v) ?? null, `v${signed}`);

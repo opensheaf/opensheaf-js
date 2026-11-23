@@ -51,6 +51,9 @@ The tests are written with `node:test` and `node:assert`, which both
     import { Resolver } from '../core/resolve.js';
     import { Http } from '../core/http.js';
     import { writeDiscovery, PAGING } from '../core/discovery.js';
+    import { ownerRotate } from '../core/owner.js';
+    import { loadKeyLog } from '../core/keylogs.js';
+    import { WITNESSES } from '../core/signatures.js';
     import { currentVersion, versionsOf, withdrawnVersions, dateOf } from '../core/versions.js';
 
     <<an environment for the tests>>
@@ -876,6 +879,38 @@ only `http` and `https` URLs through, any other value staying text.
       assert.equal(link('javascript:alert(1)', 'x'), 'x');
       assert.equal(link('data:text/html,x', 'x', 'paper-title'), '<span class="paper-title">x</span>');
       assert.equal(link('https://x/?a=1&b', 'x'), '<a href="https://x/?a=1&amp;b">x</a>');
+    });
+
+A pin of a key-log version resolves only to a version of the key log, as
+opensheaf-py's `test_a_pin_to_a_key_log_version_that_is_not_one`: once
+the signatures of v2 are gone, v2 is still held with the number and
+digest pinned, but it is no longer a version of the key log; the pin is
+*not a version*, never verified, and a collection held here that pins it
+(written by hand: the tools pin only documents and collections) is
+reported by the verifier.
+
+    // in tests of keepers and of options read from files:
+    test('a pin to a key-log version that is not one', async () => {
+      const { storage, f, env } = await newArchive();
+      const owner = f.archive.owner;
+      const keys = [...env.exported.keys()].filter((p) => p.startsWith('/keys/')).sort();
+      env.readText = async (p) => env.exported.get(p);
+      await ownerRotate(f, { rotationKey: keys.slice(0, 2), export: '/k2', yes: true });
+      const kd = await f.dirOf(`sheaf:${owner}:${owner}`);
+      const dig = await sha512hex(await storage.read(`${kd}/v2/inventory.json`));
+      const member = { kind: 'owner', name: owner, owner, at: ['https://example.org/papers/'], version: 'v2', inventorySha512: dig };
+      await collections.write(f, null, { format: 'opensheaf-collection/0.2', type: 'catalogue', order: 'manual', members: [member] },
+                              { message: 'test', title: 'Keys', owner, label: 'keys' });
+      const fetch = storageFetch(storage, 'https://example.org/papers/');
+      const pin = () => new Resolver(new Http({ fetch, budget: null })).pin(owner, owner, 'v2', dig, ['https://example.org/papers/']);
+      assert.equal((await pin()).status, 'verified');
+      assert.ok(!(await errorsOf(storage)).some((e) => e.includes('not a version of the key log')));
+      for (const e of (await storage.list(`${kd}/${WITNESSES}/v2`)) || []) await storage.remove(`${kd}/${WITNESSES}/v2/${e.name}`);
+      const log = await loadKeyLog(storage, kd);
+      assert.ok(log.lookup(2, dig) !== null && log.verified(2, dig) === null);
+      assert.equal((await pin()).status, 'not a version');
+      const errors = await errorsOf(storage);
+      assert.ok(errors.some((e) => e.includes('not a version of the key log')), errors.join('\n'));
     });
 
 A pin is decided by the bytes of the inventory (section 12.3), as

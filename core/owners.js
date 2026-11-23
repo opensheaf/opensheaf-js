@@ -229,6 +229,11 @@ export class KeyLog {
     return null;
   }
 
+  verified(number, digest) {
+    const v = this.lookup(number, digest);
+    return v && v.isVersion ? v : null;
+  }
+
   extensions() {
     const side = this.side();
     if (side.length <= 1) return jsonOrNull(this.genesis)?.extensions ?? null;

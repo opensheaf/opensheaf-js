@@ -323,8 +323,8 @@ export class Resolver {
     if (name === owner) {
       const log = await this.keyLog(owner, where, options);
       const v = log && isVersion(version) ? log.lookup(versionNumber(version), digest) : null;
-      if (v) return found('verified', null, version, digest, [], log);
-      return found(log ? 'mismatch' : 'unavailable', null, version, digest, [], log);
+      if (v && log.verified(versionNumber(version), digest)) return found('verified', null, version, digest, [], log);
+      return found(!log ? 'unavailable' : v ? 'not a version' : 'mismatch', null, version, digest, [], log);
     }
     const copies = await this.copies(name, owner, where, options);
     const n = isVersion(version) ? versionNumber(version) : 0;

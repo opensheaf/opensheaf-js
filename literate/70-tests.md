@@ -35,7 +35,8 @@ The tests are written with `node:test` and `node:assert`, which both
     import { base32, utf8 } from '../core/crypto.js';
     import { ArchiveFolder, environment, Stop } from '../core/folder.js';
     import { init } from '../core/init.js';
-    import { deposit, creator, checkRights } from '../core/deposit.js';
+    import { deposit, creator, checkRights, nameAddress } from '../core/deposit.js';
+    import { descriptionErrors } from '../core/rules.js';
     import { collect, memberOrder } from '../core/collect.js';
     import { verifyFolder } from '../core/check.js';
     import { loadSchemas } from '../core/schema.js';
@@ -1003,6 +1004,41 @@ its reason, on the home page of the archive that features it.
       } finally {
         PAGING.perPage = 1000;
       }
+    });
+
+A description without a licence or rights statement is an error, and a
+landing page describes itself for programs (appendix A.3), as
+opensheaf-py's `test_missing_rights_is_an_error` and
+`test_landing_page_describes_itself`: Signposting links, and a schema.org
+record with its type, licence, identifiers and encodings; without that
+record, the page is reported.
+
+    // in tests of keepers and of options read from files:
+    test('rights are required, and a landing page describes itself', async () => {
+      const { storage, f } = await newArchive();
+      await deposit(f, paper('paper-a', { rights: 'cc-by-4.0' }));
+      const id = f.labels.get('paper-a');
+      const { inv, json: obj } = await head(f, 'paper-a');
+      const dc = (await head(f, 'paper-a', 'datacite.json')).json;
+      assert.deepEqual(descriptionErrors(inv, inv.head, obj, dc).filter((e) => e.includes('rightsList')), []);
+      const { rightsList, ...bare } = dc;
+      assert.deepEqual(descriptionErrors(inv, inv.head, obj, bare).filter((e) => e.includes('rightsList')),
+                       ['datacite.json has no licence or rights statement in rightsList (section 4.4)']);
+      assert.deepEqual(descriptionErrors(inv, inv.head, obj, { ...dc, rightsList: [{ rights: 'All rights reserved' }] })
+        .filter((e) => e.includes('rightsList')), []);
+      await collect(f);
+      await readableIndex(f);
+      assert.deepEqual(await errorsOf(storage), []);
+      const page = `paper/${await nameAddress(f, id)}/index.html`;
+      const text = new TextDecoder().decode(await storage.read(page));
+      for (const r of ['cite-as', 'describedby', 'item', 'license', 'type']) assert.ok(text.includes(`<link rel="${r}"`), r);
+      const ld = JSON.parse(/<script type="application\/ld\+json">([^]*?)<\/script>/.exec(text)[1]);
+      assert.equal(ld['@type'], 'ScholarlyArticle');
+      assert.equal(ld.license, 'https://creativecommons.org/licenses/by/4.0/');
+      assert.ok(ld.identifier.includes(`sheaf:${id.split(':')[1]}`));
+      assert.ok(ld.encoding.some((e) => e.encodingFormat === 'application/pdf'));
+      await storage.write(page, utf8(text.replace(/<script type="application\/ld\+json">[^]*?<\/script>/, '')));
+      assert.ok((await errorsOf(storage)).some((e) => e.includes('lacks a schema.org record')));
     });
 
 A pin of a key-log version resolves only to a version of the key log, as

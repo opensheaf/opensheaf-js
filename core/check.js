@@ -140,9 +140,29 @@ export async function presentationFindings(f, disc) {
     const text = bytes ? new TextDecoder().decode(bytes) : '';
     if (!(await landingNames(f, text, m.name, m.owner, id, dir))) {
       report(landing, `no landing page giving the sheaf: URI of ${where(f, id)} (appendix A.3)`);
+    } else {
+      const missing = landingDescriptionGaps(text);
+      if (missing.length) report(landing, `the landing page of ${where(f, id)} lacks ${missing.join(', ')} (appendix A.3)`);
     }
   }
   return out;
+}
+
+export function landingDescriptionGaps(text) {
+  const rels = new Set([...text.matchAll(/<link rel="([a-z-]+)"/g)].map((m) => m[1]));
+  const missing = ['cite-as', 'describedby', 'type'].filter((r) => !rels.has(r)).map((r) => `the Signposting link ${r}`);
+  const record = /<script type="application\/ld\+json">([^]*?)<\/script>/.exec(text);
+  let ld = null;
+  try {
+    ld = record ? JSON.parse(record[1]) : null;
+  } catch {
+    ld = null;
+  }
+  if (!ld || typeof ld !== 'object' || Array.isArray(ld) || !ld['@type'] || !ld.identifier ||
+      (Array.isArray(ld.identifier) && !ld.identifier.length)) {
+    missing.push('a schema.org record in JSON-LD with a type and identifiers');
+  }
+  return missing;
 }
 
 function where(f, id) {

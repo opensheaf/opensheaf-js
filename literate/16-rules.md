@@ -85,6 +85,9 @@ collection has its member list. The answer is a list of messages.
       for (const k of ['titles', 'creators', 'publicationYear', 'types', 'version', 'publisher']) {
         if (!Object.hasOwn(dc, k)) out.push(`datacite.json lacks ${k}`);
       }
+      if (!(Array.isArray(dc.rightsList) ? dc.rightsList.length : dc.rightsList)) {
+        out.push('datacite.json has no licence or rights statement in rightsList (section 4.4)');
+      }
       for (const r of Array.isArray(dc.rightsList) ? dc.rightsList : []) {
         const ident = r?.rightsIdentifier;
         if (ident == null) continue;

@@ -401,7 +401,7 @@ Google Scholar's `citation_*` tags, a schema.org description in JSON-LD
 Signposting links.
 
     // in the metadata of a landing page:
-    async function metaTags(f, line, cur, obj, dc) {
+    async function metaTags(site, f, line, cur, obj, dc) {
       const base = f.archive.baseUrl;
       const landing = `${base}paper/${line.slug}/`;
       const pdf = await fileUrl(f, base, line, cur, pdfOf(obj));
@@ -413,23 +413,127 @@ Signposting links.
       if (dc.doi) tags.push(`<meta name="citation_doi" content="${esc(dc.doi)}">`);
       const abstract = (dc.descriptions || []).find((x) => x.descriptionType === 'Abstract')?.description ?? '';
       if (abstract) tags.push(`<meta name="description" content="${esc([...words(abstract).join(' ')].slice(0, 300).join(''))}">`);
-      const rights = (dc.rightsList?.length ? dc.rightsList : [{}])[0];
+      const rel = (r, href, media = null) => `<link rel="${r}" href="${esc(href)}"` + (media ? ` type="${esc(media)}"` : '') + '>';
       const cite = dc.doi ? `https://doi.org/${dc.doi}` : landing;
-      tags.push(`<link rel="canonical" href="${esc(landing)}">`,
-                `<link rel="cite-as" href="${esc(cite)}">`,
-                `<link rel="describedby" href="${esc(await fileUrl(f, base, line, cur, 'datacite.json'))}"` +
-                ' type="application/vnd.datacite.datacite+json">');
-      if (pdf) tags.push(`<link rel="item" href="${esc(pdf)}" type="application/pdf">`);
-      if (safeUrl(rights.rightsUri)) tags.push(`<link rel="license" href="${esc(rights.rightsUri)}">`);
-      const ld = { '@context': 'https://schema.org', '@type': 'ScholarlyArticle', name: dc.titles[0].title, url: landing,
-                   author: dc.creators.map((c) => ({ '@type': 'Person', name: displayName(c) })),
-                   datePublished: date, version: dc.version,
-                   identifier: [...(dc.doi ? [`https://doi.org/${dc.doi}`] : []), fullUri(line)] };
-      if (pdf) ld.encoding = { '@type': 'MediaObject', contentUrl: pdf, encodingFormat: 'application/pdf' };
+      const kind = schemaType(obj, dc);
+      tags.push(rel('canonical', landing), rel('cite-as', cite),
+                rel('describedby', await fileUrl(f, base, line, cur, 'datacite.json'), 'application/vnd.datacite.datacite+json'));
+      for (const [path, media] of contentItems(obj)) {
+        const u = await fileUrl(f, base, line, cur, path);
+        if (u) tags.push(rel('item', u, media));
+      }
+      for (const u of licenceUrls(dc)) tags.push(rel('license', u));
+      tags.push(rel('type', `https://schema.org/${kind}`));
+      for (const c of dc.creators) {
+        const o = orcidOf(c);
+        if (o) tags.push(rel('author', o));
+      }
+      const ld = { '@context': 'https://schema.org', '@type': kind, name: dc.titles[0].title, url: landing,
+                   author: dc.creators.map(personLd), datePublished: date, version: dc.version,
+                   identifier: [fullUri(line), ...[dc.doi, conceptDoi(dc)].filter(Boolean).map((d) => `https://doi.org/${d}`)] };
+      const encodings = [];
+      for (const r of obj.renditions || []) {
+        const u = await fileUrl(f, base, line, cur, r.path);
+        if (u) encodings.push({ '@type': 'MediaObject', contentUrl: u, encodingFormat: r.mediaType ?? null });
+      }
+      if (encodings.length) ld.encoding = encodings;
+      const licences = [...licenceUrls(dc), ...(dc.rightsList || []).filter((r) => r.rights && !(r.rightsUri || r.rightsIdentifier))
+        .map((r) => r.rights)];
+      if (licences.length) ld.license = licences.length === 1 ? licences[0] : licences;
+      const same = sameAs(dc);
+      if (same.length) ld.sameAs = same;
       if (abstract) ld.abstract = abstract;
-      if (safeUrl(rights.rightsUri)) ld.license = rights.rightsUri;
+      const keywords = (dc.subjects || []).filter((x) => x.subject).map((x) => x.subject);
+      if (keywords.length) ld.keywords = keywords;
+      if (obj.kind === 'collection') ld.hasPart = await collectionParts(site, f, line, cur);
+      if (obj.status === 'withdrawn') ld.creativeWorkStatus = 'Withdrawn';
       tags.push('<script type="application/ld+json">' + pyJson(ld).replace(/<\//g, '<\\/') + '</script>');
       return tags.join('\n');
+    }
+
+The description for programs follows appendix A.3, as opensheaf-py's
+`meta_tags` writes it: Signposting links (`cite-as`, `describedby`, an
+`item` for each rendition and the main source, or `members.json` for a
+collection, a `license` for each licence, `type`, and an `author` for
+each ORCID iD), and a schema.org record whose type comes from the DataCite
+resource type, with the sheaf: URI and the DOIs (the version's and the
+concept's) as identifiers, every rendition as an encoding, the licences,
+the same work elsewhere (`sameAs`, from `IsIdenticalTo` relations), the
+keywords, the members of a collection (`hasPart`) and a withdrawal.
+
+    // in the metadata of a landing page:
+    function contentItems(obj) {
+      const out = (obj.renditions || []).map((r) => [r.path, r.mediaType ?? null]);
+      if (obj.mainSource) out.push([obj.mainSource, obj.sourceFormat ?? null]);
+      else if (obj.kind === 'collection') out.push(['members.json', 'application/json']);
+      const seen = new Set();
+      return out.filter((x) => {
+        const k = JSON.stringify(x);
+        return !seen.has(k) && seen.add(k);
+      });
+    }
+
+    function licenceUrls(dc) {
+      const out = [];
+      for (const r of dc.rightsList || []) {
+        if (safeUrl(r.rightsUri)) out.push(r.rightsUri);
+        else if (r.rightsIdentifier) out.push(`https://spdx.org/licenses/${r.rightsIdentifier}.html`);
+      }
+      return out;
+    }
+
+    function orcidOf(creator) {
+      for (const x of creator.nameIdentifiers || []) {
+        if ((x.nameIdentifierScheme || '').toUpperCase() === 'ORCID' && x.nameIdentifier) {
+          return `https://orcid.org/${x.nameIdentifier.split('/').pop()}`;
+        }
+      }
+      return null;
+    }
+
+    const SCHEMA_TYPES = { Collection: 'Collection', Dataset: 'Dataset', Software: 'SoftwareSourceCode', Book: 'Book',
+                           BookChapter: 'Chapter', Audiovisual: 'MediaObject', Image: 'ImageObject', Text: 'ScholarlyArticle',
+                           Preprint: 'ScholarlyArticle', JournalArticle: 'ScholarlyArticle', ConferencePaper: 'ScholarlyArticle',
+                           Report: 'Report', Dissertation: 'Thesis', Presentation: 'PresentationDigitalDocument' };
+
+    function schemaType(obj, dc) {
+      if (obj.kind === 'collection') return 'Collection';
+      const t = dc.types?.resourceTypeGeneral;
+      return Object.hasOwn(SCHEMA_TYPES, t) ? SCHEMA_TYPES[t] : 'CreativeWork';
+    }
+
+    function personLd(c) {
+      const p = { '@type': (c.nameType ?? 'Personal') === 'Personal' ? 'Person' : 'Organization', name: displayName(c) };
+      const o = orcidOf(c);
+      if (o) p['@id'] = o;
+      return p;
+    }
+
+    function conceptDoi(dc) {
+      return (dc.relatedIdentifiers || []).find((r) => r.relationType === 'IsVersionOf' && r.relatedIdentifierType === 'DOI')
+        ?.relatedIdentifier ?? null;
+    }
+
+    function sameAs(dc) {
+      const out = [];
+      for (const r of dc.relatedIdentifiers || []) {
+        if (r.relationType !== 'IsIdenticalTo') continue;
+        const ident = r.relatedIdentifier ?? '', kind = r.relatedIdentifierType;
+        const url = { DOI: `https://doi.org/${ident}`, URL: ident,
+                      arXiv: `https://arxiv.org/abs/${ident.startsWith('arXiv:') ? ident.slice(6) : ident}` }[kind];
+        if (Object.hasOwn({ DOI: 1, URL: 1, arXiv: 1 }, kind) && safeUrl(url)) out.push(url);
+      }
+      return out;
+    }
+
+    async function collectionParts(site, f, line, ver) {
+      const out = [];
+      for (const m of (await line.json('members.json', ver))?.members || []) {
+        const h = await site.held(m);
+        if (h) out.push({ '@id': `${f.archive.baseUrl}paper/${h.slug}/` });
+        else if (m.doi) out.push({ '@id': `https://doi.org/${m.doi}` });
+      }
+      return out;
     }
 
     export function abstractHtml(dc) {
@@ -537,7 +641,7 @@ collection. It returns the number of landing pages.
         const at = (await f.dirOf(line.id)).slice('ocfl/'.length);
         const common = {
           root, archive_name: esc(f.archive.name), base_url: esc(base),
-          head: await metaTags(f, line, cur, obj, dc), title: esc(dc.titles[0].title),
+          head: await metaTags(site, f, line, cur, obj, dc), title: esc(dc.titles[0].title),
           issued: esc(fmtDate(issued)), withdrawn: withdrawalHtml(line.state), contested,
           versions: blocks.join('\n'), licence, cite,
           pin, pin_url: `${root}ocfl/${at}/${pinVer}/inventory.json`,

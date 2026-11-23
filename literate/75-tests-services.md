@@ -245,7 +245,10 @@ The sources
 An e-print of a tar archive: a path given by a pax header, whose record
 lengths count bytes, not characters (as Python's `tarfile` reads them);
 its files under `source/`, an unsafe path skipped and noted; then the limits, lowered as opensheaf-py's tests lower
-them: too many members, and a gzip bomb.
+them: too many members, and a gzip bomb. As Python's `gzip`, members
+concatenated are read as one stream and zeros after a member skipped,
+while other bytes after it are refused; as `tarfile`, a file cut short
+by the end of the archive is refused, not imported short.
 
     // in services: the sources:
     test('e-prints unpacked, within their limits', async () => {
@@ -268,6 +271,15 @@ them: too many members, and a gzip bomb.
       assert.equal(await arxiv.sourceKind(new Uint8Array(zlib.gzipSync('\\documentclass{x}'))), 'gz');
       const single = await arxiv.unpack(new Uint8Array(zlib.gzipSync('\\documentclass{x}')), 'single', 'math/0601001');
       assert.deepEqual(single.files.map(([lp]) => lp), ['source/math-0601001.tex']);
+      const join = (...parts) => new Uint8Array(Buffer.concat(parts.map((p) => Buffer.from(p))));
+      const two = join(zlib.gzipSync(new Uint8Array(256)), new Uint8Array(1024), zlib.gzipSync('\\documentclass{x}'),
+                       new Uint8Array(3));
+      assert.equal(new TextDecoder().decode((await arxiv.gunzip(two, Infinity)).subarray(256)), '\\documentclass{x}');
+      assert.equal((await arxiv.gunzip(two, Infinity)).length, 256 + 17);
+      await assert.rejects(arxiv.gunzip(join(zlib.gzipSync('x'), 'junk'), Infinity, 'junk'), /junk: not a gzip file/);
+      const whole = zlib.gunzipSync(tarGz([['main.tex', '\\documentclass{article}' + ' '.repeat(2000)]]));
+      const cut = new Uint8Array(zlib.gzipSync(whole.subarray(0, 512 + 1000)));
+      await assert.rejects(arxiv.unpack(cut, 'cut', '2611.14296'), /cut: main\.tex: unexpected end of data/);
       const limits = { ...arxiv.LIMITS };
       try {
         arxiv.LIMITS.members = 3;

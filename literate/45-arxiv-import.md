@@ -182,8 +182,21 @@ all have, read up to the limit and no further, so that a few kilobytes
 of gzip cannot fill the memory. What is not gzip stops the import, where
 opensheaf-py stops with Python's error.
 
+Python's `gzip` reads several members one after the other, as one
+stream, and skips zero bytes after a member (padding to a block); what
+else follows a member must be another. `DecompressionStream` refuses
+anything after the first member, and does not say where it ended. So
+when the whole is refused, the end of the first member is looked for:
+at each later place where a gzip header (`1f 8b 08`) starts, the bytes
+before it, and then those bytes without the zeros that end them (the
+eight bytes of the trailer, CRC-32 and size, may end with zeros too, so
+each length up to eight more is tried), are decompressed alone; the
+first that decompresses whole is the member, and the rest is read the
+same way, after its leading zeros. A member never ends elsewhere, since
+`DecompressionStream` checks the CRC-32 and the size of each.
+
     // in arXiv: unpacking an e-print:
-    export async function gunzip(data, limit, src = 'data') {
+    async function inflateGzip(data, limit) {
       const reader = new Blob([data]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
       const chunks = [];
       let size = 0;
@@ -197,6 +210,48 @@ opensheaf-py stops with Python's error.
             await reader.cancel().catch(() => {});
             break;
           }
+        }
+      } catch (error) {
+        await reader.cancel().catch(() => {});
+        throw error;
+      }
+      return { chunks, size };
+    }
+
+    function* memberEnds(data) {
+      yield data.length;
+      for (let k = 18; k + 2 < data.length; k++) {
+        if (data[k] === 0x1f && data[k + 1] === 0x8b && data[k + 2] === 0x08) yield k;
+      }
+    }
+
+    async function firstMember(data, limit) {
+      let first = null;
+      for (const end of memberEnds(data)) {
+        let bare = end;
+        while (bare > 0 && data[bare - 1] === 0) bare--;
+        for (const k of [end, ...Array.from({ length: Math.min(end - bare, 9) }, (_, j) => bare + j)]) {
+          try {
+            return { ...(await inflateGzip(data.subarray(0, k), limit)), used: end };
+          } catch (error) {
+            first ??= error;
+          }
+        }
+      }
+      throw first;
+    }
+
+    export async function gunzip(data, limit, src = 'data') {
+      const chunks = [];
+      let size = 0, rest = data;
+      try {
+        while (rest.length && size < limit) {
+          const got = await firstMember(rest, limit - size);
+          chunks.push(...got.chunks);
+          size += got.size;
+          let k = got.used;
+          while (k < rest.length && rest[k] === 0) k++;
+          rest = rest.subarray(k);
         }
       } catch (error) {
         exit(`${src}: not a gzip file (${error.message})`);
@@ -229,7 +284,9 @@ record counts bytes, so the records are cut from the bytes before they
 are decoded); a directory loses its trailing
 slashes, and an old regular file whose name ends with a slash is a
 directory. The members are counted as they are read, and the archive
-refused past `MAX_MEMBERS`.
+refused past `MAX_MEMBERS`. A file whose data the archive cuts short is
+listed, and refused when it is read, as `tarfile` raises `ReadError`
+(unexpected end of data) then, rather than imported short.
 
     // in arXiv: unpacking an e-print:
     const TAR_FILE = ['0', '\0', '7', 'S'], TAR_LINK = ['1', '2'], GNU_TYPES = ['L', 'K', 'S'];
@@ -300,7 +357,10 @@ refused past `MAX_MEMBERS`.
         const isFile = TAR_FILE.includes(type);
         offset = start + (isFile || !TAR_KNOWN.includes(type) ? Math.ceil(size / 512) * 512 : 0);
         members.push({ name, size, isDir, isFile, isLink: TAR_LINK.includes(type),
-                       data: () => raw.slice(start, start + size) });
+                       data: () => {
+                         if (start + size > raw.length) exit(`${src}: ${name}: unexpected end of data`);
+                         return raw.slice(start, start + size);
+                       } });
         if (members.length > LIMITS.members) exit(`${src}: more than ${LIMITS.members} files; refused (section 15)`);
       }
       return members;

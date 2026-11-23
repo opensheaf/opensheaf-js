@@ -342,7 +342,7 @@ export function latin1(bytes) {
   return s;
 }
 
-export async function gunzip(data, limit, src = 'data') {
+async function inflateGzip(data, limit) {
   const reader = new Blob([data]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
   const chunks = [];
   let size = 0;
@@ -356,6 +356,48 @@ export async function gunzip(data, limit, src = 'data') {
         await reader.cancel().catch(() => {});
         break;
       }
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  }
+  return { chunks, size };
+}
+
+function* memberEnds(data) {
+  yield data.length;
+  for (let k = 18; k + 2 < data.length; k++) {
+    if (data[k] === 0x1f && data[k + 1] === 0x8b && data[k + 2] === 0x08) yield k;
+  }
+}
+
+async function firstMember(data, limit) {
+  let first = null;
+  for (const end of memberEnds(data)) {
+    let bare = end;
+    while (bare > 0 && data[bare - 1] === 0) bare--;
+    for (const k of [end, ...Array.from({ length: Math.min(end - bare, 9) }, (_, j) => bare + j)]) {
+      try {
+        return { ...(await inflateGzip(data.subarray(0, k), limit)), used: end };
+      } catch (error) {
+        first ??= error;
+      }
+    }
+  }
+  throw first;
+}
+
+export async function gunzip(data, limit, src = 'data') {
+  const chunks = [];
+  let size = 0, rest = data;
+  try {
+    while (rest.length && size < limit) {
+      const got = await firstMember(rest, limit - size);
+      chunks.push(...got.chunks);
+      size += got.size;
+      let k = got.used;
+      while (k < rest.length && rest[k] === 0) k++;
+      rest = rest.subarray(k);
     }
   } catch (error) {
     exit(`${src}: not a gzip file (${error.message})`);
@@ -439,7 +481,10 @@ export function tarMembers(raw, src = 'data') {
     const isFile = TAR_FILE.includes(type);
     offset = start + (isFile || !TAR_KNOWN.includes(type) ? Math.ceil(size / 512) * 512 : 0);
     members.push({ name, size, isDir, isFile, isLink: TAR_LINK.includes(type),
-                   data: () => raw.slice(start, start + size) });
+                   data: () => {
+                     if (start + size > raw.length) exit(`${src}: ${name}: unexpected end of data`);
+                     return raw.slice(start, start + size);
+                   } });
     if (members.length > LIMITS.members) exit(`${src}: more than ${LIMITS.members} files; refused (section 15)`);
   }
   return members;

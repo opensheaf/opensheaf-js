@@ -800,10 +800,21 @@ Sources in a zip: the central directory is read, stored and deflated
 members alike, and the paths are those `zipfile` gives. As `zipfile`, a
 member whose bytes do not have their CRC-32 is refused when read, and a
 central directory at an offset out of the zip makes it damaged: both are
-problems told to the person.
+problems told to the person. Names are decoded as `zipfile` decodes
+them: `caf\x82.tex` without the flag of UTF-8 is `caf\u00e9.tex` in code page
+437, as is `caf\xc3\xa9.tex` with the flag, while the same bytes without it are
+`caf\u251c\u2310.tex`.
 
     // in tests of the same requests on a disk and on GitHub:
     test('a zip of sources is read as zipfile reads it', async () => {
+      const names = Buffer.from(
+        'UEsDBBQAAAAAAOa+d11DvrfoAQAAAAEAAAAIAAAAY2Fmgi50ZXhhUEsDBBQAAAgAAOa+d135775xAQAAAAEAAAAJAAAAY2Fmw6ku' +
+        'dGV4YlBLAwQUAAAAAADmvnddb9+5BgEAAAABAAAACQAAAGNhZsOpLnRleGNQSwECFAMUAAAAAADmvnddQ7636AEAAAABAAAACAAA' +
+        'AAAAAAAAAAAAgAEAAAAAY2Fmgi50ZXhQSwECFAMUAAAIAADmvndd+e++cQEAAAABAAAACQAAAAAAAAAAAAAAgAEnAAAAY2Fmw6ku' +
+        'dGV4UEsBAhQDFAAAAAAA5r53XW/fuQYBAAAAAQAAAAkAAAAAAAAAAAAAAIABTwAAAGNhZsOpLnRleFBLBQYAAAAAAwADAKQAAAB3' +
+        'AAAAAAA=', 'base64');
+      assert.deepEqual((await readZip(new Uint8Array(names))).map((m) => m.name),
+                       ['caf\u00e9.tex', 'caf\u00e9.tex', 'caf\u251c\u2310.tex']);
       const zip = Buffer.from(
         'UEsDBBQAAAAAAAAAIVwAAAAAAAAAAAAAAAAEAAAAc3JjL1BLAwQUAAAACAAAACFc4oDrxBAAAAAOAAAADQAAAHNyYy9wYXBlci50ZXiL' +
         'SclPLs1NzStJzkksLgYAUEsDBBQAAAAAAAAAIVx/jaU3BQAAAAUAAAANAAAAc3JjL2ZpZy9hLnR4dGZpZ3VyUEsBAhQDFAAAAAAAAAAh' +

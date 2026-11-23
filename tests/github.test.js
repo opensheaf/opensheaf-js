@@ -373,6 +373,14 @@ test('the same requests carried out on a disk and on GitHub give the same files'
 });
 
 test('a zip of sources is read as zipfile reads it', async () => {
+  const names = Buffer.from(
+    'UEsDBBQAAAAAAOa+d11DvrfoAQAAAAEAAAAIAAAAY2Fmgi50ZXhhUEsDBBQAAAgAAOa+d135775xAQAAAAEAAAAJAAAAY2Fmw6ku' +
+    'dGV4YlBLAwQUAAAAAADmvnddb9+5BgEAAAABAAAACQAAAGNhZsOpLnRleGNQSwECFAMUAAAAAADmvnddQ7636AEAAAABAAAACAAA' +
+    'AAAAAAAAAAAAgAEAAAAAY2Fmgi50ZXhQSwECFAMUAAAIAADmvndd+e++cQEAAAABAAAACQAAAAAAAAAAAAAAgAEnAAAAY2Fmw6ku' +
+    'dGV4UEsBAhQDFAAAAAAA5r53XW/fuQYBAAAAAQAAAAkAAAAAAAAAAAAAAIABTwAAAGNhZsOpLnRleFBLBQYAAAAAAwADAKQAAAB3' +
+    'AAAAAAA=', 'base64');
+  assert.deepEqual((await readZip(new Uint8Array(names))).map((m) => m.name),
+                   ['caf\u00e9.tex', 'caf\u00e9.tex', 'caf\u251c\u2310.tex']);
   const zip = Buffer.from(
     'UEsDBBQAAAAAAAAAIVwAAAAAAAAAAAAAAAAEAAAAc3JjL1BLAwQUAAAACAAAACFc4oDrxBAAAAAOAAAADQAAAHNyYy9wYXBlci50ZXiL' +
     'SclPLs1NzStJzkksLgYAUEsDBBQAAAAAAAAAIVx/jaU3BQAAAAUAAAANAAAAc3JjL2ZpZy9hLnR4dGZpZ3VyUEsBAhQDFAAAAAAAAAAh' +

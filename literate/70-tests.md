@@ -1565,6 +1565,23 @@ deposit.
       await deposit(f, paper('paper-b', { extraSource: [{ name: 'main.tex', bytes: utf8('x'), logical: 'sub/main.tex' }] }));
     });
 
+A version left by an interrupted add is named, and stops the next one
+before any work, as in opensheaf-py's `test_an_interrupted_version_is_named`.
+
+    // in tests of keepers and of options read from files:
+    test('an interrupted version is named', async () => {
+      const { storage, f } = await newArchive();
+      await deposit(f, paper('paper-a'));
+      const dir = await f.dirOf(f.labels.get('paper-a'));
+      await storage.write(`${dir}/v2/content/x`, utf8('x'));
+      const again = paper('paper-a', { new: false, pdf: { name: 'v2.pdf', bytes: utf8('%PDF-1.4 v2') } });
+      await assert.rejects(deposit(f, again), /v2 was interrupted/);
+      assert.ok(!((await storage.list('')) || []).some((e) => e.name.startsWith('.staging-')));
+      await storage.remove(`${dir}/v2/content/x`);
+      await deposit(f, again);
+      assert.deepEqual(await errorsOf(storage), []);
+    });
+
 A pin that is not one (an object version `latest`, a name that is a
 path) is *not a version*, noted, and nothing is fetched for it, as in
 opensheaf-py's `test_a_pin_that_is_not_one`.

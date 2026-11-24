@@ -362,6 +362,16 @@ export class ArchiveFolder {
     this.env.err(`warning: ${id}: extending versions that are not signed, or are contested:\n${lines}`);
   }
 
+  async refuseInterrupted(id, dir, ver) {
+    const left = [];
+    for (const p of [joinPath(dir, ver), joinPath(dir, WITNESSES, ver)]) if (await this.storage.kind(p)) left.push(p);
+    if (!left.length) return;
+    stop(`${this.labelOf(id) || id}: ${left.map((p) => `${p}/`).join(', ')} exist, but the inventory of the object names ` +
+         `v${Number(ver.slice(1)) - 1} as its head: an earlier add of ${ver} was interrupted. Either finish it ` +
+         `(if ${dir}/${ver}/ is the version you made: copy its inventory.json and inventory.json.sha512 into the ` +
+         'object folder, then run osheaf verify), or undo it (remove those folders); then run the command again');
+  }
+
   async previousDigest(id, dir, head) {
     const inv = await this.storage.read(joinPath(dir, head, 'inventory.json'));
     const sc = await this.storage.read(joinPath(dir, head, 'inventory.json.sha512'));
@@ -403,6 +413,7 @@ export class ArchiveFolder {
       obj.previous = await this.previousDigest(id, dir, inv.head);
     }
     const ver = `v${Number(inv.head.slice(1)) + 1}`;
+    if (ver !== 'v1') await this.refuseInterrupted(id, dir, ver);
     if (stageIn !== null && await s.kind(stageIn)) exit(`${stageIn} exists`);
     const stage = stageIn ?? `.staging-${hex(randomBytes(6))}`;
     try {
@@ -446,6 +457,7 @@ export class ArchiveFolder {
   async moveStaged(dir, stage, ver, draft = false) {
     const s = this.storage;
     const data = await s.read(joinPath(stage, ver, 'inventory.json'));
+    if (ver !== 'v1') await this.refuseInterrupted(JSON.parse(new TextDecoder().decode(data)).id, dir, ver);
     const sc = await s.read(joinPath(stage, ver, 'inventory.json.sha512'));
     if (ver === 'v1') {
       const obj = joinPath(stage, 'object');

@@ -583,8 +583,26 @@ the moves; `installVersion` makes them later, as opensheaf-py's
 `add_version(..., stage_in=...)` and `install_version` do. Meanwhile the
 line is locked: a Zenodo deposit that was published but not yet added
 leaves its state in `zenodo-staging/<path of the line>/state.json`, with
-the phase `published`, and no other version of the line is added until
+the phase `publishing` or `published`, and no other version of the line is added until
 `osheaf zenodo` completes it, as appendix A.1 requires.
+
+A version whose folder, or witness folder, is already there beside an
+older head was being added when a command was interrupted. Adding it
+again would fail on the folder half-way, with a bare "exists already":
+the command stops before any work, naming the folders and the two
+repairs, as opensheaf-py's `refuse_interrupted` does; the tools never
+delete them themselves.
+
+    // in the archive folder:
+      async refuseInterrupted(id, dir, ver) {
+        const left = [];
+        for (const p of [joinPath(dir, ver), joinPath(dir, WITNESSES, ver)]) if (await this.storage.kind(p)) left.push(p);
+        if (!left.length) return;
+        stop(`${this.labelOf(id) || id}: ${left.map((p) => `${p}/`).join(', ')} exist, but the inventory of the object names ` +
+             `v${Number(ver.slice(1)) - 1} as its head: an earlier add of ${ver} was interrupted. Either finish it ` +
+             `(if ${dir}/${ver}/ is the version you made: copy its inventory.json and inventory.json.sha512 into the ` +
+             'object folder, then run osheaf verify), or undo it (remove those folders); then run the command again');
+      }
 
 The next version records as `previous` the digest of the head's inventory
 that its checksum file states, which must be the SHA-512 of the
@@ -634,6 +652,7 @@ version is added until it is repaired.
           obj.previous = await this.previousDigest(id, dir, inv.head);
         }
         const ver = `v${Number(inv.head.slice(1)) + 1}`;
+        if (ver !== 'v1') await this.refuseInterrupted(id, dir, ver);
         if (stageIn !== null && await s.kind(stageIn)) exit(`${stageIn} exists`);
         const stage = stageIn ?? `.staging-${hex(randomBytes(6))}`;
         try {
@@ -677,6 +696,7 @@ version is added until it is repaired.
       async moveStaged(dir, stage, ver, draft = false) {
         const s = this.storage;
         const data = await s.read(joinPath(stage, ver, 'inventory.json'));
+        if (ver !== 'v1') await this.refuseInterrupted(JSON.parse(new TextDecoder().decode(data)).id, dir, ver);
         const sc = await s.read(joinPath(stage, ver, 'inventory.json.sha512'));
         if (ver === 'v1') {
           const obj = joinPath(stage, 'object');

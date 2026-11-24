@@ -24,7 +24,7 @@ listener's refusals. The module is `tests/owners.test.js`.
     // in tests/owners.test.js:
     import { test } from 'node:test';
     import assert from 'node:assert/strict';
-    import { mkdtemp, rm, readdir, readFile, writeFile, cp, mkdir, symlink, realpath } from 'node:fs/promises';
+    import { mkdtemp, rm, readdir, readFile, writeFile, cp, mkdir, symlink, realpath, rename, stat } from 'node:fs/promises';
     import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
     import os from 'node:os';
     import path from 'node:path';
@@ -844,6 +844,40 @@ a link into an archive is inside that archive.
         assert.equal(await exportFolder(path.join(root, 'arch')).inside(path.join(root, 'keys', 'new')), arch);
       } finally {
         await rm(root, { recursive: true, force: true });
+      }
+    });
+
+No version is added to an object whose folder is a link out of the
+archive, and a file is written whole, with the usual permissions and no
+file left beside it, as in opensheaf-py's `test_no_version_through_a_linked_object`
+and `test_files_are_written_whole_with_the_usual_permissions`.
+
+    // in tests of the key stores:
+    test('no version through a linked object; files written whole, with the usual permissions', async () => {
+      const box = await sandbox();
+      try {
+        const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+        await deposit(box, a, 'paper', 'one', true);
+        const id = JSON.parse(await readFile(path.join(a.dir, 'opensheaf.json'), 'utf-8')).objects.find((o) => o.label === 'paper').id;
+        const [, name, owner] = id.split(':');
+        const d = path.join(a.dir, 'ocfl', owner, name), outside = path.join(box.root, 'outside');
+        await rename(d, outside);
+        await symlink(outside, d);
+        await writeFile(path.join(box.root, 'paper.pdf'), '%PDF-1.4 two\n');
+        const r = await box.run([...a.r, 'deposit', 'paper', '--pdf', path.join(box.root, 'paper.pdf'), '--no-source', 'x',
+                                 '--title', 'T', '--author', 'Doe, J']);
+        assert.notEqual(r.status, 0, r.said);
+        assert.match(r.said, /symbolic link/);
+        assert.deepEqual((await readdir(outside)).filter((n) => /^v\d+$/.test(n)), ['v1']);
+        const disk = new DiskStorage(path.join(box.root, 'w'));
+        await disk.write('x/y.txt', utf8('text'));
+        await disk.write('x/y.txt', utf8('text, again'));
+        assert.equal(await readFile(path.join(box.root, 'w', 'x', 'y.txt'), 'utf-8'), 'text, again');
+        const umask = process.umask();
+        assert.equal((await stat(path.join(box.root, 'w', 'x', 'y.txt'))).mode & 0o777, 0o666 & ~umask);
+        assert.deepEqual(await readdir(path.join(box.root, 'w', 'x')), ['y.txt']);
+      } finally {
+        await box.done();
       }
     });
 

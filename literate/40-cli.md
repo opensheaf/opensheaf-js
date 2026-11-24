@@ -43,12 +43,23 @@ to another folder, would otherwise have that file or folder written.
 stops at the first that does not exist. A link itself may be removed:
 that touches nothing outside.
 
+A file is written whole, as opensheaf-py's `write_file` writes it: into
+a new file of its folder (`.<name>.<process>-<time>-<count>.tmp`), which then replaces
+it, so that a command stopped half-way leaves the file as it was, never a
+part of it; the new file has the usual permissions (those the umask
+leaves). Its name is made of the process, the time and a count, not drawn
+from the generator of nonces, which the tests make repeatable. A file
+written exclusively is created in place, the system
+refusing it if it exists.
+
     // in cli/disk.js:
     import { promises as fs } from 'node:fs';
+    import process from 'node:process';
     import path from 'node:path';
     import { checkPath, compareText, StorageError } from '../core/storage.js';
 
     const MISSING = ['ENOENT', 'ENOTDIR'];
+    let temporaries = 0;
 
     export class DiskStorage {
       constructor(root) {
@@ -97,10 +108,22 @@ that touches nothing outside.
       async write(p, bytes, { exclusive = false } = {}) {
         const f = await this.unlinked(checkPath(p));
         await fs.mkdir(path.dirname(f), { recursive: true });
+        if (exclusive) {
+          try {
+            await fs.writeFile(f, bytes, { flag: 'wx' });
+          } catch (error) {
+            if (error.code === 'EEXIST') throw new StorageError(`${p} exists already`);
+            throw error;
+          }
+          return;
+        }
+        const random = `${process.pid}-${Date.now().toString(36)}-${(++temporaries).toString(36)}`;
+        const tmp = path.join(path.dirname(f), `.${path.basename(f)}.${random}.tmp`);
         try {
-          await fs.writeFile(f, bytes, { flag: exclusive ? 'wx' : 'w' });
+          await fs.writeFile(tmp, bytes, { flag: 'wx' });
+          await fs.rename(tmp, f);
         } catch (error) {
-          if (error.code === 'EEXIST') throw new StorageError(`${p} exists already`);
+          await fs.rm(tmp, { force: true });
           throw error;
         }
       }

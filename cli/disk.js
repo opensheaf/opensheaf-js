@@ -1,9 +1,11 @@
 // Generated from literate/40-cli.md by opensheaf-literate: edit the document, not this file.
 import { promises as fs } from 'node:fs';
+import process from 'node:process';
 import path from 'node:path';
 import { checkPath, compareText, StorageError } from '../core/storage.js';
 
 const MISSING = ['ENOENT', 'ENOTDIR'];
+let temporaries = 0;
 
 export class DiskStorage {
   constructor(root) {
@@ -52,10 +54,22 @@ export class DiskStorage {
   async write(p, bytes, { exclusive = false } = {}) {
     const f = await this.unlinked(checkPath(p));
     await fs.mkdir(path.dirname(f), { recursive: true });
+    if (exclusive) {
+      try {
+        await fs.writeFile(f, bytes, { flag: 'wx' });
+      } catch (error) {
+        if (error.code === 'EEXIST') throw new StorageError(`${p} exists already`);
+        throw error;
+      }
+      return;
+    }
+    const random = `${process.pid}-${Date.now().toString(36)}-${(++temporaries).toString(36)}`;
+    const tmp = path.join(path.dirname(f), `.${path.basename(f)}.${random}.tmp`);
     try {
-      await fs.writeFile(f, bytes, { flag: exclusive ? 'wx' : 'w' });
+      await fs.writeFile(tmp, bytes, { flag: 'wx' });
+      await fs.rename(tmp, f);
     } catch (error) {
-      if (error.code === 'EEXIST') throw new StorageError(`${p} exists already`);
+      await fs.rm(tmp, { force: true });
       throw error;
     }
   }

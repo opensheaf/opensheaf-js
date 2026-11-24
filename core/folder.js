@@ -178,6 +178,7 @@ export class ArchiveFolder {
   }
 
   async inventory(dir) {
+    if (await this.storage.linked?.(dir)) exit(`${dir} passes through a symbolic link`);
     try {
       return await readJson(this.storage, joinPath(dir, 'inventory.json'));
     } catch {

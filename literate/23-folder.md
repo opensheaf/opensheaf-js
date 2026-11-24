@@ -294,12 +294,16 @@ hashed layout of OCFL's extension 0003 is declared in `ocfl_layout.json`.
 
 ### Objects and their files
 
-An inventory that cannot be read counts as none. A logical path of a
-version is found through the state of the version and the manifest
-(chapter [13](13-versions.md)).
+An inventory that cannot be read counts as none. The folder of an
+object that is a symbolic link (or lies under one) stops the command, as
+opensheaf-py's `unlinked` stops it: it is not read as missing, which
+would let a command go on as for a new object, and nothing is written
+through it. A logical path of a version is found through the state of
+the version and the manifest (chapter [13](13-versions.md)).
 
     // in the archive folder:
       async inventory(dir) {
+        if (await this.storage.linked?.(dir)) exit(`${dir} passes through a symbolic link`);
         try {
           return await readJson(this.storage, joinPath(dir, 'inventory.json'));
         } catch {

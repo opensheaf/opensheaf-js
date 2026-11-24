@@ -755,6 +755,38 @@ forgotten is gone from it.
       }
     });
 
+Dates given and shown, as opensheaf-py's `test_dates_given_and_shown`:
+`--date` of a notice, a withdrawal and a change of licence is a day,
+`YYYY-MM-DD`, or the command stops and writes nothing; a DataCite date
+and time is shown by its date.
+
+    // in tests of the key stores:
+    test('dates given and shown', async () => {
+      const box = await sandbox();
+      try {
+        const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+        await writeFile(path.join(box.root, 'p.pdf'), '%PDF-1.4 p');
+        await box.ok([...a.r, 'deposit', 'p', '--new', '--pdf', path.join(box.root, 'p.pdf'), '--no-source', 'lost',
+                      '--title', 'T', '--author', 'Doe, J', '--available', '2026-06-03T10:00:00Z']);
+        for (const bad of ['2026-06-03T10:00:00Z', '3 June 2026', '2026-02-30', '2026-6-3']) {
+          for (const argv of [['notice', 'p', '--about', '1', '--text', 'A remark.', '--date', bad],
+                              ['withdraw', 'p', '--reason', 'wrong', '--date', bad],
+                              ['relicense', 'p', '--rights', 'cc0-1.0', '--method', 'by email', '--date', bad]]) {
+            const r = await box.run([...a.r, ...argv]);
+            assert.equal(r.status, 1, r.said);
+            assert.match(r.err, /a date, YYYY-MM-DD/);
+          }
+        }
+        const cfg = JSON.parse(await readFile(path.join(a.dir, 'opensheaf.json'), 'utf-8'));
+        assert.equal(cfg.objects.find((o) => o.label === 'p').head, 'v1');
+        await box.ok([...a.r, 'notice', 'p', '--about', '1', '--text', 'A remark.', '--date', '2026-06-04']);
+        await box.ok([...a.r, 'collect']);
+        assert.match(await readFile(path.join(a.dir, 'paper', 'p', 'index.html'), 'utf-8'), /3 June 2026/);
+      } finally {
+        await box.done();
+      }
+    });
+
 `key new --owner` takes an owner name only, as opensheaf-py's
 `test_key_new_takes_an_owner_name_only`, and so does every key store:
 nothing is written out of the folder of key files.

@@ -796,6 +796,8 @@ them; its home page is left alone, and `osheaf index` says that
       assert.equal(fmtDate('2026-06-03T23:30:00-05:00/2026-07-01'), '3 June 2026');
       assert.equal(fmtDate('2026-02-30'), '2026-02-30');
       assert.equal(fmtDate('June 2026'), 'June 2026');
+      assert.equal(fmtDate('soon'), 'soon');
+      assert.equal(fmtDate('2019-03/2019-05'), 'March 2019');
       assert.equal(fmtDate('2026'), '2026');
       assert.equal(namesJoined(['A', 'B', 'C']), 'A, B and C');
       assert.equal(pyJson({ a: [1, 'x'], b: { c: null } }), '{"a": [1, "x"], "b": {"c": null}}');

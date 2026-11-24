@@ -72,13 +72,22 @@ export function noteFrom(text, file, folder) {
   return { note, add };
 }
 
+export function isoDate(f, text, option = '--date') {
+  if (text === undefined || text === null || text === '') return f.env.today();
+  if (typeof text === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const [y, m, d] = text.split('-').map(Number);
+    if (m >= 1 && m <= 12 && d >= 1 && d <= new Date(Date.UTC(y, m, 0)).getUTCDate()) return text;
+  }
+  exit(`${option}: a date, YYYY-MM-DD, not '${text}'`);
+}
+
 export async function notice(f, a) {
   const { dir, inv } = await headOf(f, a.label);
   const numbers = new Set();
   for (const v of Object.keys(inv.versions)) numbers.add((await f.readObjectJson(dir, inv, OBJ, v)).documentVersion);
   if (!numbers.has(a.about)) exit(`${a.label} has no document version ${a.about}`);
   const { note, add } = noteFrom(a.text, a.file, 'notices');
-  Object.assign(note, { documentVersion: a.about, date: a.date || f.env.today() });
+  Object.assign(note, { documentVersion: a.about, date: isoDate(f, a.date) });
   const earlier = (await f.readObjectJson(dir, inv, OBJ)).notices || [];
   const r = a.replaces ?? null;
   if (r !== null) {
@@ -100,7 +109,7 @@ export async function notice(f, a) {
 
 export async function withdraw(f, a) {
   const { note: reason, add } = noteFrom(a.reason, a.file, 'withdrawal');
-  const date = a.date || f.env.today();
+  const date = isoDate(f, a.date);
   const done = await descriptionVersion(f, a.label, (dc, obj) => {
     if (obj.status === 'withdrawn') exit(`${a.label} is withdrawn already`);
     obj.status = 'withdrawn';
@@ -180,10 +189,11 @@ export async function relate(f, a) {
 
 export async function relicense(f, a) {
   const fresh = rightsList(checkRights(a.rights))[0];
+  const date = isoDate(f, a.date);
   const done = await descriptionVersion(f, a.label, (dc, obj) => {
     if (dc.rightsList !== undefined && same(dc.rightsList, [fresh])) exit(`${a.label} already has ${a.rights}`);
     dc.rightsList = [fresh];
-    obj.agreement = { by: dc.creators.map((c) => c.name), date: a.date || f.env.today(), method: a.method };
+    obj.agreement = { by: dc.creators.map((c) => c.name), date, method: a.method };
   }, a.message || `Licence: ${fresh.rights} (description-only version; content unchanged)`, null, a.iKnow);
   f.env.out(`${a.label}: ${done.head} (${fresh.rights})`);
   return done;

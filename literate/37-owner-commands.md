@@ -325,8 +325,13 @@ The rotation keys that sign
 ---------------------------
 
 From their files (`--rotation-key`, each read with the passphrase if it is
-locked), or from the wallet configured or named, as many as the latest
-version needs.
+locked), or from a wallet, as many as the latest version needs: the
+wallet named (`--keys`) first, then the one configured, if the first
+holds fewer than `nextThreshold` of them (a rotation moving the keys to a
+new wallet), and the command says so, as opensheaf-py's
+`rotation_signers` reads them (an explicit `--keys` was ignored when a
+wallet was configured). `fromWallets` takes the reading of one wallet as
+an argument, which the tests replace.
 
     // in the rotation keys that sign:
     async function rotationKeysFromFiles(f, files, owner) {
@@ -354,11 +359,34 @@ version needs.
     export async function rotationSigners(f, args, owner, prev) {
       const env = f.env;
       if (args.rotationKey?.length) return [await rotationKeysFromFiles(f, args.rotationKey, owner), null];
-      const w = (await configured(f, env, owner)) || (await levelWallet(f, args, env, owner));
-      if (!w) {
+      const tried = [];
+      for (const w of [await levelWallet(f, args, env, owner), await configured(f, env, owner)]) {
+        if (w && !tried.some((x) => x.name === w.name)) tried.push(w);
+      }
+      if (!tried.length) {
         stop('give the rotation keys that sign the new version of the key log (--rotation-key FILE), ' +
              'or the wallet that keeps them (--keys github:OWNER/REPO)');
       }
+      return fromWallets(env, tried, owner, prev);
+    }
+
+    export async function fromWallets(env, tried, owner, prev, read = walletRotationKeys) {
+      const need = prev.keys.nextThreshold;
+      let out = [], w = null;
+      for (const [k, wallet] of tried.entries()) {
+        w = wallet;
+        out = await read(env, w, owner, prev);
+        if (out.length >= need) {
+          env.err(`Read ${plural(out.length, 'rotation key')} of v${prev.number} from ${w.name}.`);
+          return [out, w];
+        }
+        if (k + 1 < tried.length) env.err(`${w.name} holds ${out.length} of them: reading from ${tried[k + 1].name}, the wallet configured`);
+      }
+      stop(`the wallet ${w.name} holds ${out.length} of the rotation keys of v${prev.number} of the key log of ` +
+           `${short(owner)}, and ${need} sign the next version: give them with --rotation-key FILE`);
+    }
+
+    async function walletRotationKeys(env, w, owner, prev) {
       const need = prev.keys.nextThreshold, out = [];
       env.err(`Reading ${theKeys(need, 'rotation key')} of v${prev.number} of ${short(owner)} that sign from ${w.name}…`);
       try {
@@ -373,12 +401,7 @@ version needs.
       } catch (error) {
         walletStop(error);
       }
-      if (out.length < need) {
-        stop(`the wallet ${w.name} holds ${out.length} of the rotation keys of v${prev.number} of the key log of ` +
-             `${short(owner)}, and ${need} sign the next version: give them with --rotation-key FILE`);
-      }
-      env.err(`Read ${plural(out.length, 'rotation key')} of v${prev.number} from ${w.name}.`);
-      return [out, w];
+      return out;
     }
 
 Owner init, in an archive

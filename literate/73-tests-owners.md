@@ -933,6 +933,26 @@ and `test_files_are_written_whole_with_the_usual_permissions`.
       }
     });
 
+The wallet named with `--keys` gives the rotation keys before the one
+configured, which is read when the first holds too few, as in
+opensheaf-py's `test_an_explicit_wallet_wins`.
+
+    // in tests of the key stores:
+    test('an explicit wallet wins', async () => {
+      const { fromWallets } = await import('../core/owner.js');
+      const given = { name: 'github:me/given' }, conf = { name: 'github:me/conf' };
+      const held = { 'github:me/given': ['k'], 'github:me/conf': ['k'] };
+      const said = [];
+      const env = { err: (l) => said.push(l) };
+      const prev = { number: 1, keys: { nextThreshold: 1, next: [] } };
+      const read = async (e, w) => held[w.name];
+      assert.equal((await fromWallets(env, [given, conf], 'o'.repeat(52), prev, read))[1], given);
+      assert.equal((await fromWallets(env, [conf], 'o'.repeat(52), prev, read))[1], conf);
+      held['github:me/given'] = [];
+      assert.equal((await fromWallets(env, [given, conf], 'o'.repeat(52), prev, read))[1], conf);
+      assert.ok(said.some((l) => l.includes('reading from github:me/conf')));
+    });
+
 A discovery document that cannot be read, as in opensheaf-py's
 `test_a_broken_discovery_document`: cut short, a list, or with fields of
 the wrong type, it is reported by `verify`; the commands that write stop

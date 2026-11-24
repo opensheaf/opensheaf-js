@@ -748,6 +748,21 @@ test('no version through a linked object; files written whole, with the usual pe
   }
 });
 
+test('an explicit wallet wins', async () => {
+  const { fromWallets } = await import('../core/owner.js');
+  const given = { name: 'github:me/given' }, conf = { name: 'github:me/conf' };
+  const held = { 'github:me/given': ['k'], 'github:me/conf': ['k'] };
+  const said = [];
+  const env = { err: (l) => said.push(l) };
+  const prev = { number: 1, keys: { nextThreshold: 1, next: [] } };
+  const read = async (e, w) => held[w.name];
+  assert.equal((await fromWallets(env, [given, conf], 'o'.repeat(52), prev, read))[1], given);
+  assert.equal((await fromWallets(env, [conf], 'o'.repeat(52), prev, read))[1], conf);
+  held['github:me/given'] = [];
+  assert.equal((await fromWallets(env, [given, conf], 'o'.repeat(52), prev, read))[1], conf);
+  assert.ok(said.some((l) => l.includes('reading from github:me/conf')));
+});
+
 test('a broken discovery document, a broken configuration', async () => {
   for (const text of ['{"format": "opensheaf-archive/0.2", "objects": [', '[]', '{"objects": 5, "owners": "x", "tombstones": 3}']) {
     const box = await sandbox();

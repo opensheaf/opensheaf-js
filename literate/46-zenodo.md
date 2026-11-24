@@ -92,6 +92,12 @@ under the name `zenodo-token` or `zenodo-sandbox-token`. `api` replaces
 the address of the API (`OPENSHEAF_ZENODO_API`, for a double of Zenodo);
 the addresses of the records recorded in `object.json` stay Zenodo's.
 
+The token goes only to the API's own host, as in opensheaf-py: a path
+(`/deposit/...`) is one of the API; any other address (a link in
+Zenodo's answer, the bucket of a draft or its latest version) must have
+the scheme and host of the API (HTTPS, unless a double's address is
+given), or the request is not made.
+
     // in Zenodo: talking to the API:
     export class ZenodoError extends Error {}
 
@@ -106,7 +112,17 @@ the addresses of the records recorded in `object.json` stay Zenodo's.
       }
 
       async call(method, url, data = null, raw = null) {
-        if (!url.startsWith('http')) url = this.s.api + url;
+        if (url.startsWith('/')) url = this.s.api + url;
+        const api = new URL(this.s.api);
+        let u = null;
+        try {
+          u = new URL(url);
+        } catch {
+          u = null;
+        }
+        if (!u || u.protocol !== api.protocol || u.host.toLowerCase() !== api.host.toLowerCase() || u.username || u.password) {
+          throw new ZenodoError(`Zenodo gave the link '${url}', not one of ${api.protocol}//${api.host}/: the token is not sent there`);
+        }
         const body = raw !== null ? raw : (data !== null ? JSON.stringify(data) : undefined);
         const r = await this.fetch(url, { method, body, headers: {
           Authorization: `Bearer ${this.token}`, 'Content-Type': raw !== null ? 'application/octet-stream' : 'application/json',
@@ -296,7 +312,7 @@ version of its record, whose files, which Zenodo copies from the version
 before, are deleted; otherwise a new record is made.
 
     // in Zenodo: a draft and its DOI:
-    const [prevRec, prevDoi] = previousRecord(inv, objs, docVersion, signed);
+    const [prevRec, prevDoi] = previousRecord(inv, objs, docVersion, signed, z.s.records);
     let draft;
     if (prevRec) {
       const nv = await z.call('POST', `/deposit/depositions/${prevRec}/actions/newversion`);
@@ -311,11 +327,14 @@ before, are deleted; otherwise a new record is made.
     const conceptDoi = concept ? z.doi(concept) : null;
 
 The earlier version is the latest before the current one in the history
-that was deposited; its deposit may be recorded in any object version
-holding it, which are looked at, the newest first.
+that was deposited on the Zenodo in use; its deposit may be recorded in
+any object version holding it, which are looked at, the newest first. As
+in opensheaf-py, only an entry whose record is `<records><digits>` of the
+service in use counts (a sandbox deposit of a line deposited on Zenodo
+itself starts its own sandbox record), and every entry is looked at.
 
     // in Zenodo: the record of the version before:
-    export function previousRecord(inv, objs, docVersion, signed) {
+    export function previousRecord(inv, objs, docVersion, signed, records = SERVICES[true].records) {
       const hist = historyOf(inv, (v) => objs.get(v), signed);
       const docs = hist.map((v) => objs.get(v).documentVersion);
       const before = docs.includes(docVersion) ? docs.slice(0, docs.indexOf(docVersion)) : docs;
@@ -323,9 +342,11 @@ holding it, which are looked at, the newest first.
       for (const n of [...before].reverse()) {
         for (const v of versions) {
           const obj = objs.get(v);
-          if (obj.documentVersion === n && zenodoEntries(obj).length) {
-            const e = zenodoEntries(obj)[0];
-            return [e.record.replace(/\/+$/, '').split('/').pop(), e.doi];
+          if (obj.documentVersion !== n) continue;
+          for (const e of zenodoEntries(obj)) {
+            const number = typeof e.record === 'string' && e.record.startsWith(records)
+              ? e.record.slice(records.length).replace(/\/+$/, '') : '';
+            if (/^[0-9]+$/.test(number)) return [number, e.doi];
           }
         }
       }

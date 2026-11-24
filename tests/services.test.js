@@ -11,7 +11,7 @@ import { main } from '../cli/osheaf.js';
 import { keyStore } from '../cli/keystore.js';
 import { ArchiveFolder } from '../core/folder.js';
 import * as arxiv from '../core/arxiv.js';
-import { SERVICES } from '../core/zenodo.js';
+import { SERVICES, Zenodo } from '../core/zenodo.js';
 import { tarGz } from './fixtures.js';
 
 function fakeZenodo(production) {
@@ -349,6 +349,38 @@ test('a deposit on the sandbox, then on Zenodo, and a new version', async () => 
     assert.ok(box.zenodo.true.calls.some(([, p]) => p.endsWith('/actions/newversion')));
     await box.ok([...a.r, 'collect']);
     assert.deepEqual((await findings(box, a)).filter((f) => !f.startsWith('result')), []);
+  } finally {
+    await box.done();
+  }
+});
+
+test('the Zenodo token and records stay with their service', async () => {
+  const sent = [];
+  const z = new Zenodo({ production: true, token: 'secret', fetch: async (url, init) => {
+    sent.push([url, init.headers.Authorization]);
+    return new Response('{}');
+  } });
+  for (const bad of ['https://evil.example/api/files/1', 'http://zenodo.org/api/files/1',
+                     'https://zenodo.org@evil.example/x', 'https://sandbox.zenodo.org/api/files/1', 'files/1']) {
+    await assert.rejects(z.call('PUT', bad, null, new Uint8Array([1])), /the token is not sent there/);
+  }
+  assert.deepEqual(sent, []);
+  await z.call('GET', '/deposit/depositions/1');
+  await z.call('PUT', 'https://zenodo.org/api/files/abc/paper.pdf', null, new Uint8Array([1]));
+  assert.deepEqual(sent, [['https://zenodo.org/api/deposit/depositions/1', 'Bearer secret'],
+                          ['https://zenodo.org/api/files/abc/paper.pdf', 'Bearer secret']]);
+  const box = await sandbox();
+  try {
+    const a = await archive(box);
+    await writeFile(path.join(box.root, 'p.pdf'), '%PDF-1.4 p');
+    const paper = ['--pdf', path.join(box.root, 'p.pdf'), '--no-source', 'lost', '--title', 'P', '--author', 'Doe, Jane'];
+    await box.ok([...a.r, 'deposit', 'p', ...paper, '--new']);
+    await box.ok([...a.r, 'zenodo', 'p', '--production']);
+    await writeFile(path.join(box.root, 'p.pdf'), '%PDF-1.4 p2');
+    await box.ok([...a.r, 'deposit', 'p', ...paper, '--changes', 'Typos.']);
+    await box.ok([...a.r, 'zenodo', 'p']);
+    assert.ok(Object.keys(box.zenodo.false.uploads).length);
+    assert.ok(!box.zenodo.false.calls.some(([, u]) => u.endsWith('/actions/newversion')));
   } finally {
     await box.done();
   }

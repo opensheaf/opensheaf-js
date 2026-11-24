@@ -34,7 +34,17 @@ export class Zenodo {
   }
 
   async call(method, url, data = null, raw = null) {
-    if (!url.startsWith('http')) url = this.s.api + url;
+    if (url.startsWith('/')) url = this.s.api + url;
+    const api = new URL(this.s.api);
+    let u = null;
+    try {
+      u = new URL(url);
+    } catch {
+      u = null;
+    }
+    if (!u || u.protocol !== api.protocol || u.host.toLowerCase() !== api.host.toLowerCase() || u.username || u.password) {
+      throw new ZenodoError(`Zenodo gave the link '${url}', not one of ${api.protocol}//${api.host}/: the token is not sent there`);
+    }
     const body = raw !== null ? raw : (data !== null ? JSON.stringify(data) : undefined);
     const r = await this.fetch(url, { method, body, headers: {
       Authorization: `Bearer ${this.token}`, 'Content-Type': raw !== null ? 'application/octet-stream' : 'application/json',
@@ -209,7 +219,7 @@ export function noticeFiles(obj) {
   return paths;
 }
 
-export function previousRecord(inv, objs, docVersion, signed) {
+export function previousRecord(inv, objs, docVersion, signed, records = SERVICES[true].records) {
   const hist = historyOf(inv, (v) => objs.get(v), signed);
   const docs = hist.map((v) => objs.get(v).documentVersion);
   const before = docs.includes(docVersion) ? docs.slice(0, docs.indexOf(docVersion)) : docs;
@@ -217,9 +227,11 @@ export function previousRecord(inv, objs, docVersion, signed) {
   for (const n of [...before].reverse()) {
     for (const v of versions) {
       const obj = objs.get(v);
-      if (obj.documentVersion === n && zenodoEntries(obj).length) {
-        const e = zenodoEntries(obj)[0];
-        return [e.record.replace(/\/+$/, '').split('/').pop(), e.doi];
+      if (obj.documentVersion !== n) continue;
+      for (const e of zenodoEntries(obj)) {
+        const number = typeof e.record === 'string' && e.record.startsWith(records)
+          ? e.record.slice(records.length).replace(/\/+$/, '') : '';
+        if (/^[0-9]+$/.test(number)) return [number, e.doi];
       }
     }
   }
@@ -307,7 +319,7 @@ export async function deposit(f, label, z) {
     exit(`${label}: document version ${docVersion} is already on Zenodo (${zenodoEntries(obj)[0].doi})`);
   }
 
-  const [prevRec, prevDoi] = previousRecord(inv, objs, docVersion, signed);
+  const [prevRec, prevDoi] = previousRecord(inv, objs, docVersion, signed, z.s.records);
   let draft;
   if (prevRec) {
     const nv = await z.call('POST', `/deposit/depositions/${prevRec}/actions/newversion`);

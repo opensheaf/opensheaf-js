@@ -1439,6 +1439,7 @@ def guarded(req, *a, **k):
     u = urllib.parse.urlsplit(req.full_url)
     if u.hostname != "127.0.0.1":
         req.full_url = FAKE + u.netloc + u.path + ("?" + u.query if u.query else "")
+        req.add_header("X-osheaf-guarded", "1")
     if urllib.parse.urlsplit(req.full_url).hostname != "127.0.0.1":
         raise SystemExit("a test reached for the network: " + req.full_url)
     return real(req, *a, **k)

@@ -36,7 +36,7 @@ The tests are in two places:
     import { keyStore } from '../cli/keystore.js';
     import { ArchiveFolder } from '../core/folder.js';
     import * as arxiv from '../core/arxiv.js';
-    import { SERVICES } from '../core/zenodo.js';
+    import { SERVICES, Zenodo } from '../core/zenodo.js';
     import { tarGz } from './fixtures.js';
 
     <<services: doubles>>
@@ -492,6 +492,47 @@ version is a new version of the record, `IsNewVersionOf` the first.
       }
     });
 
+The token and the records stay with their service, as opensheaf-py's
+`test_zenodo_token_and_records_stay_with_their_service`: a link that is
+not an HTTPS address of the API's host gets no request; the API's paths
+and its own links get the token. A line deposited on Zenodo itself and
+then, in a second document version, on the sandbox starts a sandbox
+record of its own rather than asking the sandbox for a new version of a
+record of Zenodo.
+
+    // in services: deposits on Zenodo:
+    test('the Zenodo token and records stay with their service', async () => {
+      const sent = [];
+      const z = new Zenodo({ production: true, token: 'secret', fetch: async (url, init) => {
+        sent.push([url, init.headers.Authorization]);
+        return new Response('{}');
+      } });
+      for (const bad of ['https://evil.example/api/files/1', 'http://zenodo.org/api/files/1',
+                         'https://zenodo.org@evil.example/x', 'https://sandbox.zenodo.org/api/files/1', 'files/1']) {
+        await assert.rejects(z.call('PUT', bad, null, new Uint8Array([1])), /the token is not sent there/);
+      }
+      assert.deepEqual(sent, []);
+      await z.call('GET', '/deposit/depositions/1');
+      await z.call('PUT', 'https://zenodo.org/api/files/abc/paper.pdf', null, new Uint8Array([1]));
+      assert.deepEqual(sent, [['https://zenodo.org/api/deposit/depositions/1', 'Bearer secret'],
+                              ['https://zenodo.org/api/files/abc/paper.pdf', 'Bearer secret']]);
+      const box = await sandbox();
+      try {
+        const a = await archive(box);
+        await writeFile(path.join(box.root, 'p.pdf'), '%PDF-1.4 p');
+        const paper = ['--pdf', path.join(box.root, 'p.pdf'), '--no-source', 'lost', '--title', 'P', '--author', 'Doe, Jane'];
+        await box.ok([...a.r, 'deposit', 'p', ...paper, '--new']);
+        await box.ok([...a.r, 'zenodo', 'p', '--production']);
+        await writeFile(path.join(box.root, 'p.pdf'), '%PDF-1.4 p2');
+        await box.ok([...a.r, 'deposit', 'p', ...paper, '--changes', 'Typos.']);
+        await box.ok([...a.r, 'zenodo', 'p']);
+        assert.ok(Object.keys(box.zenodo.false.uploads).length);
+        assert.ok(!box.zenodo.false.calls.some(([, u]) => u.endsWith('/actions/newversion')));
+      } finally {
+        await box.done();
+      }
+    });
+
 A deposit interrupted after publication keeps its staging folder, with
 the version built and signed, and locks the line until the next run of
 `osheaf zenodo` adds the version. The key that signed it is exposed
@@ -555,7 +596,12 @@ name of its identifier). It answers only the fake token; it records
 every request, method, path and body (the JSON of a request, or the MD5
 and size of an upload), and gives them at `/_calls`; `/_mismatch/<host>`
 makes the next publication answer another DOI than the one reserved,
-which stops a deposit after publication.
+which stops a deposit after publication. The links of its answers (a
+draft's bucket and latest version) are on the host Zenodo would give,
+`https://<host>/...`, for opensheaf-py, which sends its token only there
+and reaches the double through its guard (which says so in the header
+`X-Osheaf-Guarded`); for this program, which is given the double's
+address as the API, they are on that address.
 
     // in tests/fake-services.js:
     import http from 'node:http';
@@ -572,8 +618,10 @@ which stops a deposit after publication.
 
     const service = (host) => (services[host] ??= { records: new Map(), next: 100, mismatch: false });
 
-    function zenodo(host, req, p, body, send) {
+    function zenodo(host, req, p, body, plainSend) {
       const s = service(host), prefix = PREFIX[host];
+      const at = req.headers['x-osheaf-guarded'] ? `https://${host}` : `${base}${host}`;
+      const send = (status, value) => plainSend(status, value === null ? null : JSON.parse(JSON.stringify(value).replaceAll('@@/', `${at}/`)));
       const call = { host, method: req.method, path: p };
       if (body.length) {
         call.body = (req.headers['content-type'] || '').startsWith('application/json') ? JSON.parse(body.toString('utf-8'))
@@ -584,7 +632,7 @@ which stops a deposit after publication.
       const record = (concept) => {
         s.next += 1;
         const rec = { id: s.next, conceptrecid: concept || s.next + 1000,
-                      links: { bucket: `${base}${host}/bucket/${s.next}`, latest_draft: `${base}${host}/api/deposit/depositions/${s.next}` },
+                      links: { bucket: `@@/bucket/${s.next}`, latest_draft: `@@/api/deposit/depositions/${s.next}` },
                       files: concept ? [{ id: 'inherited' }] : [] };
         s.records.set(rec.id, rec);
         return rec;
@@ -673,6 +721,7 @@ loopback's.
         u = urllib.parse.urlsplit(req.full_url)
         if u.hostname != "127.0.0.1":
             req.full_url = FAKE + u.netloc + u.path + ("?" + u.query if u.query else "")
+            req.add_header("X-osheaf-guarded", "1")
         if urllib.parse.urlsplit(req.full_url).hostname != "127.0.0.1":
             raise SystemExit("a test reached for the network: " + req.full_url)
         return real(req, *a, **k)

@@ -13,8 +13,10 @@ let base = '';
 
 const service = (host) => (services[host] ??= { records: new Map(), next: 100, mismatch: false });
 
-function zenodo(host, req, p, body, send) {
+function zenodo(host, req, p, body, plainSend) {
   const s = service(host), prefix = PREFIX[host];
+  const at = req.headers['x-osheaf-guarded'] ? `https://${host}` : `${base}${host}`;
+  const send = (status, value) => plainSend(status, value === null ? null : JSON.parse(JSON.stringify(value).replaceAll('@@/', `${at}/`)));
   const call = { host, method: req.method, path: p };
   if (body.length) {
     call.body = (req.headers['content-type'] || '').startsWith('application/json') ? JSON.parse(body.toString('utf-8'))
@@ -25,7 +27,7 @@ function zenodo(host, req, p, body, send) {
   const record = (concept) => {
     s.next += 1;
     const rec = { id: s.next, conceptrecid: concept || s.next + 1000,
-                  links: { bucket: `${base}${host}/bucket/${s.next}`, latest_draft: `${base}${host}/api/deposit/depositions/${s.next}` },
+                  links: { bucket: `@@/bucket/${s.next}`, latest_draft: `@@/api/deposit/depositions/${s.next}` },
                   files: concept ? [{ id: 'inherited' }] : [] };
     s.records.set(rec.id, rec);
     return rec;

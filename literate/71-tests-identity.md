@@ -37,7 +37,8 @@ deterministic.
       from '../core/signatures.js';
     import { Key, exampleKey } from '../core/keys.js';
     import { genesisRecord, signatureFile as writeSignatureFile, newOwner } from '../core/write.js';
-    import { rotate } from '../core/keylogs.js';
+    import { rotate, end, recordFork, extendInventory } from '../core/keylogs.js';
+    import { inventoryFile, sidecar } from '../core/write.js';
 
     <<the examples of appendix C>>
 
@@ -421,6 +422,35 @@ with the valid copy, the broken copy stays as it is, as opensheaf-py's
       assert.equal(met, copy);
       assert.deepEqual(met.side().map((v) => v.number), [1]);
       assert.deepEqual((await log.meet(copy)).side().map((v) => v.number), [1, 2]);
+    });
+
+A version that follows an ending version is a problem of the key log
+(section 6.3), not a version signed by no threshold: a fork record
+carrying one, after the other copy's end, is refused, as in
+opensheaf-py's `test_a_version_after_an_ending_one_is_a_problem`. In
+the key log itself, a version held after an ending version is no version.
+
+    // in tests of key logs:
+    test('a version after an ending one is a problem (section 6.3)', async () => {
+      const [a, r1, r2, r3, n1, c, d] = await Promise.all(['a', 'r1', 'r2', 'r3', 'n1', 'c', 'd']
+        .map((x) => exampleKey(`after an end ${x}`)));
+      const user = { name: 'Doe, Jane' }, created = '2026-01-01T00:00:00Z';
+      const mine = await newOwner([a], [r1, r2, r3], { threshold: 1, nextThreshold: 1 });
+      const theirs = new KeyLog(mine.genesis, mine.owner, [mine.versions[0]]);
+      await theirs.check();
+      await rotate(mine, [r1], { nextKeys: [n1], nextThreshold: 1, user, created });
+      await end(theirs, [r2], { user, created });
+      const prev = theirs.versions[1];
+      const kb = utf8(jcs({ format: 'opensheaf-keys/0.2', keys: [c.did], next: [d.digest], nextThreshold: 1, threshold: 1 }));
+      const content = new Map([['genesis.json', theirs.genesis], ['object.json', utf8(jcs(ownerObject(theirs.owner, prev.digest)))],
+                               ['keys.json', kb]]);
+      const inv = await extendInventory(JSON.parse(new TextDecoder().decode(prev.inventory)), theirs.id, 3, content, created);
+      const ib = inventoryFile(inv);
+      const after = await Version.make(3, content, ib, await sidecar(ib), new Map());
+      await assert.rejects(recordFork(mine, [theirs.versions[1], after], { user, created }), /nothing follows an ending version/);
+      const forged = new KeyLog(theirs.genesis, theirs.owner, [...theirs.versions, after]);
+      const { warnings } = await forged.check();
+      assert.ok(warnings.some((w) => /^v3: held after an ending version/.test(w)), warnings.join('\n'));
     });
 
 The rules of section 6.1 across versions, each broken once, on the

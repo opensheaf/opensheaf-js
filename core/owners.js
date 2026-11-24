@@ -345,13 +345,17 @@ export class KeyLog {
 
   async signatureProblems(v, prev, lookup, warnings, where = null) {
     where = where || `v${v.number}`;
+    const need = prev.keys?.nextThreshold;
+    if (prev.keys?.ended || !Number.isInteger(need)) {
+      return [`follows v${prev.number}, which ends the key log or commits to no rotation keys: ` +
+              'nothing follows an ending version (section 6.3)'];
+    }
     const good = new Set();
     for (const j of await judgeFolder(v.witnesses, { objectId: this.id, version: `v${v.number}`, inventory: v.digest,
                                                        owner: this.owner, lookup, keyLog: true })) {
       if (j.status === GOOD && j.keyLog[0] === prev.number && j.keyLog[1] === prev.digest) good.add(j.key);
       else if (j.status !== GOOD) warnings.push(`${where}/${j.file}: ${j.status}: ${j.reason}`);
     }
-    const need = prev.keys.nextThreshold;
     if (good.size < need) return [`signed by ${good.size} rotation key${good.size === 1 ? '' : 's'} of v${prev.number}, which needs ${need} (section 6.1)`];
     return [];
   }

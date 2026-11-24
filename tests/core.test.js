@@ -1186,6 +1186,28 @@ test('addresses given by others, and what one run reads', async () => {
   }
 });
 
+test('evidence of another form', async () => {
+  const { genesisRecord } = await import('../core/write.js');
+  const { nameOf } = await import('../core/names.js');
+  const { chainOwners } = await import('../core/branch.js');
+  const { MAX_DEPTH } = await import('../core/branches.js');
+  const g = await genesisRecord('document', { originator: 'z' + 'a'.repeat(51) });
+  const nm = await nameOf(g, 0);
+  for (const pinv of ['not json', '[1]', '{"versions": []}', '['.repeat(100) + ']'.repeat(100)]) {
+    const files = new Map([['parent/inventory.json', utf8(pinv)], ['parent/object.json', utf8('{}')]]);
+    const lv = level(new Map([...files.keys()].map((p) => [p, 'd'])), async (p) => files.get(p));
+    const [v, problems] = await verdict(lv, { parent: { name: nm }, name: nm, owner: 'x' }, g, () => null);
+    assert.equal(v, INCONSISTENT, pinv);
+    assert.ok(problems.length);
+  }
+  const owner = 'q'.repeat(51) + 'a';
+  const files = new Map(Array.from({ length: 200 }, (_, k) => ['parent/'.repeat(k) + 'parent/object.json',
+                                                                utf8(JSON.stringify({ owner }))]));
+  assert.equal(chainOwners(files).length, MAX_DEPTH + 1);
+  files.set('parent/parent/object.json', utf8('[]'));
+  assert.deepEqual(chainOwners(files), [owner]);
+});
+
 test('a branch point reading a parent/object.json that its parent inventory does not record', async () => {
   const one = await newArchive();
   await deposit(one.f, paper('first', { rights: 'cc-by-4.0' }));

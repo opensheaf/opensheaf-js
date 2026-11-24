@@ -1,10 +1,11 @@
 // Generated from literate/39-branches-kept.md by opensheaf-literate: edit the document, not this file.
 import { sha512 } from './http.js';
 import { Copy } from './resolve.js';
-import { readGenesis, nameOf, algorithm, objectId, LABEL } from './names.js';
+import { readGenesis, nameOf, algorithm, objectId, LABEL, OWNER_NAME } from './names.js';
+import { jsonOrNull } from './owners.js';
 import { judgeFolder, GOOD } from './signatures.js';
 import { isEvidence, filesOf, historyOf } from './versions.js';
-import { level, verdict, CONFIRMED } from './branches.js';
+import { level, verdict, CONFIRMED, MAX_DEPTH } from './branches.js';
 import { pathOf } from './paths.js';
 import { jsonBytes } from './write.js';
 import { joinPath } from './storage.js';
@@ -51,8 +52,10 @@ export async function branchPointFiles(c, k) {
 
 export function chainOwners(files) {
   const out = [];
-  for (let prefix = ''; files.has(prefix + 'parent/object.json'); prefix += 'parent/') {
-    out.push(JSON.parse(new TextDecoder().decode(files.get(prefix + 'parent/object.json'))).owner);
+  for (let prefix = ''; files.has(prefix + 'parent/object.json') && out.length <= MAX_DEPTH; prefix += 'parent/') {
+    const owner = jsonOrNull(files.get(prefix + 'parent/object.json'))?.owner;
+    if (typeof owner !== 'string' || !OWNER_NAME.test(owner)) break;
+    out.push(owner);
   }
   return out;
 }

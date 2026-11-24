@@ -1510,6 +1510,33 @@ says that the others are not.
       }
     });
 
+Evidence of another form makes a branch point inconsistent, and the
+chain of owners stops at `MAX_DEPTH` and at a level it cannot read, as in
+opensheaf-py's `test_evidence_of_another_form`.
+
+    // in tests of keepers and of options read from files:
+    test('evidence of another form', async () => {
+      const { genesisRecord } = await import('../core/write.js');
+      const { nameOf } = await import('../core/names.js');
+      const { chainOwners } = await import('../core/branch.js');
+      const { MAX_DEPTH } = await import('../core/branches.js');
+      const g = await genesisRecord('document', { originator: 'z' + 'a'.repeat(51) });
+      const nm = await nameOf(g, 0);
+      for (const pinv of ['not json', '[1]', '{"versions": []}', '['.repeat(100) + ']'.repeat(100)]) {
+        const files = new Map([['parent/inventory.json', utf8(pinv)], ['parent/object.json', utf8('{}')]]);
+        const lv = level(new Map([...files.keys()].map((p) => [p, 'd'])), async (p) => files.get(p));
+        const [v, problems] = await verdict(lv, { parent: { name: nm }, name: nm, owner: 'x' }, g, () => null);
+        assert.equal(v, INCONSISTENT, pinv);
+        assert.ok(problems.length);
+      }
+      const owner = 'q'.repeat(51) + 'a';
+      const files = new Map(Array.from({ length: 200 }, (_, k) => ['parent/'.repeat(k) + 'parent/object.json',
+                                                                    utf8(JSON.stringify({ owner }))]));
+      assert.equal(chainOwners(files).length, MAX_DEPTH + 1);
+      files.set('parent/parent/object.json', utf8('[]'));
+      assert.deepEqual(chainOwners(files), [owner]);
+    });
+
 A branch point is judged on the bytes of `parent/object.json` as read,
 as in opensheaf-py's `test_inconsistent_branch_point`: a level that
 states the right digests but reads a forged `parent/object.json` is

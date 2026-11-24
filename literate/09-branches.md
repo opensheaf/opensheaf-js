@@ -92,10 +92,24 @@ or unchecked without one); and the chain, level by level.
 
 The answer is the verdict and its reasons: an inconsistent branch point
 with every problem found at its level, a confirmed one with none, an
-unchecked one with why.
+unchecked one with why. Evidence of another form (a
+`parent/inventory.json` that is not JSON, nor an object, nor nested within
+the limits) makes the branch point inconsistent; anything else that
+cannot be read in it does too, with its reason, rather than stopping the
+check, as opensheaf-py's `verdict` guards `level_verdict`.
 
     // in core/branches.js:
     export async function verdict(lv, obj, genesis, logs, depth = 0) {
+      try {
+        return await levelVerdict(lv, obj, genesis, logs, depth);
+      } catch (error) {
+        if (error?.kind === 'aborted') throw error;
+        return [INCONSISTENT, [`the evidence of the branch point cannot be read: ${error?.constructor?.name ?? 'Error'} ` +
+                               `${error?.message ?? error}`]];
+      }
+    }
+
+    async function levelVerdict(lv, obj, genesis, logs, depth = 0) {
       const p = obj?.parent;
       if (!isObject(p)) return [INCONSISTENT, ['object.json has no parent']];
       if (depth > MAX_DEPTH) return [UNCHECKED, [`the chain is not followed beyond ${MAX_DEPTH} levels`]];
@@ -117,7 +131,8 @@ unchecked one with why.
       const pobjBytes = lv.digests.has('parent/object.json') ? await lv.read('parent/object.json') : null;
       const pobj = jsonOrNull(pobjBytes);
       if (!isObject(pinv) || !isObject(pobj)) {
-        return [INCONSISTENT, [...problems, 'parent/inventory.json or parent/object.json is missing (section 9.2)']];
+        return [INCONSISTENT, [...problems, 'parent/inventory.json or parent/object.json is missing, or not ' +
+                                             'of the form of an inventory and an object.json (section 9.2)']];
       }
       if (await sha512(pinvBytes) !== p.inventorySha512 || pinv.head !== p.objectVersion) {
         problems.push('parent/inventory.json is not the inventory the pin of parent names');

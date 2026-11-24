@@ -38,7 +38,7 @@ The tests are written with `node:test` and `node:assert`, which both
     import { deposit, creator, checkRights, nameAddress } from '../core/deposit.js';
     import { descriptionErrors } from '../core/rules.js';
     import { collect, memberOrder } from '../core/collect.js';
-    import { verifyFolder } from '../core/check.js';
+    import { verifyFolder, landingDescriptionGaps } from '../core/check.js';
     import { loadSchemas } from '../core/schema.js';
     import { notice, withdraw, relate, relicense, describe, complete } from '../core/describe.js';
     import * as collections from '../core/collections.js';
@@ -1149,6 +1149,10 @@ record, the page is reported.
       assert.ok(ld.encoding.some((e) => e.encodingFormat === 'application/pdf'));
       await storage.write(page, utf8(text.replace(/<script type="application\/ld\+json">[^]*?<\/script>/, '')));
       assert.ok((await errorsOf(storage)).some((e) => e.includes('lacks a schema.org record')));
+      const record = /<script type="application\/ld\+json">([^]*?)<\/script>/.exec(text)[1];
+      const deep = text.replace(record, record.replace(/}$/, `, "x": ${'['.repeat(70)}${']'.repeat(70)}}`));
+      assert.deepEqual(landingDescriptionGaps(text), []);
+      assert.deepEqual(landingDescriptionGaps(deep), ['a schema.org record in JSON-LD with a type and identifiers']);
     });
 
 A pin of a key-log version resolves only to a version of the key log, as

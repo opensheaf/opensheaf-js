@@ -39,7 +39,7 @@ each makes.
 The module is `core/check.js`.
 
     // in core/check.js:
-    import { Http, FetchError } from './http.js';
+    import { Http, FetchError, nesting, LIMITS } from './http.js';
     import { Archive } from './archive.js';
     import { verify, Report } from './verify.js';
     import { finding } from './rules.js';
@@ -246,7 +246,8 @@ without declaring it.
 A landing page also describes itself for programs (appendix A.3), as
 opensheaf-py's `landing_description_gaps` checks: the Signposting links
 `cite-as`, `describedby` and `type`, and a schema.org record in JSON-LD
-with a type and identifiers.
+with a type and identifiers. The record is read as every JSON file is,
+nested no deeper than `LIMITS.nesting`; a deeper one is no record.
 
     // in the presentation of a folder:
     export function landingDescriptionGaps(text) {
@@ -255,7 +256,7 @@ with a type and identifiers.
       const record = /<script type="application\/ld\+json">([^]*?)<\/script>/.exec(text);
       let ld = null;
       try {
-        ld = record ? JSON.parse(record[1]) : null;
+        ld = record && nesting(record[1]) <= LIMITS.nesting ? JSON.parse(record[1]) : null;
       } catch {
         ld = null;
       }

@@ -29,6 +29,7 @@ The module is `core/signatures.js`.
 
     // in core/signatures.js:
     import { verifyEd25519, utf8, unbase64 } from './crypto.js';
+    import { nesting, LIMITS } from './http.js';
     import { didKeyPublic, keyId, keyDigest, OWNER_NAME, DID_KEY } from './names.js';
 
     export const SIGNATURE_FORMAT = 'opensheaf-signature/0.2';
@@ -64,7 +65,8 @@ key log of its signer. A file that is not so is malformed. Its
 characters, the last of them `A`, `Q`, `g` or `w`, whose four bits that
 encode nothing are zero, then `==`. Another encoding of the same bytes is
 malformed too, so that the bytes of a signature file, which timestamps
-cover, are fixed by what it says.
+cover, are fixed by what it says. As every JSON file read, it is nested
+no deeper than `LIMITS.nesting` (chapter [10](10-http.md)).
 
     // in core/signatures.js:
     const FIELDS = {
@@ -81,7 +83,9 @@ cover, are fixed by what it says.
     export function readSignatureFile(bytes) {
       let d;
       try {
-        d = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        if (nesting(text) > LIMITS.nesting) throw new Error(`nested deeper than ${LIMITS.nesting} levels`);
+        d = JSON.parse(text);
       } catch (error) {
         throw new Error(`not JSON in UTF-8 (${error.message})`);
       }

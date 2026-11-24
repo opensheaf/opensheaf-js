@@ -25,7 +25,7 @@ The module is `core/names.js`.
 
     // in core/names.js:
     import { sha256, base32, base58, unbase58, utf8, B32 } from './crypto.js';
-    import { parseIntegers } from './http.js';
+    import { parseIntegers, nesting, LIMITS } from './http.js';
 
 The forms
 ---------
@@ -139,15 +139,19 @@ thresholds and the rules of section 6.1, and possibly a keeper and the
 data of extensions; a document's or a collection's originator, an owner
 name. Its numbers are integers as their text writes them, of at most
 2^53 - 1 in absolute value (chapter [10](10-http.md)): a threshold of `1.0`
-is no threshold, as in opensheaf-py. The answer is the record, or an
-exception saying what is wrong, with the words of opensheaf-py.
+is no threshold, as in opensheaf-py. Like every JSON file read, it is
+nested no deeper than `LIMITS.nesting` (chapter [10](10-http.md)). The
+answer is the record, or an exception saying what is wrong, with the
+words of opensheaf-py.
 
     // in core/names.js:
     export async function readGenesis(bytes) {
       if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) throw new Error('a genesis record has no byte order mark');
       let rec;
       try {
-        rec = parseIntegers(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        if (nesting(text) > LIMITS.nesting) throw new Error(`nested deeper than ${LIMITS.nesting} levels`);
+        rec = parseIntegers(text);
       } catch (error) {
         throw new Error(`a genesis record is JSON in UTF-8 (${error.message})`);
       }

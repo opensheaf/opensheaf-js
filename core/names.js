@@ -1,6 +1,6 @@
 // Generated from literate/06-names.md by opensheaf-literate: edit the document, not this file.
 import { sha256, base32, base58, unbase58, utf8, B32 } from './crypto.js';
-import { parseIntegers } from './http.js';
+import { parseIntegers, nesting, LIMITS } from './http.js';
 
 export const NAME = /^[a-z2-7]{52}$/;
 export const OWNER_NAME = /^[a-z2-7]{51}[aq]$/;
@@ -70,7 +70,9 @@ export async function readGenesis(bytes) {
   if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) throw new Error('a genesis record has no byte order mark');
   let rec;
   try {
-    rec = parseIntegers(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (nesting(text) > LIMITS.nesting) throw new Error(`nested deeper than ${LIMITS.nesting} levels`);
+    rec = parseIntegers(text);
   } catch (error) {
     throw new Error(`a genesis record is JSON in UTF-8 (${error.message})`);
   }

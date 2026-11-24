@@ -1,5 +1,6 @@
 // Generated from literate/08-signatures.md by opensheaf-literate: edit the document, not this file.
 import { verifyEd25519, utf8, unbase64 } from './crypto.js';
+import { nesting, LIMITS } from './http.js';
 import { didKeyPublic, keyId, keyDigest, OWNER_NAME, DID_KEY } from './names.js';
 
 export const SIGNATURE_FORMAT = 'opensheaf-signature/0.2';
@@ -27,7 +28,9 @@ const FIELDS = {
 export function readSignatureFile(bytes) {
   let d;
   try {
-    d = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (nesting(text) > LIMITS.nesting) throw new Error(`nested deeper than ${LIMITS.nesting} levels`);
+    d = JSON.parse(text);
   } catch (error) {
     throw new Error(`not JSON in UTF-8 (${error.message})`);
   }

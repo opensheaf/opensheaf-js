@@ -1,5 +1,5 @@
 // Generated from literate/28-verify-folder.md by opensheaf-literate: edit the document, not this file.
-import { Http, FetchError } from './http.js';
+import { Http, FetchError, nesting, LIMITS } from './http.js';
 import { Archive } from './archive.js';
 import { verify, Report } from './verify.js';
 import { finding } from './rules.js';
@@ -154,7 +154,7 @@ export function landingDescriptionGaps(text) {
   const record = /<script type="application\/ld\+json">([^]*?)<\/script>/.exec(text);
   let ld = null;
   try {
-    ld = record ? JSON.parse(record[1]) : null;
+    ld = record && nesting(record[1]) <= LIMITS.nesting ? JSON.parse(record[1]) : null;
   } catch {
     ld = null;
   }

@@ -97,6 +97,9 @@ test('genesis records that are not', async () => {
   await assert.rejects(bad({ keeper: ['https://orcid.org/0000-0002-1234-5678'] }), /keeper must be/);
   await assert.rejects(bad({ originator: A }), /fields not allowed in a genesis record of kind owner: originator/);
   await assert.rejects(readGenesis(new Uint8Array([0xef, 0xbb, 0xbf, ...GENESIS_N])), /byte order mark/);
+  const deep = (text) => utf8(text.replace(/}\s*$/, `, "x": ${'['.repeat(70)}${']'.repeat(70)}}`));
+  await assert.rejects(readGenesis(deep(new TextDecoder().decode(GENESIS_A))), /nested deeper than 64 levels/);
+  assert.throws(() => readSignatureFile(deep('{"format": "x"}')), /nested deeper than 64 levels/);
 });
 
 test('thresholds that are not integers in their text', async () => {

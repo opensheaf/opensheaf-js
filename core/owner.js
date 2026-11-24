@@ -1055,7 +1055,14 @@ export async function keyImport(f, args, env) {
 }
 
 async function forgetHere(env, owner, dids) {
-  for (const did of dids) await env.keyStore.forget(owner, did);
+  const failed = [];
+  for (const did of dids) {
+    for (const [store, why] of (await env.keyStore.forget(owner, did)) || []) failed.push([did, store, why]);
+  }
+  if (failed.length) {
+    stop('not removed from this computer:\n' + failed.map(([did, store, why]) =>
+      `  ${short(did)} in ${env.keyStore.storeName?.(store) ?? store}: ${why}`).join('\n'));
+  }
   if (dids.length) {
     env.out(`This computer no longer holds ${theKeys(dids.length, 'current key')} ${dids.map(short).join(', ')} of ${short(owner)}.`);
   }
@@ -1076,6 +1083,13 @@ export async function keyForget(f, args, env) {
   }
   for (const did of dids) checkDid(did);
   if (!args.fromWallet) {
+    env.err(`Removing ${theKeys(dids.length, 'current key')} of ${who} from this computer:`);
+    for (const did of dids) {
+      const use = listed.has(did) ? 'a current key of the latest version of the key log: without it, this computer ' +
+        'may no longer sign' : 'not a current key of the latest version';
+      env.err(`  ${short(did)}  (${use})`);
+    }
+    if (!(await confirmed(env, 'forget', args))) stop('not confirmed: nothing was removed');
     await forgetHere(env, owner, dids);
     return;
   }

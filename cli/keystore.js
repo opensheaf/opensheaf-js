@@ -154,15 +154,22 @@ export function keyStore({ env = process.env, warn = () => {}, err = warn, secur
     },
     async forget(owner, did) {
       const kid = await keyId(did);
+      const failed = [];
       for (const s of stores()) {
         if (s === 'security' && hasSecurity) {
-          await run(['delete-generic-password', '-s', SERVICE, '-a', account(owner, kid)]);
+          const r = await run(['delete-generic-password', '-s', SERVICE, '-a', account(owner, kid)]);
+          if (![0, 44].includes(r.status)) failed.push([s, (r.stderr || '').trim() || `exit status ${r.status}`]);
         } else if (s === 'file') {
-          await fs.unlink(path.join(keyFolder(owner, env), `${kid}.key`)).catch(() => {});
+          try {
+            await fs.unlink(path.join(keyFolder(owner, env), `${kid}.key`));
+          } catch (error) {
+            if (error.code !== 'ENOENT') failed.push([s, error.message]);
+          }
         }
         seen.set(slot(s, owner, kid), null);
       }
       memory.delete(account(owner, kid));
+      return failed;
     },
   };
 }

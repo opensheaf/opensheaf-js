@@ -258,10 +258,10 @@ test('an owner in a GitHub wallet', async () => {
     assert.ok(!/seed/.test(list.said));
     const show = (await box.ok([...a.r, 'owner', 'show', '--offline'])).out;
     const did = /Current keys  (did:key:\S+)/.exec(show)[1];
-    assert.match((await box.ok([...a.r, 'key', 'forget', did])).out, /no longer holds the current key/);
+    assert.match((await box.ok([...a.r, 'key', 'forget', did, '--yes'])).out, /no longer holds the current key/);
     assert.match((await box.ok([...a.r, 'key', 'pull'])).out, /Pulled 1 current key of .* into a file of this computer\./);
     assert.match((await box.ok([...a.r, 'key', 'pull'])).out, /already on this computer/);
-    await box.ok([...a.r, 'key', 'forget', did]);
+    await box.ok([...a.r, 'key', 'forget', did, '--yes']);
     await deposit(box, a, 'paper', 'one', true);
     assert.match((await box.ok([...a.r, 'owner', 'show', '--offline'])).out, /\(on this computer\)/);
     assert.match((await box.ok([...a.r, 'key', 'push'])).out, /already in github:me\/keys/);
@@ -284,6 +284,38 @@ test('an owner in a GitHub wallet', async () => {
 function fakeFiles(box) {
   return box.githubRepos['me/keys'].files;
 }
+
+test('key forget asks, and reports a store that fails', async () => {
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--export', path.join(box.root, 'usb'), '--no-passphrase']);
+    const show = (await box.ok([...a.r, 'owner', 'show', '--offline'])).out;
+    const current = /Current keys  (did:key:\S+)/.exec(show)[1];
+    const folder = path.join(box.root, 'config', 'opensheaf', 'keys', a.owner);
+    box.inputs.push('no');
+    const refused = await box.run([...a.r, 'key', 'forget', current]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.err, /not confirmed/i);
+    assert.match(refused.err, /a current key of the latest version/);
+    assert.equal((await readdir(folder)).length, 1);
+    const { chmod } = await import('node:fs/promises');
+    await chmod(folder, 0o500);
+    try {
+      const failed = await box.run([...a.r, 'key', 'forget', current, '--yes']);
+      assert.equal(failed.status, 1);
+      assert.match(failed.err, /not removed from this computer/i);
+    } finally {
+      await chmod(folder, 0o700);
+    }
+    const answers = [{ status: 44, stdout: '', stderr: '' }, { status: 51, stdout: '', stderr: 'User interaction is not allowed.' }];
+    const store = keyStore({ env: { OPENSHEAF_KEY_STORE: 'security' }, platform: 'darwin',
+                             security: async () => answers.shift() });
+    assert.deepEqual(await store.forget(a.owner, current), []);
+    assert.deepEqual(await store.forget(a.owner, current), [['security', 'User interaction is not allowed.']]);
+  } finally {
+    await box.done();
+  }
+});
 
 test('the wallets of each owner', async () => {
   const box = await sandbox({ repos: { 'me/keys': { visibility: 'private', files: {} },
@@ -448,7 +480,7 @@ test('key files, passkey locks and texts', async () => {
     assert.match(clip.err, /is on the clipboard: paste it/);
     assert.equal(box.cleared[0], box.clip);
     const did = /key (did:key:\S+)/.exec(out)[1];
-    await box.ok([...a.r, 'key', 'forget', did]);
+    await box.ok([...a.r, 'key', 'forget', did, '--yes']);
     assert.match((await box.ok([...a.r, 'key', 'import', '--clipboard'])).out, /is now kept in a file of this computer\./);
     assert.match((await box.ok([...a.r, 'key', 'import', '--stdin'], { stdin: out + '\n' })).out, /already on this computer/);
     const rot = await readFile((await exported(box, 'k1'))[0], 'utf-8');
@@ -505,7 +537,7 @@ test('passkeys: enroll, unlock, and keys opened by them', async () => {
     assert.match((await box.ok([...a.r, 'key', 'enroll'])).out, /already opens with your passkey/);
     assert.match((await box.ok([...a.r, 'key', 'list'])).out, /passphrase, passkey \(unlock\.opensheaf\.org\)/);
     const show = (await box.ok([...a.r, 'owner', 'show', '--offline'])).out;
-    await box.ok([...a.r, 'key', 'forget', /Current keys  (did:key:\S+)/.exec(show)[1]]);
+    await box.ok([...a.r, 'key', 'forget', /Current keys  (did:key:\S+)/.exec(show)[1], '--yes']);
     box.opened.length = 0;
     const unlocked = await box.ok([...a.r, 'key', 'unlock']);
     assert.match(unlocked.out, /All 4 keys of .* opened with your passkey\./);
@@ -527,7 +559,7 @@ test('passkeys: enroll, unlock, and keys opened by them', async () => {
       const r = await box.run([...a.r, 'key', 'unlock']);
       assert.equal(r.status, 1, answer);
       assert.match(r.err, answer === 'forged' ? /opens no key/ : /did not unlock the keys/);
-      await box.ok([...a.r, 'key', 'forget', current]);
+      await box.ok([...a.r, 'key', 'forget', current, '--yes']);
       const fallback = await box.ok([...a.r, 'key', 'pull']);
       assert.match(fallback.err, /osheaf asks for the passphrase instead/);
       assert.match(fallback.out, /Pulled 1 current key/);
@@ -597,7 +629,7 @@ test('the keychain, through security', async () => {
     assert.ok(sec.calls.some((c) => /keyring: opensheaf-js uses the macOS keychain/.test(c)));
     const elsewhere = keyStore({ env: { OPENSHEAF_KEY_STORE: 'keyring' }, platform: 'linux' });
     await assert.rejects(elsewhere.current(a.owner, [did]), /cannot reach the system keyring/);
-    await box.ok([...a.r, 'key', 'forget', did]);
+    await box.ok([...a.r, 'key', 'forget', did, '--yes']);
     assert.equal(sec.items.size, 0);
   } finally {
     await box.done();

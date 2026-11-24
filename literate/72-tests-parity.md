@@ -994,7 +994,7 @@ turn; each removes the keys used up; the archive stays without a finding.
         assert.match(said(s.js(['key', 'list'], { cwd: arch, more })), /holds 4 keys/);
         const show = ok(s.js(['owner', 'show', '--offline'], { cwd: arch, more }), 'js show').stdout;
         const did = /Current keys  (did:key:\S+)/.exec(show)[1];
-        ok(s.js(['key', 'forget', did], { cwd: arch, more }), 'js forget');
+        ok(s.js(['key', 'forget', did, '--yes'], { cwd: arch, more }), 'js forget');
         assert.match(ok(s.js(['key', 'pull'], { cwd: arch, more }), 'js pull').stdout, /Pulled 1 current key/);
         ok(s.js(['owner', 'rotate', '--keys', 'github:me/keys'], { cwd: arch, more }), 'js rotate from the wallet');
         await both(s, arch, ['key', 'list'], { more });

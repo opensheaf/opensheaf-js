@@ -1317,16 +1317,27 @@ input. A rotation key is never kept on a device.
 Forget keys
 -----------
 
-`osheaf key forget DID...` removes current keys from this device; with
-`--from-wallet`, from the wallet too, after a confirmation (`forget`, or
-`--yes`); `--used` with `--from-wallet` removes the keys of the wallet the
+`osheaf key forget DID...` removes current keys from this device, after
+listing them (whether each is a current key of the latest version of the
+key log, without which this computer may no longer sign) and a
+confirmation (`forget`, or `--yes`), as opensheaf-py asks it; a store that
+fails to remove a key (a keychain that refuses, a folder that cannot be
+written) is reported, and the command stops, instead of saying the key is
+gone; with `--from-wallet`, from the wallet too, after a confirmation; `--used` with `--from-wallet` removes the keys of the wallet the
 latest version of the key log no longer lists or commits. A rotation key
 still committed is kept unless `--force`. `--passkey CRED` and `--rp RP`
 remove passkey locks instead.
 
     // in forget keys:
     async function forgetHere(env, owner, dids) {
-      for (const did of dids) await env.keyStore.forget(owner, did);
+      const failed = [];
+      for (const did of dids) {
+        for (const [store, why] of (await env.keyStore.forget(owner, did)) || []) failed.push([did, store, why]);
+      }
+      if (failed.length) {
+        stop('not removed from this computer:\n' + failed.map(([did, store, why]) =>
+          `  ${short(did)} in ${env.keyStore.storeName?.(store) ?? store}: ${why}`).join('\n'));
+      }
       if (dids.length) {
         env.out(`This computer no longer holds ${theKeys(dids.length, 'current key')} ${dids.map(short).join(', ')} of ${short(owner)}.`);
       }
@@ -1347,6 +1358,13 @@ remove passkey locks instead.
       }
       for (const did of dids) checkDid(did);
       if (!args.fromWallet) {
+        env.err(`Removing ${theKeys(dids.length, 'current key')} of ${who} from this computer:`);
+        for (const did of dids) {
+          const use = listed.has(did) ? 'a current key of the latest version of the key log: without it, this computer ' +
+            'may no longer sign' : 'not a current key of the latest version';
+          env.err(`  ${short(did)}  (${use})`);
+        }
+        if (!(await confirmed(env, 'forget', args))) stop('not confirmed: nothing was removed');
         await forgetHere(env, owner, dids);
         return;
       }

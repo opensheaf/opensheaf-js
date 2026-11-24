@@ -5,10 +5,11 @@ import { mkdtemp, rm, readdir, readFile, writeFile, cp, mkdir, symlink, realpath
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 import { main } from '../cli/osheaf.js';
 import { keyStore, exportFolder } from '../cli/keystore.js';
 import { DiskStorage } from '../cli/disk.js';
-import { ask } from '../cli/unlock.js';
+import { ask, peerUid } from '../cli/unlock.js';
 import * as passkey from '../core/passkey.js';
 import { passkeySalt, keyFileText, keyText, readKey, exampleKey, removePasskeys, passkeysOf, passkeyKek, Passkey,
          KeyError } from '../core/keys.js';
@@ -62,8 +63,19 @@ function fakeGitHub(repos) {
 
 const CRED = 'ZmFrZS1wYXNza2V5LWNyZWRlbnRpYWw';
 
+async function followStart(url) {
+  assert.match(url, /^http:\/\/127\.0\.0\.1:[0-9]+\/start$/);
+  const r = await fetch(url, { redirect: 'manual' });
+  await r.text();
+  assert.equal(r.status, 302);
+  assert.equal(r.headers.get('cache-control'), 'no-store');
+  assert.equal(r.headers.get('referrer-policy'), 'no-referrer');
+  return r.headers.get('location');
+}
+
 function fakeBrowser(opened, { answer = 'secret', cred = CRED } = {}) {
   return async (url) => {
+    url = await followStart(url);
     assert.ok(url.startsWith(passkey.UNLOCK_PAGE + '#') && !url.includes('?'));
     const q = Object.fromEntries(new URLSearchParams(url.split('#')[1]));
     opened.push(q);
@@ -944,6 +956,7 @@ test('the listener takes one answer, from the page it opened', async () => {
   const said = [];
   const statuses = [];
   const open = async (url) => {
+    url = await followStart(url);
     const q = Object.fromEntries(new URLSearchParams(url.split('#')[1]));
     const base = `http://127.0.0.1:${q.port}`;
     const get = async (p) => {
@@ -965,6 +978,87 @@ test('the listener takes one answer, from the page it opened', async () => {
   assert.deepEqual(statuses, [404, 400, 403, 200, 409]);
   await assert.rejects(ask('unlock', owner, [CRED], { noBrowser: true, err: (l) => said.push(l), timeout: 200 }),
                        /no answer from the browser in time/);
-  assert.ok(said.some((l) => l.startsWith('Go to this address in your browser')));
+  assert.ok(said.some((l) => /^Go to this address in your browser.*\n  http:\/\/127\.0\.0\.1:[0-9]+\/start$/s.test(l)));
+  assert.ok(!said.some((l) => l.includes(passkey.UNLOCK_PAGE)));
   await assert.rejects(ask('unlock', 'not an owner', [], { timeout: 100 }), /not an owner name/);
+});
+
+test('the address /start is answered once, and only to the user who runs the command', async () => {
+  const owner = 'em4v3kp5btra7jlggxhvl5y6uluymzk2ezcdjg4pnptnk5tygora';
+  const said = [], statuses = [];
+  const status = async (url) => {
+    const r = await fetch(url, { redirect: 'manual' });
+    await r.text();
+    statuses.push(r.status);
+  };
+  const twice = async (url) => {
+    assert.ok((await followStart(url)).startsWith(passkey.UNLOCK_PAGE + '#mode=unlock&'));
+    await status(url);
+    return true;
+  };
+  await assert.rejects(ask('unlock', owner, [CRED], { open: twice, err: (l) => said.push(l), timeout: 3000 }), /opened twice/);
+  assert.deepEqual(statuses, [409]);
+  assert.ok(said.includes(`Warning: ${passkey.TWICE}.`));
+
+  const me = process.getuid?.() ?? 0, who = [me + 1];
+  statuses.length = 0;
+  const open = async (url) => {
+    await status(url);
+    who[0] = me;
+    const q = Object.fromEntries(new URLSearchParams((await followStart(url)).split('#')[1]));
+    const [epk, ct, tag] = await passkey.seal(new Uint8Array(32), passkey.fromB64url(q.pk), q.state, q.mode, q.owner, CRED);
+    const answer = url.replace('/start', '/callback?') + new URLSearchParams(
+      { state: q.state, epk: passkey.b64url(epk), ct: passkey.b64url(ct), tag: passkey.b64url(tag), cred: CRED });
+    who[0] = me + 1;
+    await status(answer);
+    who[0] = me;
+    await status(answer);
+    return true;
+  };
+  said.length = 0;
+  const got = await ask('unlock', owner, [CRED], { open, err: (l) => said.push(l), timeout: 3000, sameUserOnly: true,
+                                                   uidOf: () => who[0] });
+  assert.deepEqual([got.cred, [...got.secret]], [CRED, Array(32).fill(0)]);
+  assert.deepEqual(statuses, [403, 403, 200]);
+  assert.equal(said.filter((l) => l.startsWith('Warning: another user of this computer asked osheaf for ')).length, 2);
+});
+
+test('peerUid reads the owner of a connection in /proc/net/tcp', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'osheaf-tcp-'));
+  try {
+    const tcp = path.join(dir, 'tcp'), tcp6 = path.join(dir, 'tcp6');
+    writeFileSync(tcp,
+      '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n' +
+      '   0: 0100007F:D431 0100007F:0050 06 00000000:00000000 03:00000000 00000000     0        0 0\n' +
+      '   1: 0100007F:D431 0100007F:0050 01 00000000:00000000 00:00000000 00000000  1001        0 0\n' +
+      '   2: 0100007F:0050 0100007F:D431 01 00000000:00000000 00:00000000 00000000  1002        0 0\n');
+    writeFileSync(tcp6,
+      '  sl  local_address                         remote_address                        st tx_queue rx_queue ' +
+      'tr tm->when retrnsmt   uid  timeout inode\n' +
+      '   0: 0000000000000000FFFF00000100007F:D432 0000000000000000FFFF00000100007F:0050 01 00000000:00000000 ' +
+      '00:00000000 00000000  1003        0 0\n');
+    const tables = [tcp, tcp6, path.join(dir, 'missing')];
+    assert.equal(peerUid('127.0.0.1', 0xD431, 0x50, tables), 1001);
+    assert.equal(peerUid('127.0.0.1', 0x50, 0xD431, tables), 1002);
+    assert.equal(peerUid('127.0.0.1', 0xD432, 0x50, tables), 1003);
+    assert.equal(peerUid('127.0.0.1', 0xD433, 0x50, tables), null);
+    assert.equal(peerUid('127.0.0.2', 0xD431, 0x50, tables), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  if (process.platform === 'linux') {
+    const net = await import('node:net');
+    const server = net.createServer();
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const accepted = new Promise((resolve) => server.once('connection', resolve));
+    const client = net.connect(server.address().port, '127.0.0.1');
+    const socket = await accepted;
+    try {
+      assert.equal(peerUid('127.0.0.1', socket.remotePort, server.address().port), process.getuid());
+    } finally {
+      client.destroy();
+      socket.destroy();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
 });

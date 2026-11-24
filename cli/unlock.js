@@ -1,11 +1,41 @@
 // Generated from literate/36-passkeys.md by opensheaf-literate: edit the document, not this file.
 import http from 'node:http';
 import process from 'node:process';
+import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { short } from '../core/folder.js';
-import { pageUrl, confirmationCode, newKeyPair, randomState, queryFields, openAnswer, answerPage, sameSecret,
-         checkOwner, failure, answerOf, UnlockFailed, DONE, FAILED, NO_X25519, TIMEOUT, STILL } from '../core/passkey.js';
+import { pageUrl, startUrl, confirmationCode, newKeyPair, randomState, queryFields, openAnswer, answerPage, sameSecret,
+         checkOwner, failure, answerOf, UnlockFailed, DONE, FAILED, NO_X25519, TWICE, OTHER_USER, TIMEOUT,
+         STILL } from '../core/passkey.js';
 import { utf8 } from '../core/crypto.js';
+
+export const SAME_USER_ONLY = process.platform === 'linux';
+
+function hexAddresses(host) {
+  const word = host.split('.').reverse().map((x) => Number(x).toString(16).padStart(2, '0')).join('').toUpperCase();
+  return new Set([word, '0000000000000000FFFF0000' + word]);
+}
+
+export function peerUid(host, port, serverPort, tables = ['/proc/net/tcp', '/proc/net/tcp6']) {
+  const here = hexAddresses(host);
+  for (const table of tables) {
+    let lines;
+    try {
+      lines = readFileSync(table, 'latin1').split('\n').slice(1);
+    } catch {
+      continue;
+    }
+    for (const line of lines) {
+      const f = line.trim().split(/\s+/);
+      if (f.length < 8 || f[3] !== '01') continue;
+      const [local, lport] = f[1].split(':'), [remote, rport] = f[2].split(':');
+      if (here.has(local) && here.has(remote) && parseInt(lport, 16) === port && parseInt(rport, 16) === serverPort) {
+        return Number(f[7]);
+      }
+    }
+  }
+  return null;
+}
 
 export function systemBrowser(url) {
   const [cmd, args] = process.platform === 'darwin' ? ['open', [url]]
@@ -25,9 +55,10 @@ export function systemBrowser(url) {
 }
 
 export async function ask(mode, owner, creds = [], { noBrowser = false, timeout = TIMEOUT, ctrlC = 'type the passphrase instead',
-                                                   open = systemBrowser, err = (l) => process.stderr.write(l + '\n') } = {}) {
+                                                   open = systemBrowser, err = (l) => process.stderr.write(l + '\n'),
+                                                   sameUserOnly = SAME_USER_ONLY, uidOf = peerUid } = {}) {
   checkOwner(mode, owner);
-  const listener = { mode, owner, state: randomState(), pair: await newKeyPair(), result: null };
+  const listener = { mode, owner, state: randomState(), pair: await newKeyPair(), result: null, started: 0, page: null };
   let finish;
   const done = new Promise((resolve) => { finish = resolve; });
   const server = http.createServer(async (req, res) => {
@@ -38,7 +69,27 @@ export async function ask(mode, owner, creds = [], { noBrowser = false, timeout 
       res.end(page);
     };
     const url = new URL(req.url, 'http://127.0.0.1');
-    if (req.method !== 'GET' || url.pathname !== '/callback') return answer(404, 'not found');
+    if (req.method !== 'GET' || !['/start', '/callback'].includes(url.pathname)) return answer(404, 'not found');
+    if (sameUserOnly) {
+      const host = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+      if (uidOf(host, req.socket.remotePort, server.address().port) !== process.getuid()) {
+        err(`Warning: ${OTHER_USER} asked osheaf for ${url.pathname}: refused.`);
+        return answer(403, `osheaf answers only the user who runs it, not ${OTHER_USER}`);
+      }
+    }
+    if (url.pathname === '/start') {
+      listener.started += 1;
+      if (listener.started > 1) {
+        if (listener.result === null) {
+          listener.result = { abort: TWICE };
+          finish();
+        }
+        return answer(409, TWICE);
+      }
+      res.writeHead(302, { Location: listener.page, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+                           'Content-Length': '0' });
+      return res.end();
+    }
     const fields = queryFields(url.search.slice(1));
     if (!fields) {
       return answer(400, 'this is not an answer of the page (if osheaf or the page was just updated, update the other too)');
@@ -68,7 +119,8 @@ export async function ask(mode, owner, creds = [], { noBrowser = false, timeout 
       .finally(() => clearTimeout(timer));
   };
   try {
-    const url = pageUrl(mode, server.address().port, listener.state, listener.pair.publicKey, owner, creds);
+    listener.page = pageUrl(mode, server.address().port, listener.state, listener.pair.publicKey, owner, creds);
+    const url = startUrl(server.address().port);
     const what = mode === 'enroll' ? `create a passkey for ${short(owner)}` : `unlock the keys of ${short(owner)} with your passkey`;
     let opened = false;
     if (!noBrowser) {
@@ -86,7 +138,7 @@ export async function ask(mode, owner, creds = [], { noBrowser = false, timeout 
     if (opened && limit > STILL) {
       got = await wait(STILL);
       if (got === 'time') {
-        err(`Still waiting… if the browser did not open, go to:\n  ${url}`);
+        if (!listener.started) err(`Still waiting… if the browser did not open, go to:\n  ${url}`);
         limit -= STILL;
         got = null;
       }
@@ -98,7 +150,11 @@ export async function ask(mode, owner, creds = [], { noBrowser = false, timeout 
     process.off('SIGINT', listener.onSigint);
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(() => resolve()));
-    listener.pair = null;
+    listener.pair = listener.page = null;
+  }
+  if ('abort' in listener.result) {
+    err(`Warning: ${listener.result.abort}.`);
+    throw new UnlockFailed(listener.result.abort);
   }
   if ('error' in listener.result) throw failure(listener.result);
   return listener.result;

@@ -15,11 +15,15 @@ that the page cannot tell the two programs apart:
 
 1. the command makes a one-time X25519 key pair and a random `state`, and
    listens on a free port of `127.0.0.1`;
-2. it opens the page with everything in the fragment of its address
-   (never sent to a server): `mode` (`enroll` or `unlock`), `port`,
-   `state`, `pk` (its public key, base64url), `owner`, and for `unlock`
-   the credentials `cred` that may answer (for `enroll`, those to
-   exclude);
+2. it opens the browser at the listener itself,
+   `http://127.0.0.1:PORT/start`, an address that holds nothing, and
+   prints only that one; the first `GET /start` is sent on (302, with
+   `Cache-Control: no-store` and `Referrer-Policy: no-referrer`) to the
+   page, with everything in the fragment of its address (never sent to a
+   server): `mode` (`enroll` or `unlock`), `port`, `state`, `pk` (its
+   public key, base64url), `owner`, and for `unlock` the credentials
+   `cred` that may answer (for `enroll`, those to exclude); a second
+   `GET /start` stops the command with a warning;
 3. it prints a code of six digits, which the page shows too: the person
    checks that the page is talking to this command;
 4. the page makes its own one-time X25519 key pair, derives from the
@@ -30,6 +34,19 @@ that the page cannot tell the two programs apart:
 5. it calls `http://127.0.0.1:PORT/callback?state=..&epk=..&ct=..&tag=..&cred=..`
    (or `state` and `error`); the listener takes one answer, compares the
    state in constant time, checks the tag, and decrypts.
+
+Why `/start`. On a computer shared by several users, the command line of
+a program is public (on Linux, in `/proc`): the address of the page given
+to `xdg-open` or to the browser would show the state and the public key
+to everyone. The address `/start` shows nothing, and gives them once; if
+it is asked twice, someone else may have been first, and the command
+does not wait for an answer that may be theirs. The listener on
+`127.0.0.1` is open to every user of the computer, so on Linux it
+answers `/start` and `/callback` only to a connection of the user who
+runs the command, whose owner it finds in the kernel's table of TCP
+sockets (`/proc/net/tcp`, or `tcp6`); a connection it cannot find counts
+as another user's. Elsewhere, as in opensheaf-py, there is no such check,
+and the code and the authenticated hand-off protect the answer.
 
 A key-encryption key made from an answer is kept by a command only once it
 has opened a key (chapter [37](37-owner-commands.md)): an answer that
@@ -76,6 +93,10 @@ The page and its address
       const fragment = new URLSearchParams({ mode, port: String(port), state, pk: b64url(pk), owner });
       if (creds.length) fragment.set('cred', creds.join(','));
       return UNLOCK_PAGE + '#' + fragment.toString();
+    }
+
+    export function startUrl(port) {
+      return `http://127.0.0.1:${port}/start`;
     }
 
     export function randomState() {
@@ -179,6 +200,9 @@ answer is read here, and the page told what happened.
     export const FAILED = (error) => `osheaf did not get the key (${error}): it asks for the passphrase instead. You can close this tab.`;
     export const NO_X25519 = 'this browser has no X25519 in WebCrypto, and cannot hand the key to osheaf securely (known to ' +
       'work: Safari 17+, Chrome 133+, Firefox 130+); osheaf uses the passphrase';
+    export const TWICE = 'the address of osheaf was opened twice: another program may have read it, so osheaf does not ' +
+      'wait for the browser (if it was you, try again, and open the address once)';
+    export const OTHER_USER = 'another user of this computer';
     const ANSWERS = [['cred', 'ct', 'epk', 'state', 'tag'], ['error', 'state']];
 
     export function queryFields(query) {
@@ -411,20 +435,58 @@ The listener
 ------------
 
 The listener of the command line, on `node:http` (which Deno has too):
-it opens the page with `open` (the browser of the system; a test gives
-its own), says where to go if it could not, prints the code, and waits,
-two minutes by default, saying once after ten seconds where to go if the
-browser did not open. Ctrl-C gives up. The key pair is dropped as soon as
-the listener closes.
+it opens its own address `/start` with `open` (the browser of the
+system; a test gives its own), says where to go if it could not, prints
+the code, and waits, two minutes by default, saying once after ten
+seconds where to go if the browser did not open (unless a browser has
+asked for `/start` already: opening it again would stop the command).
+Ctrl-C gives up. The key pair is dropped as soon as the listener closes.
+
+On Linux (`sameUserOnly`), `peerUid` finds the owner of a connection: the
+line of `/proc/net/tcp` (or of `/proc/net/tcp6`, for a socket of IPv6
+that reaches `127.0.0.1` as `::ffff:127.0.0.1`) in the state
+"established" (`01`) whose local address is the other end of the
+connection and whose remote address is the listener; the uid is its
+eighth field. The tests give `uidOf` to play another user.
 
     // in cli/unlock.js:
     import http from 'node:http';
     import process from 'node:process';
+    import { readFileSync } from 'node:fs';
     import { spawn } from 'node:child_process';
     import { short } from '../core/folder.js';
-    import { pageUrl, confirmationCode, newKeyPair, randomState, queryFields, openAnswer, answerPage, sameSecret,
-             checkOwner, failure, answerOf, UnlockFailed, DONE, FAILED, NO_X25519, TIMEOUT, STILL } from '../core/passkey.js';
+    import { pageUrl, startUrl, confirmationCode, newKeyPair, randomState, queryFields, openAnswer, answerPage, sameSecret,
+             checkOwner, failure, answerOf, UnlockFailed, DONE, FAILED, NO_X25519, TWICE, OTHER_USER, TIMEOUT,
+             STILL } from '../core/passkey.js';
     import { utf8 } from '../core/crypto.js';
+
+    export const SAME_USER_ONLY = process.platform === 'linux';
+
+    function hexAddresses(host) {
+      const word = host.split('.').reverse().map((x) => Number(x).toString(16).padStart(2, '0')).join('').toUpperCase();
+      return new Set([word, '0000000000000000FFFF0000' + word]);
+    }
+
+    export function peerUid(host, port, serverPort, tables = ['/proc/net/tcp', '/proc/net/tcp6']) {
+      const here = hexAddresses(host);
+      for (const table of tables) {
+        let lines;
+        try {
+          lines = readFileSync(table, 'latin1').split('\n').slice(1);
+        } catch {
+          continue;
+        }
+        for (const line of lines) {
+          const f = line.trim().split(/\s+/);
+          if (f.length < 8 || f[3] !== '01') continue;
+          const [local, lport] = f[1].split(':'), [remote, rport] = f[2].split(':');
+          if (here.has(local) && here.has(remote) && parseInt(lport, 16) === port && parseInt(rport, 16) === serverPort) {
+            return Number(f[7]);
+          }
+        }
+      }
+      return null;
+    }
 
     export function systemBrowser(url) {
       const [cmd, args] = process.platform === 'darwin' ? ['open', [url]]
@@ -444,9 +506,10 @@ the listener closes.
     }
 
     export async function ask(mode, owner, creds = [], { noBrowser = false, timeout = TIMEOUT, ctrlC = 'type the passphrase instead',
-                                                       open = systemBrowser, err = (l) => process.stderr.write(l + '\n') } = {}) {
+                                                       open = systemBrowser, err = (l) => process.stderr.write(l + '\n'),
+                                                       sameUserOnly = SAME_USER_ONLY, uidOf = peerUid } = {}) {
       checkOwner(mode, owner);
-      const listener = { mode, owner, state: randomState(), pair: await newKeyPair(), result: null };
+      const listener = { mode, owner, state: randomState(), pair: await newKeyPair(), result: null, started: 0, page: null };
       let finish;
       const done = new Promise((resolve) => { finish = resolve; });
       const server = http.createServer(async (req, res) => {
@@ -457,7 +520,27 @@ the listener closes.
           res.end(page);
         };
         const url = new URL(req.url, 'http://127.0.0.1');
-        if (req.method !== 'GET' || url.pathname !== '/callback') return answer(404, 'not found');
+        if (req.method !== 'GET' || !['/start', '/callback'].includes(url.pathname)) return answer(404, 'not found');
+        if (sameUserOnly) {
+          const host = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+          if (uidOf(host, req.socket.remotePort, server.address().port) !== process.getuid()) {
+            err(`Warning: ${OTHER_USER} asked osheaf for ${url.pathname}: refused.`);
+            return answer(403, `osheaf answers only the user who runs it, not ${OTHER_USER}`);
+          }
+        }
+        if (url.pathname === '/start') {
+          listener.started += 1;
+          if (listener.started > 1) {
+            if (listener.result === null) {
+              listener.result = { abort: TWICE };
+              finish();
+            }
+            return answer(409, TWICE);
+          }
+          res.writeHead(302, { Location: listener.page, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+                               'Content-Length': '0' });
+          return res.end();
+        }
         const fields = queryFields(url.search.slice(1));
         if (!fields) {
           return answer(400, 'this is not an answer of the page (if osheaf or the page was just updated, update the other too)');
@@ -487,7 +570,8 @@ the listener closes.
           .finally(() => clearTimeout(timer));
       };
       try {
-        const url = pageUrl(mode, server.address().port, listener.state, listener.pair.publicKey, owner, creds);
+        listener.page = pageUrl(mode, server.address().port, listener.state, listener.pair.publicKey, owner, creds);
+        const url = startUrl(server.address().port);
         const what = mode === 'enroll' ? `create a passkey for ${short(owner)}` : `unlock the keys of ${short(owner)} with your passkey`;
         let opened = false;
         if (!noBrowser) {
@@ -505,7 +589,7 @@ the listener closes.
         if (opened && limit > STILL) {
           got = await wait(STILL);
           if (got === 'time') {
-            err(`Still waiting… if the browser did not open, go to:\n  ${url}`);
+            if (!listener.started) err(`Still waiting… if the browser did not open, go to:\n  ${url}`);
             limit -= STILL;
             got = null;
           }
@@ -517,7 +601,11 @@ the listener closes.
         process.off('SIGINT', listener.onSigint);
         server.closeAllConnections?.();
         await new Promise((resolve) => server.close(() => resolve()));
-        listener.pair = null;
+        listener.pair = listener.page = null;
+      }
+      if ('abort' in listener.result) {
+        err(`Warning: ${listener.result.abort}.`);
+        throw new UnlockFailed(listener.result.abort);
       }
       if ('error' in listener.result) throw failure(listener.result);
       return listener.result;

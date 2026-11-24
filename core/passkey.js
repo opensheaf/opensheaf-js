@@ -25,6 +25,10 @@ export function pageUrl(mode, port, state, pk, owner, creds = []) {
   return UNLOCK_PAGE + '#' + fragment.toString();
 }
 
+export function startUrl(port) {
+  return `http://127.0.0.1:${port}/start`;
+}
+
 export function randomState() {
   return b64url(crypto.getRandomValues(new Uint8Array(16)));
 }
@@ -99,6 +103,9 @@ export const DONE = 'osheaf has the key. You can close this tab.';
 export const FAILED = (error) => `osheaf did not get the key (${error}): it asks for the passphrase instead. You can close this tab.`;
 export const NO_X25519 = 'this browser has no X25519 in WebCrypto, and cannot hand the key to osheaf securely (known to ' +
   'work: Safari 17+, Chrome 133+, Firefox 130+); osheaf uses the passphrase';
+export const TWICE = 'the address of osheaf was opened twice: another program may have read it, so osheaf does not ' +
+  'wait for the browser (if it was you, try again, and open the address once)';
+export const OTHER_USER = 'another user of this computer';
 const ANSWERS = [['cred', 'ct', 'epk', 'state', 'tag'], ['error', 'state']];
 
 export function queryFields(query) {

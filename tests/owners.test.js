@@ -748,6 +748,29 @@ test('no version through a linked object; files written whole, with the usual pe
   }
 });
 
+test('options that would do nothing are refused', async () => {
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+    const p = await box.run([...a.r, 'owner', 'rotate', '--print', '--keys', 'command']);
+    assert.notEqual(p.status, 0);
+    assert.match(p.err, /--print/);
+    await writeFile(path.join(box.root, 'two.yaml'),
+      "- {name: A, base-url: 'https://example.org/a/', curator: 'Doe, J', new-owner: true}\n" +
+      "- {name: B, base-url: 'https://example.org/b/', curator: 'Doe, J', new-owner: true}\n");
+    const two = await box.run(['init', path.join(box.root, 'a'), '--from', path.join(box.root, 'two.yaml')]);
+    assert.notEqual(two.status, 0);
+    assert.match(two.err, /one archive/);
+    assert.ok(!existsSync(path.join(box.root, 'a')));
+    await writeFile(path.join(box.root, 'dep.yaml'), `root: ${box.root}\nid: x\ntitle: T\nauthor: Doe, J\n`);
+    const root = await box.run([...a.r, 'deposit', '--from', path.join(box.root, 'dep.yaml')]);
+    assert.notEqual(root.status, 0);
+    assert.match(root.err, /give --root on the command line/);
+  } finally {
+    await box.done();
+  }
+});
+
 test('a passphrase per place', async () => {
   const { passphrases } = await import('../cli/keystore.js');
   const typed = ['for the files', 'for the wallet'];

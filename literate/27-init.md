@@ -146,6 +146,10 @@ exists in the storage root already.
       if (args.keeper && !keeperValid(args.keeper, true)) {
         stop(`a keeper is an ORCID iD (with its check digit) or https://<domain>/: ${args.keeper}`);
       }
+      if (args.print && !args.export) {
+        stop('--print prints the sheets of the rotation keys exported with --export DIR: give ' +
+             '--export DIR with it (in a wallet, the keys are not exported, and no sheet is printed)');
+      }
       const w = await levelWallet(f, args);
       if (!w && !args.export) {
         stop('give --export DIR, a folder outside the archive where the rotation keys are written ' +

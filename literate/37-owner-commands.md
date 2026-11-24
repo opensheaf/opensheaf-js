@@ -456,6 +456,10 @@ keys exposed. Moving from a wallet to the offline level (`--keys offline
       const who = short(owner);
       const prev = log.latest();
       if (!prev) stop(`the owner ${who} has ended (section 6.3): its key log takes no new version`);
+      if (args.print && !args.export) {
+        stop('--print prints the sheets of the rotation keys exported with --export DIR: give ' +
+             '--export DIR with it (in a wallet, the keys are not exported, and no sheet is printed)');
+      }
       const w = await levelWallet(f, args, env, owner);
       if (!w && !args.export) {
         stop('give --export DIR, a folder outside the archive where the new rotation keys are written ' +

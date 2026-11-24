@@ -107,7 +107,8 @@ An entry of the file gives the options the command line left at their
 defaults. Its names are opensheaf-py's (`abstract_file`, `id` for the
 label), which the command line maps to its own; a name that is not an
 option of the command is refused, and a file's `date` is `available`, as
-on the command line. Each value is converted as the command line
+on the command line. `root` is refused: the archive is chosen before the
+file is read, so that it did nothing. Each value is converted as the command line
 converts its option (`SPECS`, the options of the command, by their
 names here), as opensheaf-py's `value_of` converts it as `argparse`
 would: a switch takes `true`, `yes`, `false` or `no` exactly (or a
@@ -127,6 +128,10 @@ refused, and anything else is text.
       const dest = (k) => rename[k] || camel(k);
       if ('date' in entry && !known.has('date') && known.has('available')) {
         entry = Object.fromEntries(Object.entries(entry).map(([k, v]) => [k === 'date' ? 'available' : k, v]));
+      }
+      if ('root' in entry) {
+        throw new UsageProblem(`${command}: root in the file: the archive is chosen before the file is read; ` +
+                               'give --root on the command line');
       }
       const unknown = Object.keys(entry).filter((k) => !known.has(dest(k)));
       if (unknown.length) throw new UsageProblem(`${command}: unknown option(s) in the file: ${unknown.sort().join(', ')}`);

@@ -1200,7 +1200,12 @@ the archive writes the website again, when the archive has one.
     // in the commands:
     const RUN = {
       async init(root, args, env) {
-        const [a] = await runsOf('init', args);
+        const todo = await runsOf('init', args);
+        if (todo.length !== 1) {
+          throw new UsageProblem(`init: ${args.fromFile} holds ${todo.length} entries: osheaf init makes one archive, ` +
+                                 'from one mapping of options');
+        }
+        const [a] = todo;
         const where = path.resolve(a.folder || '.');
         await fs.mkdir(where, { recursive: true });
         if (a.keyLog) a.keyLogSource = { storage: new DiskStorage(path.resolve(a.keyLog)), dir: '', where: a.keyLog };

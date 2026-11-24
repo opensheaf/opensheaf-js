@@ -72,6 +72,10 @@ export function merge(args, entry, defaults, command, rename = {}, specs = {}) {
   if ('date' in entry && !known.has('date') && known.has('available')) {
     entry = Object.fromEntries(Object.entries(entry).map(([k, v]) => [k === 'date' ? 'available' : k, v]));
   }
+  if ('root' in entry) {
+    throw new UsageProblem(`${command}: root in the file: the archive is chosen before the file is read; ` +
+                           'give --root on the command line');
+  }
   const unknown = Object.keys(entry).filter((k) => !known.has(dest(k)));
   if (unknown.length) throw new UsageProblem(`${command}: unknown option(s) in the file: ${unknown.sort().join(', ')}`);
   for (const [k, v] of Object.entries(entry)) {

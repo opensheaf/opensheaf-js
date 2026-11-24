@@ -726,6 +726,43 @@ test('a label that is a path is left out', async () => {
   }
 });
 
+test('content paths outside the object are not read', async () => {
+  const { createHash } = await import('node:crypto');
+  for (const where of ['absolute', 'up', 'link']) {
+    const box = await sandbox();
+    try {
+      const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+      await deposit(box, a, 'paper-a', 'one', true);
+      const id = JSON.parse(await readFile(path.join(a.dir, 'opensheaf.json'), 'utf-8')).objects
+        .find((o) => o.label === 'paper-a').id;
+      const [, name, owner] = id.split(':');
+      const d = path.join(a.dir, 'ocfl', owner, name);
+      const inv = JSON.parse(await readFile(path.join(d, 'inventory.json'), 'utf-8'));
+      const secret = path.join(box.root, 'secret.json');
+      await writeFile(secret, '{"kind": "document", "x": "outside"}');
+      const dig = Object.keys(inv.manifest).find((k) => inv.manifest[k][0].endsWith('object.json'));
+      if (where === 'link') {
+        await rm(path.join(d, inv.manifest[dig][0]));
+        await symlink('/dev/zero', path.join(d, inv.manifest[dig][0]));
+      } else {
+        inv.manifest[dig] = [where === 'absolute' ? secret : 'v1/../../../../../secret.json'];
+        const data = JSON.stringify(inv, null, 2);
+        const sc = `${createHash('sha512').update(data).digest('hex')} inventory.json\n`;
+        for (const folder of [d, path.join(d, inv.head)]) {
+          await writeFile(path.join(folder, 'inventory.json'), data);
+          await writeFile(path.join(folder, 'inventory.json.sha512'), sc);
+        }
+      }
+      const r = await box.run([...a.r, 'describe', 'paper-a', '--title', 'T']);
+      assert.equal(r.status, 1, r.said);
+      assert.match(r.err, /nothing is read from it/);
+      assert.ok((await errorsOf(box, a)).some((e) => /not read|symbolic link|cannot be read/.test(e)), where);
+    } finally {
+      await box.done();
+    }
+  }
+});
+
 test('an error of the storage is said, not thrown', async () => {
   const box = await sandbox();
   try {

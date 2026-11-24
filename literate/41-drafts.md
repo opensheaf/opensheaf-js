@@ -139,7 +139,7 @@ date `Updated`, with the address of the new line's landing page.
       const files = new Map();
       for (const [d, paths] of Object.entries(inv.versions[inv.head].state)) {
         for (const p of paths) {
-          if (p !== OBJ && p !== 'datacite.json' && !notes.has(p)) files.set(p, await f.storage.read(joinPath(dir, inv.manifest[d][0])));
+          if (p !== OBJ && p !== 'datacite.json' && !notes.has(p)) files.set(p, await f.contentFile(dir, inv.manifest[d][0]));
         }
       }
       const kept = Object.fromEntries(Object.entries(head).filter(([k]) => !['history', 'notices', 'previous'].includes(k)));

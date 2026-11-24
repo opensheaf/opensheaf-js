@@ -852,7 +852,12 @@ class Verification {
           try {
             files.push({ id, url: a.contentUrl(id, o.inv, cp), cp, digest });
           } catch {
-            this.add('error', this.where(id), `missing ${cp}`, { object: id });
+            const outside = typeof cp !== 'string' || !cp || cp.startsWith('/') || cp.includes('\\') ||
+              cp.split('/').some((p) => ['', '.', '..'].includes(p));
+            this.add('error', this.where(id), outside
+              ? `the content path ${JSON.stringify(cp).replace(/^"(.*)"$/, "'$1'")} is not a relative path inside ` +
+                'the object (section 4.1): it is not read, nor the object checked further'
+              : `missing ${cp}`, { object: id });
           }
         }
       }

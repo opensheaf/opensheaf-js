@@ -31,8 +31,8 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
     report = await verify(archive, { schemas, remote, digests, pages: false });
     if (!archive.old) {
       if (f) {
-        report.add(...await keeperFindings(f, remote, fetchJson));
-        report.add(...await presentationFindings(f, archive.disc));
+        report.add(...await guarded('the keepers', () => keeperFindings(f, remote, fetchJson)));
+        report.add(...await guarded('the presentation files', () => presentationFindings(f, archive.disc)));
       }
     }
   } catch (error) {
@@ -45,6 +45,17 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
     report.add(...await lookForKeys(storage));
   }
   return report;
+}
+
+async function guarded(what, step) {
+  try {
+    return await step();
+  } catch (error) {
+    if (error?.kind === 'aborted') throw error;
+    return [finding('error', 'archive', `the checks of ${what} stopped on a file they cannot read ` +
+                    `(${error?.constructor?.name ?? 'Error'}: ${String(error?.message ?? error).slice(0, 300)}); ` +
+                    'the rest of them are not made')];
+  }
 }
 
 async function unlistedObjects(f, archive) {

@@ -88,8 +88,8 @@ over the network, through `fetch`.
         report = await verify(archive, { schemas, remote, digests, pages: false });
         if (!archive.old) {
           if (f) {
-            report.add(...await keeperFindings(f, remote, fetchJson));
-            report.add(...await presentationFindings(f, archive.disc));
+            report.add(...await guarded('the keepers', () => keeperFindings(f, remote, fetchJson)));
+            report.add(...await guarded('the presentation files', () => presentationFindings(f, archive.disc)));
           }
         }
       } catch (error) {
@@ -110,6 +110,25 @@ are not made. Its storage root is walked, as opensheaf-py walks it, for
 the objects the discovery document does not list (drafts included), which
 the verification then checks with the others (section 14.1:
 completeness).
+
+The checks made through the archive folder run guarded, as opensheaf-py
+runs each step of its verifier (`guarded`): a file they cannot read (a
+content path that is not read, a file that is not JSON) becomes an
+error, and the verification goes on.
+
+    // in verifying a folder:
+    async function guarded(what, step) {
+      try {
+        return await step();
+      } catch (error) {
+        if (error?.kind === 'aborted') throw error;
+        return [finding('error', 'archive', `the checks of ${what} stopped on a file they cannot read ` +
+                        `(${error?.constructor?.name ?? 'Error'}: ${String(error?.message ?? error).slice(0, 300)}); ` +
+                        'the rest of them are not made')];
+      }
+    }
+
+The objects the discovery document does not list:
 
     // in verifying a folder:
     async function unlistedObjects(f, archive) {

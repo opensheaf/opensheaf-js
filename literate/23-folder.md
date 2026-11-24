@@ -52,7 +52,8 @@ that the two say the same.
 
 A command that stops throws `Stop`; the command line prints its message
 on the standard error and exits with the status 1, as Python's
-`sys.exit(message)` does.
+`sys.exit(message)` does. `UnsafePath` is the `Stop` of a content path
+that is not read (below).
 
     // in how the commands speak:
     export class Stop extends Error {}
@@ -64,6 +65,8 @@ on the standard error and exits with the status 1, as Python's
       if (m && !LOWER_NAMES.includes(m[1])) text = text[0].toUpperCase() + text.slice(1);
       return /[.?!:…]$/.test(text) ? text : text + '.';
     }
+
+    export class UnsafePath extends Stop {}
 
     export function stop(text) {
       throw new Stop(sentence(text));
@@ -372,7 +375,38 @@ the version and the manifest (chapter [13](13-versions.md)).
 
       async readLogical(dir, inv, logical, version = null) {
         const cp = this.contentPath(inv, version || inv.head, logical);
-        return cp ? this.storage.read(joinPath(dir, cp)) : null;
+        return cp ? this.contentFile(dir, cp) : null;
+      }
+
+A content path of an inventory is read only if it is relative, in the
+segments of section 4.1, through no symbolic link, and of a regular file,
+as opensheaf-py's `content_problem` and `content_file` decide: an
+inventory naming `/home/me/secret` or `v1/../../../x`, or a content file
+that is a link to `/dev/zero`, stops the command with a message
+(`UnsafePath`), instead of reading outside the object.
+
+    // in the archive folder:
+      async contentProblem(dir, cp) {
+        if (typeof cp !== 'string' || !cp) return `${pyRepr(cp)} is not a content path`;
+        const parts = cp.split('/');
+        if (cp.startsWith('/') || cp.includes('\\') || parts.some((p) => ['', '.', '..'].includes(p)) ||
+            /[\u0000-\u001f\u007f]/.test(cp)) {
+          return `the content path ${pyRepr(cp)} is not a relative path inside the object (section 4.1)`;
+        }
+        let at = dir;
+        for (const p of parts) {
+          at = joinPath(at, p);
+          if ((await this.storage.kind(at)) === 'link') return `the content path ${cp} passes through a symbolic link`;
+        }
+        const kind = await this.storage.kind(at);
+        if (kind && kind !== 'file') return `the content path ${cp} is not a regular file`;
+        return null;
+      }
+
+      async contentFile(dir, cp) {
+        const problem = await this.contentProblem(dir, cp);
+        if (problem) throw new UnsafePath(`${dir}: ${problem}: nothing is read from it (repair the inventory, from a copy of the object)`);
+        return this.storage.read(joinPath(dir, cp));
       }
 
       async readObjectJson(dir, inv, logical, version = null) {

@@ -323,7 +323,10 @@ An owner whose keys are kept in the GitHub double: `init --keys` puts its
 three rotation keys and its current key there, and names the wallet in
 `osheaf.json`; `key list` shows them without a secret; a current key
 forgotten here is pulled back, and one lacking when a deposit signs is
-pulled by the deposit; `owner rotate` opens the rotation keys from the
+pulled by the deposit; `key push` asks before putting keys into a wallet
+only `osheaf.json` names (`--yes` for scripts), and not when the user's
+own configuration names it, as in opensheaf-py's
+`test_a_hinted_wallet_is_confirmed`; `owner rotate` opens the rotation keys from the
 wallet; moving up to the offline level says what to remove, and `key
 forget --from-wallet --used` removes it.
 
@@ -349,7 +352,16 @@ forget --from-wallet --used` removes it.
         await box.ok([...a.r, 'key', 'forget', did, '--yes']);
         await deposit(box, a, 'paper', 'one', true);
         assert.match((await box.ok([...a.r, 'owner', 'show', '--offline'])).out, /\(on this computer\)/);
+        box.inputs.push('no');
+        const asked = await box.run([...a.r, 'key', 'push']);
+        assert.equal(asked.status, 1);
+        assert.match(asked.err, /named by osheaf\.json of this archive/);
+        assert.match(asked.err, /not confirmed: nothing was put into github:me\/keys/i);
+        assert.match((await box.ok([...a.r, 'key', 'push', '--yes'])).out, /already in github:me\/keys/);
+        mkdirSync(path.join(box.root, 'config', 'opensheaf'), { recursive: true });
+        writeFileSync(path.join(box.root, 'config', 'opensheaf', 'config.json'), JSON.stringify({ wallets: ['github:me/keys'] }));
         assert.match((await box.ok([...a.r, 'key', 'push'])).out, /already in github:me\/keys/);
+        writeFileSync(path.join(box.root, 'config', 'opensheaf', 'config.json'), '{}');
         const moved = await box.ok([...a.r, 'owner', 'rotate', '--keys', 'offline', '--export', path.join(box.root, 'k2'),
                                     '--no-passphrase', '--yes']);
         assert.match(moved.err, /Reading the 2 rotation keys of v1 .* from github:me\/keys/);

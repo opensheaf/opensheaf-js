@@ -57,7 +57,7 @@ The module is `core/owner.js`.
     import { keeperLink, keeperOf, successorClaim, NOT_CHECKED } from './keepers.js';
     import { WalletError, parseWallet, configuredWallet, archiveRepositories, putKey, getKey, readAny,
              addPasskey as addPasskeyToWallet, listing, locks, describeEntry, risk, CommandWallet, OFFLINE,
-             hints, candidateWallets, userWallets, ownersHeld, WALLET } from './wallets.js';
+             hints, candidateWallets, userWallets, ownersHeld, WALLET, hintedOnly } from './wallets.js';
     import { UnlockFailed } from './passkey.js';
     import { writeDiscovery } from './discovery.js';
     import { exportAndConfirm, keyLabel, rotationLine, ownerInit, SINGLE_ROTATION_RISK } from './init.js';
@@ -227,8 +227,19 @@ a command about no owner yet, takes the first wallet configured.
       }
     }
 
-    async function walletFor(f, args, env, owner = null) {
-      const w = (await levelWallet(f, args, env, owner)) || (await configured(f, env, owner));
+    async function walletFor(f, args, env, owner = null, { putting = false } = {}) {
+      let w = await levelWallet(f, args, env, owner);
+      if (!w) {
+        w = await configured(f, env, owner);
+        if (w && putting && hintedOnly(f?.archive.keys, env, owner, w.name)) {
+          env.err(`The key wallet ${w.name} is named by ${CONFIG_NAME} of this archive, which whoever can change ` +
+                  'the archive writes, and not by your own configuration: the keys would be put there.');
+          if (!(await confirmed(env, 'put', args))) {
+            stop(`not confirmed: nothing was put into ${w.name} (give --wallet, or add the wallet to ` +
+                 `${env.wallets.userConfigPath()})`);
+          }
+        }
+      }
       if (!w) {
         stop('no key wallet: give --wallet github:OWNER/REPO (or command), or configure one in ' +
              `${env.wallets.userConfigPath()}, or in osheaf.json for the owner ("keys": {"<owner>": {"wallets": [...]}}), ` +
@@ -676,7 +687,7 @@ what the wallet holds, without a secret.
       const who = short(owner);
       const latest = log.latest();
       if (!latest) stop(`the owner ${who} has ended (section 6.3)`);
-      const w = await walletFor(f, args, env, owner);
+      const w = await walletFor(f, args, env, owner, { putting: true });
       const dids = args.did?.length ? [...args.did] : [...latest.keys.keys];
       const here = await currentHere(f, owner, dids);
       if (!here.length) stop(`this computer holds none of the keys ${dids.map(short).join(', ')} of ${who}`);

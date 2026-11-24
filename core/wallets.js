@@ -90,10 +90,14 @@ export function candidateWallets(config, env, owner = null) {
   checkArchiveConfig(config, env);
   const given = (env.wallets.walletEnv() || '').trim();
   if (given) return [[given, WALLET]];
-  const out = hints(config, owner).map((w) => [w, CONFIG_FILE]);
+  const out = userWallets(env).map((w) => [w, env.wallets.userConfigPath()]);
   const seen = new Set(out.map(([w]) => w));
-  for (const w of userWallets(env)) if (!seen.has(w)) out.push([w, env.wallets.userConfigPath()]);
+  for (const w of hints(config, owner)) if (!seen.has(w)) out.push([w, CONFIG_FILE]);
   return out;
+}
+
+export function hintedOnly(config, env, owner, name) {
+  return new Map(candidateWallets(config, env, owner)).get(name) === CONFIG_FILE;
 }
 
 export async function configuredWallet(config, env, { forbidden = [], owner = null } = {}) {

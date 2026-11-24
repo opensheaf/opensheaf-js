@@ -122,10 +122,14 @@ archive itself, which is public, and never a wallet.
     }
 
 The wallets of an owner, in the order they are tried (opensheaf-py's
-`candidates`): that of `OPENSHEAF_WALLET` alone; or else those
-`osheaf.json` hints for the owner (its entry's `wallets`), then the
-user's (`wallets` of the file, then the wallet of its `keys`, where a
-command wallet is configured), each once. A command wallet anywhere in
+`candidates`): that of `OPENSHEAF_WALLET` alone; or else the user's
+(`wallets` of the file, then the wallet of its `keys`, where a command
+wallet is configured), then those `osheaf.json` hints for the owner (its
+entry's `wallets`), each once. The user's come first: `osheaf.json` is the
+archive's, written by whoever can change the archive, and a hint of it
+must not decide where the owner's keys go. `hintedOnly` tells a wallet
+that is a candidate only because `osheaf.json` names it, which `key push`
+confirms before putting keys into it. A command wallet anywhere in
 `osheaf.json` is refused, and so is one wallet for the whole archive,
 `"keys": {"wallet": ...}`, a form of the draft no longer read, with a
 message saying how to write it.
@@ -179,10 +183,14 @@ message saying how to write it.
       checkArchiveConfig(config, env);
       const given = (env.wallets.walletEnv() || '').trim();
       if (given) return [[given, WALLET]];
-      const out = hints(config, owner).map((w) => [w, CONFIG_FILE]);
+      const out = userWallets(env).map((w) => [w, env.wallets.userConfigPath()]);
       const seen = new Set(out.map(([w]) => w));
-      for (const w of userWallets(env)) if (!seen.has(w)) out.push([w, env.wallets.userConfigPath()]);
+      for (const w of hints(config, owner)) if (!seen.has(w)) out.push([w, CONFIG_FILE]);
       return out;
+    }
+
+    export function hintedOnly(config, env, owner, name) {
+      return new Map(candidateWallets(config, env, owner)).get(name) === CONFIG_FILE;
     }
 
 The wallet of an owner is then the first candidate that holds keys of

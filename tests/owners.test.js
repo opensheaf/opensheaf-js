@@ -264,7 +264,16 @@ test('an owner in a GitHub wallet', async () => {
     await box.ok([...a.r, 'key', 'forget', did, '--yes']);
     await deposit(box, a, 'paper', 'one', true);
     assert.match((await box.ok([...a.r, 'owner', 'show', '--offline'])).out, /\(on this computer\)/);
+    box.inputs.push('no');
+    const asked = await box.run([...a.r, 'key', 'push']);
+    assert.equal(asked.status, 1);
+    assert.match(asked.err, /named by osheaf\.json of this archive/);
+    assert.match(asked.err, /not confirmed: nothing was put into github:me\/keys/i);
+    assert.match((await box.ok([...a.r, 'key', 'push', '--yes'])).out, /already in github:me\/keys/);
+    mkdirSync(path.join(box.root, 'config', 'opensheaf'), { recursive: true });
+    writeFileSync(path.join(box.root, 'config', 'opensheaf', 'config.json'), JSON.stringify({ wallets: ['github:me/keys'] }));
     assert.match((await box.ok([...a.r, 'key', 'push'])).out, /already in github:me\/keys/);
+    writeFileSync(path.join(box.root, 'config', 'opensheaf', 'config.json'), '{}');
     const moved = await box.ok([...a.r, 'owner', 'rotate', '--keys', 'offline', '--export', path.join(box.root, 'k2'),
                                 '--no-passphrase', '--yes']);
     assert.match(moved.err, /Reading the 2 rotation keys of v1 .* from github:me\/keys/);

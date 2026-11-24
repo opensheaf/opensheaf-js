@@ -208,7 +208,7 @@ export const COMMANDS = {
     actions: {
       new: { help: 'a new current key for this device; prints its did:key', positionals: [], options: { '--owner': value('owner') } },
       push: { help: 'put the current keys of this device into the key wallet', positionals: ['did*'],
-              options: { '--plain-current': flag('plainCurrent'), ...WALLET } },
+              options: { '--plain-current': flag('plainCurrent'), '--yes': flag('yes'), ...WALLET } },
       pull: { help: "keep on this device the owner's current keys that the wallet holds", positionals: [], options: WALLET },
       list: { help: 'what the key wallet holds, as a table: owner, kind, key, version, locks (no secrets)', positionals: [],
               options: WALLET },

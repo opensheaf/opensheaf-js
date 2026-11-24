@@ -1,5 +1,6 @@
 // Generated from literate/32-keepers.md by opensheaf-literate: edit the document, not this file.
 import { readGenesis, OWNER_NAME } from './names.js';
+import { parseJson } from './http.js';
 
 export const KEEPER_FORMAT = 'opensheaf-keeper/0.2';
 export const CONFIRMED = 'confirmed', CLAIMED = 'claimed only', ABSENT = 'absent', NOT_CHECKED = 'not checked';
@@ -23,7 +24,7 @@ export function fetchJsonWith(fetch = globalThis.fetch?.bind(globalThis)) {
     const data = new Uint8Array(await response.arrayBuffer());
     if (data.length > 1 << 20) throw new KeeperUnreachable(`${url}: more than 1 MB`);
     try {
-      return JSON.parse(new TextDecoder().decode(data));
+      return parseJson(data, url);
     } catch {
       throw new KeeperUnreachable(`${url}: not JSON`);
     }

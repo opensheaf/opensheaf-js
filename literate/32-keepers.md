@@ -21,6 +21,7 @@ URL, `fetchJson`, which the tests replace.
 
     // in core/keepers.js:
     import { readGenesis, OWNER_NAME } from './names.js';
+    import { parseJson } from './http.js';
 
     export const KEEPER_FORMAT = 'opensheaf-keeper/0.2';
     export const CONFIRMED = 'confirmed', CLAIMED = 'claimed only', ABSENT = 'absent', NOT_CHECKED = 'not checked';
@@ -56,7 +57,7 @@ server, an answer of more than 1 MB, or one that is not JSON.
         const data = new Uint8Array(await response.arrayBuffer());
         if (data.length > 1 << 20) throw new KeeperUnreachable(`${url}: more than 1 MB`);
         try {
-          return JSON.parse(new TextDecoder().decode(data));
+          return parseJson(data, url);
         } catch {
           throw new KeeperUnreachable(`${url}: not JSON`);
         }

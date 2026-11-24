@@ -810,6 +810,32 @@ keeps it.
       assert.match(new TextDecoder().decode(await storage.read('sitemap.xml')), /<lastmod>/);
     });
 
+JSON from another archive is read nested at most 64 levels deep, as in
+opensheaf-py's `test_json_nested_too_deeply`: a member whose archive
+answers a discovery document nested deeper is shown from its cached
+citation.
+
+    // in tests of collections and the website:
+    test('JSON nested too deeply', async () => {
+      const { parseJson } = await import('../core/http.js');
+      assert.deepEqual(parseJson(utf8('['.repeat(64) + ']'.repeat(64))).length, 1);
+      for (const text of ['['.repeat(65) + ']'.repeat(65), '['.repeat(400000) + ']'.repeat(400000), '{"a":'.repeat(65) + '1' + '}'.repeat(65)]) {
+        assert.throws(() => parseJson(utf8(text)), /nested/);
+      }
+      const { storage, f, env } = await newArchive();
+      env.fetch = async () => new Response('['.repeat(400000) + ']'.repeat(400000));
+      await collections.newCollection(f, { label: 'list', type: 'catalogue', title: 'List' });
+      const m = { kind: 'document', name: 'a'.repeat(52), owner: 'b'.repeat(52), at: ['https://example.org/deep/'],
+                  version: 'v1', inventorySha512: 'c'.repeat(128), cite: { title: 'Cached' } };
+      const mem = (await head(f, 'list', 'members.json')).json;
+      await collections.write(f, f.labels.get('list'), { ...mem, members: [m] }, { message: 'by hand' });
+      f.index.html.featured = 'list';
+      await readableIndex(f);
+      const home = new TextDecoder().decode(await storage.read('index.html'));
+      assert.match(home, /Cached/);
+      assert.match(home, /archive unavailable: cached citation/);
+    });
+
 An archive whose home page is a TeXmacs index has its landing pages
 written after a change (`present`, which the command line calls), and by
 `osheaf index`, as opensheaf-py writes

@@ -2,7 +2,7 @@
 import { readGenesis, objectId, parseId, SheafUri } from './names.js';
 import { historyOf, currentVersion, dateOf, pdfOf, memberPins, withdrawnVersions } from './versions.js';
 import { CONTESTED, SIGNED, VOUCHED } from './signatures.js';
-import { Http } from './http.js';
+import { Http, parseJson } from './http.js';
 import { pathOf } from './paths.js';
 import { sha512hex } from './write.js';
 import { compareText, joinPath } from './storage.js';
@@ -771,7 +771,7 @@ async function remoteSource(site, at) {
       };
       const raw = await get('opensheaf.json');
       if (raw === null) throw new Error('no discovery document');
-      const disc = JSON.parse(new TextDecoder().decode(raw));
+      const disc = parseJson(raw, url + 'opensheaf.json');
       if (disc === null || typeof disc !== 'object' || disc.specification !== '0.2') throw new Error('not 0.2');
       if (Object.hasOwn(disc, 'objectPages')) disc.objects = await listedObjects(disc, get);
       const root = disc.storageRoot ?? 'ocfl/';
@@ -797,13 +797,13 @@ async function remoteView(site, m) {
       const name = src.disc.name;
       const view = { archive: typeof name === 'string' && name ? name : at, at: src.at || at };
       if ((await sha512hex(data)) !== pin) return { ...view, mismatch: true };
-      const inv = JSON.parse(new TextDecoder().decode(data));
+      const inv = parseJson(data);
       const read = async (ver, logical, from = inv) => {
         const dig = Object.entries(from.versions[ver].state).find(([, ps]) => ps.includes(logical))?.[0] ?? null;
         const cp = dig ? from.manifest[dig][0] : null;
         const raw = cp && safePath(cp) ? await src.get(`${path}/${cp}`) : null;
         if (raw !== null && (await sha512hex(raw)) !== dig) throw new Error(`${cp}: not the file its inventory names`);
-        return raw ? JSON.parse(new TextDecoder().decode(raw)) : null;
+        return raw ? parseJson(raw) : null;
       };
       let shown;
       if (m.revisions) {
@@ -828,7 +828,7 @@ async function remoteView(site, m) {
       if (cp && safePath(cp) && src.at) view.pdf = `${src.at}${path}/${cp}`;
       const entry = (src.disc.objects || []).find((o) => o && typeof o === 'object' && o.id === id) || {};
       if (entry.status === 'withdrawn') {
-        const rootInv = JSON.parse(new TextDecoder().decode((await src.get(`${path}/inventory.json`)) || new TextEncoder().encode('{}')));
+        const rootInv = parseJson((await src.get(`${path}/inventory.json`)) || new TextEncoder().encode('{}'));
         const state = rootInv.versions ? await read(rootInv.head ?? pinVer, OBJ, rootInv) : null;
         view.state = state?.status === 'withdrawn' ? state : { status: 'withdrawn' };
       }

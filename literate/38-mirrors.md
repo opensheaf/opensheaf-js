@@ -19,7 +19,7 @@ storage root, every file checked, and the open licences. The module is
 `core/mirror.js`.
 
     // in core/mirror.js:
-    import { Http, FetchError, sha512 } from './http.js';
+    import { Http, FetchError, sha512, parseJson } from './http.js';
     import { Resolver, Copy } from './resolve.js';
     import { versionProblem } from './archive.js';
     import { parseSheaf, objectId, LABEL } from './names.js';
@@ -192,7 +192,7 @@ unavailable too.
       if (root === null) throw new Unavailable(`${where}: no object ${id}`);
       let head;
       try {
-        head = Number(JSON.parse(new TextDecoder().decode(root)).head.slice(1));
+        head = Number(parseJson(root).head.slice(1));
         if (!Number.isInteger(head)) throw new Error();
       } catch {
         throw new Unavailable(`${where}: the inventory of ${id} cannot be read`);
@@ -214,7 +214,7 @@ unavailable too.
         }
         let bad;
         try {
-          const invN = JSON.parse(new TextDecoder().decode(data));
+          const invN = parseJson(data);
           earlier.push(invN);
           bad = Object.values(invN.manifest).flat().filter((cp) => !contentPathOk(cp, invN, n));
         } catch {

@@ -45,7 +45,7 @@ The tests are written with `node:test` and `node:assert`, which both
     import { esc, fmtDate, pyJson, namesJoined, readableIndex, present, safeUrl, link } from '../core/website.js';
     import { keeperLink, successorClaim, CONFIRMED, CLAIMED, NOT_CHECKED, KeeperUnreachable } from '../core/keepers.js';
     import { loadEntries, merge, normalise } from '../core/inputs.js';
-    import { mirror } from '../core/mirror.js';
+    import { mirror, fetchObject, Unavailable } from '../core/mirror.js';
     import { branch } from '../core/branch.js';
     import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
     import { takedown } from '../core/takedown.js';
@@ -1281,6 +1281,44 @@ they do not have the digest the inventory states.
       r = fresh();
       res = await r.latest(name, owner, ['https://example.org/swapped/']);
       await assert.rejects(r.describe(res), (e) => e.kind === 'digest' && /does not have the digest/.test(e.message));
+    });
+
+An unsigned head cannot restate a signed version, as opensheaf-py's
+`test_an_unsigned_head_cannot_restate_a_signed_version`: a forged v2 whose
+inventory gives v1 another PDF makes the copy no copy of the line for a
+resolver, is not fetched, and is an error of the verifier.
+
+    // in tests of keepers and of options read from files:
+    test('an unsigned head cannot restate a signed version (section 14.2)', async () => {
+      const { storage, f } = await newArchive();
+      await deposit(f, paper('paper'));
+      const id = f.labels.get('paper'), [, name, owner] = id.split(':');
+      const d = await f.dirOf(id);
+      const forged = await readJson(storage, `${d}/v1/inventory.json`);
+      const state = forged.versions.v1.state;
+      const pdf = Object.keys(state).find((dg) => state[dg][0].endsWith('.pdf'));
+      const other = utf8('%PDF-1.4 forged');
+      const od = await sha512hex(other);
+      state[od] = state[pdf];
+      delete state[pdf];
+      forged.manifest[od] = ['v2/content/forged.pdf'];
+      forged.versions.v2 = { ...forged.versions.v1, message: 'forged' };
+      forged.head = 'v2';
+      await storage.write(`${d}/v2/content/forged.pdf`, other);
+      const data = utf8(JSON.stringify(forged));
+      for (const p of [`${d}/v2/inventory.json`, `${d}/inventory.json`]) {
+        await storage.write(p, data);
+        await storage.write(`${p}.sha512`, await sidecar(data));
+      }
+      const base = 'https://example.org/papers/';
+      const r = new Resolver(new Http({ fetch: storageFetch(storage, base), budget: null }));
+      assert.equal((await r.latest(name, owner, [base])).status, 'unavailable');
+      assert.ok(r.notes.some((n) => n.message.includes('not a copy of the line: v1: its inventory does not record the versions')),
+                JSON.stringify(r.notes));
+      const archive = await Archive.open(new Http({ fetch: storageFetch(storage, base), budget: null }), base);
+      await assert.rejects(fetchObject(new MemoryStorage(), archive, id, 'copy'),
+                           (e) => e instanceof Unavailable && /v1: its inventory does not record the versions/.test(e.message));
+      assert.ok((await errorsOf(storage)).some((e) => e.includes('the inventory copy disagrees with the inventory')));
     });
 
 An archive of many objects lists them in pages (section 3.1), as

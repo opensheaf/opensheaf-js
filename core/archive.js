@@ -379,13 +379,16 @@ export class Archive {
     const inv = await this.headInventory(id, options);
     const names = versionsOf(inv);
     const objs = await this.objectsOf(id, inv, options);
-    const versions = await Promise.all(names.map(async (ver) => {
+    const copies = [];
+    const versions = await Promise.all(names.map(async (ver, k) => {
       const bytes = await this.inventoryBytes(id, ver, options).catch((error) => {
         if (error.kind === 'aborted') throw error;
         return null;
       });
+      copies[k] = bytes;
       return { ver, digest: bytes ? await sha512(bytes) : '', obj: objs.get(ver) ?? null };
     }));
+    const inventoriesProblem = inventoriesProblemOf(inv, names, copies);
     const owner = objs.get(names[0])?.owner;
     if (log === undefined) {
       log = typeof owner === 'string' ? await this.keyLog(owner, options).catch((error) => {
@@ -436,6 +439,44 @@ export class Archive {
       ({ judgements, statuses } = await lineStatusesOf(id, owner, withWitnesses, log));
     }
     const n = latestSigned(statuses);
-    return { id, inv, versions, objs, owner, log, judgements, statuses, unnamed, listed, latest: n ? `v${n}` : null };
+    return { id, inv, versions, objs, owner, log, judgements, statuses, unnamed, listed, latest: n ? `v${n}` : null,
+             inventoriesProblem };
   }
+}
+
+
+export function jsonEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) return a.length === b.length && a.every((x, k) => jsonEqual(x, b[k]));
+  const ka = Object.keys(a), kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k) => Object.hasOwn(b, k) && jsonEqual(a[k], b[k]));
+}
+
+export function versionProblem(inv, n, copy) {
+  const upto = Array.from({ length: n }, (_, k) => `v${k + 1}`);
+  if (!isObject(copy) || copy.head !== `v${n}`) return 'its inventory is not one of that version';
+  const held = copy.versions, stated = inv?.versions;
+  if (!isObject(held) || !isObject(stated) || Object.keys(held).sort().join() !== [...upto].sort().join() ||
+      upto.some((v) => !jsonEqual(held[v], stated[v]))) {
+    return 'its inventory does not record the versions up to it as the head inventory does';
+  }
+  return null;
+}
+
+function inventoriesProblemOf(inv, names, copies) {
+  const head = Number(String(inv.head).slice(1));
+  for (let n = 1; n < head; n++) {
+    if (names[n - 1] !== `v${n}` || !copies[n - 1]) return `v${n} has no inventory (section 4.1)`;
+    let copy = null;
+    try {
+      copy = JSON.parse(new TextDecoder().decode(copies[n - 1]));
+    } catch {
+      copy = null;
+    }
+    const problem = versionProblem(inv, n, copy);
+    if (problem) return `v${n}: ${problem} (section 14.2)`;
+  }
+  return null;
 }

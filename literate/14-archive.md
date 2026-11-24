@@ -575,8 +575,10 @@ it could not name, and also calls unchecked).
 The answer is kept for the session: `inv`, the inventory of the head
 version (the copy in its folder, not the root inventory); `versions`,
 for each object version, its digest and `object.json`; `log`, `statuses`,
-`judgements`; `latest`, the latest signed version (`vN` or `null`); and
-`unnamed` when the signature files could not be named.
+`judgements`; `latest`, the latest signed version (`vN` or `null`);
+`unnamed` when the signature files could not be named; and
+`inventoriesProblem`, why the inventories of the version folders are not
+those of the head as of each version, or `null` (below).
 
     // in core/archive.js:
       line(id, options = {}) {
@@ -595,13 +597,16 @@ for each object version, its digest and `object.json`; `log`, `statuses`,
         const inv = await this.headInventory(id, options);
         const names = versionsOf(inv);
         const objs = await this.objectsOf(id, inv, options);
-        const versions = await Promise.all(names.map(async (ver) => {
+        const copies = [];
+        const versions = await Promise.all(names.map(async (ver, k) => {
           const bytes = await this.inventoryBytes(id, ver, options).catch((error) => {
             if (error.kind === 'aborted') throw error;
             return null;
           });
+          copies[k] = bytes;
           return { ver, digest: bytes ? await sha512(bytes) : '', obj: objs.get(ver) ?? null };
         }));
+        const inventoriesProblem = inventoriesProblemOf(inv, names, copies);
         const owner = objs.get(names[0])?.owner;
         if (log === undefined) {
           log = typeof owner === 'string' ? await this.keyLog(owner, options).catch((error) => {
@@ -652,6 +657,60 @@ for each object version, its digest and `object.json`; `log`, `statuses`,
           ({ judgements, statuses } = await lineStatusesOf(id, owner, withWitnesses, log));
         }
         const n = latestSigned(statuses);
-        return { id, inv, versions, objs, owner, log, judgements, statuses, unnamed, listed, latest: n ? `v${n}` : null };
+        return { id, inv, versions, objs, owner, log, judgements, statuses, unnamed, listed, latest: n ? `v${n}` : null,
+                 inventoriesProblem };
       }
+    }
+
+A copy's versions are read through its head inventory, and a signature
+fixes only the inventory of the version it signs: an unsigned head could
+restate the state of an earlier signed version, and readers would take
+that version's files from it. So an earlier version is read only when
+the inventory in its own folder agrees with the head's (sections 4.1 and
+14.2; OCFL 1.1, 3.7), as opensheaf-py's `version_problem` and
+`inventories_problem` require: the inventory held in `vN` has the head
+`vN`, records exactly the versions `v1` to `vN`, each equal as JSON to
+the head inventory's. (The root inventory is not compared here: the
+versions are read through the copy in the head version's folder, as
+opensheaf-py reads a copy it fetches, whose root inventory is that copy;
+the verifier reports a root inventory of its own.) A resolver takes a copy that fails this for no
+copy of the line (chapter [15](15-resolve.md)), and a mirror does not
+copy it (chapter [38](38-mirrors.md)).
+
+    // in core/archive.js:
+
+    export function jsonEqual(a, b) {
+      if (a === b) return true;
+      if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+      if (Array.isArray(a) !== Array.isArray(b)) return false;
+      if (Array.isArray(a)) return a.length === b.length && a.every((x, k) => jsonEqual(x, b[k]));
+      const ka = Object.keys(a), kb = Object.keys(b);
+      return ka.length === kb.length && ka.every((k) => Object.hasOwn(b, k) && jsonEqual(a[k], b[k]));
+    }
+
+    export function versionProblem(inv, n, copy) {
+      const upto = Array.from({ length: n }, (_, k) => `v${k + 1}`);
+      if (!isObject(copy) || copy.head !== `v${n}`) return 'its inventory is not one of that version';
+      const held = copy.versions, stated = inv?.versions;
+      if (!isObject(held) || !isObject(stated) || Object.keys(held).sort().join() !== [...upto].sort().join() ||
+          upto.some((v) => !jsonEqual(held[v], stated[v]))) {
+        return 'its inventory does not record the versions up to it as the head inventory does';
+      }
+      return null;
+    }
+
+    function inventoriesProblemOf(inv, names, copies) {
+      const head = Number(String(inv.head).slice(1));
+      for (let n = 1; n < head; n++) {
+        if (names[n - 1] !== `v${n}` || !copies[n - 1]) return `v${n} has no inventory (section 4.1)`;
+        let copy = null;
+        try {
+          copy = JSON.parse(new TextDecoder().decode(copies[n - 1]));
+        } catch {
+          copy = null;
+        }
+        const problem = versionProblem(inv, n, copy);
+        if (problem) return `v${n}: ${problem} (section 14.2)`;
+      }
+      return null;
     }

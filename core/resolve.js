@@ -297,6 +297,7 @@ export class Resolver {
 
   async identityProblem(archive, id, line, options) {
     if (line.inv.id !== id) return 'its inventory names another object';
+    if (line.inventoriesProblem) return line.inventoriesProblem;
     const [, name, owner] = id.split(':');
     let genesis = null;
     try {

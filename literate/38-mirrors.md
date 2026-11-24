@@ -21,6 +21,7 @@ storage root, every file checked, and the open licences. The module is
     // in core/mirror.js:
     import { Http, FetchError, sha512 } from './http.js';
     import { Resolver, Copy } from './resolve.js';
+    import { versionProblem } from './archive.js';
     import { parseSheaf, objectId, LABEL } from './names.js';
     import { sidecarDigest } from './owners.js';
     import { fileName, WITNESSES, lineStatusesOf, latestSigned, INVALID } from './signatures.js';
@@ -144,7 +145,9 @@ the inventory of each version it verified, as opensheaf-py's
 `fetch_object` takes it: an inventory fetched with other bytes (the copy
 changed between the two readings, or another server answered) makes the
 copy unavailable, never a copy of versions that were not the ones
-verified.
+verified. An earlier version whose own inventory disagrees with the last
+one copied (`versionProblem`, chapter [14](14-archive.md)) makes it
+unavailable too.
 
     // in mirrors: copying an object from another archive:
     export const MAX_BYTES = 2 ** 30, MAX_FETCH_BYTES = 4 * 2 ** 30, MAX_FETCH_FILES = 20000;
@@ -197,6 +200,7 @@ verified.
       upto = Math.min(upto || head, head);
       await writeText(storage, joinPath(dest, '0=ocfl_object_1.1'), 'ocfl_object_1.1\n');
       let last = null;
+      const earlier = [];
       for (let n = 1; n <= upto; n++) {
         const data = await get(archive.inventoryUrl(id, `v${n}`));
         if (data === null) throw new Unavailable(`${where}: ${id} v${n} has no inventory (section 4.1)`);
@@ -211,6 +215,7 @@ verified.
         let bad;
         try {
           const invN = JSON.parse(new TextDecoder().decode(data));
+          earlier.push(invN);
           bad = Object.values(invN.manifest).flat().filter((cp) => !contentPathOk(cp, invN, n));
         } catch {
           throw new Unavailable(`${where}: the inventory of ${id} v${n} cannot be read`);
@@ -222,6 +227,10 @@ verified.
       }
       const inv = JSON.parse(new TextDecoder().decode(last[0]));
       if (inv.id !== id || inv.head !== `v${upto}`) throw new Unavailable(`${where}: the inventory of ${id} v${upto} is not one of that version`);
+      for (const [k, invN] of earlier.slice(0, -1).entries()) {
+        const problem = versionProblem(inv, k + 1, invN);
+        if (problem) throw new Unavailable(`${where}: ${id} v${k + 1}: ${problem} (section 14.2): not copied`);
+      }
       for (const [d, paths] of Object.entries(inv.manifest || {})) {
         for (const cp of paths) {
           if (!contentPathOk(cp, inv, upto)) throw new Unavailable(`${where}: ${id}: a content path out of the object: '${cp}'`);

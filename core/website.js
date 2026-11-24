@@ -77,6 +77,10 @@ export function pyJson(value) {
   return JSON.stringify(value);
 }
 
+export function jsonInScript(value) {
+  return pyJson(value).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+}
+
 export function arxivId(obj, dc) {
   for (const e of obj.external || []) {
     if (e.service === 'arXiv' && (e.record || '').includes('/abs/')) {
@@ -329,7 +333,7 @@ async function metaTags(site, f, line, cur, obj, dc) {
   if (keywords.length) ld.keywords = keywords;
   if (obj.kind === 'collection') ld.hasPart = await collectionParts(site, f, line, cur);
   if (obj.status === 'withdrawn') ld.creativeWorkStatus = 'Withdrawn';
-  tags.push('<script type="application/ld+json">' + pyJson(ld).replace(/<\//g, '<\\/') + '</script>');
+  tags.push('<script type="application/ld+json">' + jsonInScript(ld) + '</script>');
   return tags.join('\n');
 }
 

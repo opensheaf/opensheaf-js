@@ -17,7 +17,7 @@ import { verifyFolder, landingDescriptionGaps } from '../core/check.js';
 import { loadSchemas } from '../core/schema.js';
 import { notice, withdraw, relate, relicense, describe, complete } from '../core/describe.js';
 import * as collections from '../core/collections.js';
-import { esc, fmtDate, pyJson, namesJoined, readableIndex, present, safeUrl, link } from '../core/website.js';
+import { esc, fmtDate, pyJson, jsonInScript, namesJoined, readableIndex, present, safeUrl, link } from '../core/website.js';
 import { keeperLink, successorClaim, CONFIRMED, CLAIMED, NOT_CHECKED, KeeperUnreachable } from '../core/keepers.js';
 import { loadEntries, merge, normalise } from '../core/inputs.js';
 import { mirror, fetchObject, Unavailable } from '../core/mirror.js';
@@ -621,6 +621,10 @@ test('the small pieces of the pages', () => {
   assert.equal(fmtDate('2026'), '2026');
   assert.equal(namesJoined(['A', 'B', 'C']), 'A, B and C');
   assert.equal(pyJson({ a: [1, 'x'], b: { c: null } }), '{"a": [1, "x"], "b": {"c": null}}');
+  const data = { abstract: 'a <!--<script> b </script> c & d', name: 'x</SCRIPT >' };
+  const text = jsonInScript(data);
+  assert.ok(!/[<>&]/.test(text));
+  assert.deepEqual(JSON.parse(text), data);
 });
 
 test('the link to a keeper', async () => {

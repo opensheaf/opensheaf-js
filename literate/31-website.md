@@ -154,6 +154,17 @@ not a day of the calendar, is shown as it is, as opensheaf-py's
       return JSON.stringify(value);
     }
 
+JSON written inside a `<script>` element (the schema.org record of a
+landing page) has no `<`, `>` or `&` left for HTML to read: each is
+written `\u003c`, `\u003e`, `\u0026`, as opensheaf-py's
+`json_in_script` writes them, so that an abstract with `<!--<script>`
+cannot put the parser into its escaped-script state and break the page.
+
+    // in small pieces:
+    export function jsonInScript(value) {
+      return pyJson(value).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+    }
+
     export function arxivId(obj, dc) {
       for (const e of obj.external || []) {
         if (e.service === 'arXiv' && (e.record || '').includes('/abs/')) {
@@ -461,7 +472,7 @@ Signposting links.
       if (keywords.length) ld.keywords = keywords;
       if (obj.kind === 'collection') ld.hasPart = await collectionParts(site, f, line, cur);
       if (obj.status === 'withdrawn') ld.creativeWorkStatus = 'Withdrawn';
-      tags.push('<script type="application/ld+json">' + pyJson(ld).replace(/<\//g, '<\\/') + '</script>');
+      tags.push('<script type="application/ld+json">' + jsonInScript(ld) + '</script>');
       return tags.join('\n');
     }
 

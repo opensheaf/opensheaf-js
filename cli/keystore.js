@@ -7,7 +7,7 @@ import tty from 'node:tty';
 import { StringDecoder } from 'node:string_decoder';
 import { execSync, spawnSync } from 'node:child_process';
 import { Key, KeyError, base64 } from '../core/keys.js';
-import { keyId } from '../core/names.js';
+import { keyId, OWNER_NAME } from '../core/names.js';
 import { unbase64 } from '../core/crypto.js';
 import { Stop, sentence, short } from '../core/folder.js';
 
@@ -17,9 +17,14 @@ const STORES = ['keyring', 'security', 'file', 'none'];
 const STORE_NAMES = { keyring: 'the keychain', security: 'the keychain', file: 'a file of this computer',
                       none: 'memory, for this command only' };
 
+function ownerName(owner) {
+  if (typeof owner !== 'string' || !OWNER_NAME.test(owner)) throw new KeyError(`not an owner name: '${owner}'`);
+  return owner;
+}
+
 export function keyFolder(owner, env = process.env) {
   const base = env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-  return path.join(base, 'opensheaf', 'keys', owner);
+  return path.join(base, 'opensheaf', 'keys', ownerName(owner));
 }
 
 async function keyFromBase64(text, where) {
@@ -61,7 +66,7 @@ export function keyStore({ env = process.env, warn = () => {}, err = warn, secur
     if (pinned) return [pinned];
     return hasSecurity ? ['security', 'file'] : ['file'];
   };
-  const account = (owner, kid) => `${owner}:${kid}`;
+  const account = (owner, kid) => `${ownerName(owner)}:${kid}`;
   const slot = (store, owner, kid) => `${store}|${store === 'file' ? keyFolder(owner, env) : ''}|${owner}|${kid}`;
   const read = async (store, owner, kid) => {
     if (store === 'none') return memory.get(account(owner, kid)) ?? null;

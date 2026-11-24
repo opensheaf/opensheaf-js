@@ -604,6 +604,26 @@ test('the keychain, through security', async () => {
   }
 });
 
+test('key new takes an owner name only', async () => {
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+    const store = keyStore({ env: { XDG_CONFIG_HOME: path.join(box.root, 'config'), OPENSHEAF_KEY_STORE: 'file' } });
+    const key = await exampleKey('a key');
+    for (const bad of ['../..', '../../escaped', 'a b', '-w', a.owner.toUpperCase()]) {
+      const r = await box.run([...a.r, 'key', 'new', `--owner=${bad}`]);
+      assert.equal(r.status, 1, r.said);
+      assert.match(r.err, /an owner name/);
+      await assert.rejects(store.keep(bad, key), /not an owner name/);
+      await assert.rejects(store.current(bad, [key.did]), /not an owner name/);
+    }
+    assert.ok(!(await readdir(box.root)).includes('escaped'));
+    assert.deepEqual(await readdir(path.join(box.root, 'config', 'opensheaf', 'keys')), [a.owner]);
+  } finally {
+    await box.done();
+  }
+});
+
 test('links are not followed: writing through them is refused, and an export folder linked into an archive is inside it', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'osheaf-links-'));
   try {

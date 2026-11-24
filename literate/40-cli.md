@@ -174,7 +174,9 @@ its arguments, which other users could see. Each store is read once per
 command and key (opensheaf-py's `_SEEN`), so that a command that signs
 several things asks the keychain once. The runner of `security` is given
 to the store, so that the tests use one of their own and never touch the
-keychain of the person running them.
+keychain of the person running them. The owner a key is kept under is an
+owner name, or every store refuses it (`KeyError`), as opensheaf-py's
+`_owner`: it is a folder of the key files and part of an account.
 
     // in cli/keystore.js:
     import { promises as fs, existsSync, openSync } from 'node:fs';
@@ -185,7 +187,7 @@ keychain of the person running them.
     import { StringDecoder } from 'node:string_decoder';
     import { execSync, spawnSync } from 'node:child_process';
     import { Key, KeyError, base64 } from '../core/keys.js';
-    import { keyId } from '../core/names.js';
+    import { keyId, OWNER_NAME } from '../core/names.js';
     import { unbase64 } from '../core/crypto.js';
     import { Stop, sentence, short } from '../core/folder.js';
 
@@ -195,9 +197,14 @@ keychain of the person running them.
     const STORE_NAMES = { keyring: 'the keychain', security: 'the keychain', file: 'a file of this computer',
                           none: 'memory, for this command only' };
 
+    function ownerName(owner) {
+      if (typeof owner !== 'string' || !OWNER_NAME.test(owner)) throw new KeyError(`not an owner name: '${owner}'`);
+      return owner;
+    }
+
     export function keyFolder(owner, env = process.env) {
       const base = env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-      return path.join(base, 'opensheaf', 'keys', owner);
+      return path.join(base, 'opensheaf', 'keys', ownerName(owner));
     }
 
     async function keyFromBase64(text, where) {
@@ -243,7 +250,7 @@ file.
         if (pinned) return [pinned];
         return hasSecurity ? ['security', 'file'] : ['file'];
       };
-      const account = (owner, kid) => `${owner}:${kid}`;
+      const account = (owner, kid) => `${ownerName(owner)}:${kid}`;
       const slot = (store, owner, kid) => `${store}|${store === 'file' ? keyFolder(owner, env) : ''}|${owner}|${kid}`;
       const read = async (store, owner, kid) => {
         if (store === 'none') return memory.get(account(owner, kid)) ?? null;

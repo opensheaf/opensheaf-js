@@ -608,12 +608,17 @@ A new current key
 -----------------
 
 `osheaf key new`: a current key for this device, which signs once a
-version of the key log adds it.
+version of the key log adds it. `--owner` must be an owner name, as in
+opensheaf-py: the owner names the folder of the key files and the account
+of the keychain, and every key store refuses another value too (chapter
+[40](40-cli.md)), so that `../..` cannot lead a key file out of its
+folder.
 
     // in a new current key:
     export async function keyNew(f, args) {
       const env = f.env;
       const owner = args.owner || f.archive.owner;
+      if (typeof owner !== 'string' || !OWNER_NAME.test(owner)) stop(`--owner: an owner name, not '${owner}'`);
       if (!env.keyStore.keptOnDevice()) stop(notKeptText());
       const key = await env.newKey();
       let store;

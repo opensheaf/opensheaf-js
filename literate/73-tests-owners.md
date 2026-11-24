@@ -755,6 +755,31 @@ forgotten is gone from it.
       }
     });
 
+`key new --owner` takes an owner name only, as opensheaf-py's
+`test_key_new_takes_an_owner_name_only`, and so does every key store:
+nothing is written out of the folder of key files.
+
+    // in tests of the key stores:
+    test('key new takes an owner name only', async () => {
+      const box = await sandbox();
+      try {
+        const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+        const store = keyStore({ env: { XDG_CONFIG_HOME: path.join(box.root, 'config'), OPENSHEAF_KEY_STORE: 'file' } });
+        const key = await exampleKey('a key');
+        for (const bad of ['../..', '../../escaped', 'a b', '-w', a.owner.toUpperCase()]) {
+          const r = await box.run([...a.r, 'key', 'new', `--owner=${bad}`]);
+          assert.equal(r.status, 1, r.said);
+          assert.match(r.err, /an owner name/);
+          await assert.rejects(store.keep(bad, key), /not an owner name/);
+          await assert.rejects(store.current(bad, [key.did]), /not an owner name/);
+        }
+        assert.ok(!(await readdir(box.root)).includes('escaped'));
+        assert.deepEqual(await readdir(path.join(box.root, 'config', 'opensheaf', 'keys')), [a.owner]);
+      } finally {
+        await box.done();
+      }
+    });
+
 Links on a disk: a folder cloned with `opensheaf.json` linked to a file
 outside it, and `site` linked to a folder outside it, has neither written
 through (chapter [40](40-cli.md)); and a folder of exported keys that is

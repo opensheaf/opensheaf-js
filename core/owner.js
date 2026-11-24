@@ -431,6 +431,7 @@ export async function recordKeyLog(f, owner, others) {
 export async function keyNew(f, args) {
   const env = f.env;
   const owner = args.owner || f.archive.owner;
+  if (typeof owner !== 'string' || !OWNER_NAME.test(owner)) stop(`--owner: an owner name, not '${owner}'`);
   if (!env.keyStore.keptOnDevice()) stop(notKeptText());
   const key = await env.newKey();
   let store;

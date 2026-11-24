@@ -1434,6 +1434,21 @@ they do not have the digest the inventory states.
       await assert.rejects(r.describe(res), (e) => e.kind === 'digest' && /does not have the digest/.test(e.message));
     });
 
+A pin that is not one (an object version `latest`, a name that is a
+path) is *not a version*, noted, and nothing is fetched for it, as in
+opensheaf-py's `test_a_pin_that_is_not_one`.
+
+    // in tests of keepers and of options read from files:
+    test('a pin that is not one', async () => {
+      const asked = [];
+      const r = new Resolver(new Http({ fetch: async (url) => { asked.push(url); throw new TypeError('no network'); }, budget: null }));
+      const name = 'a'.repeat(52), owner = 'b'.repeat(51) + 'a', dig = 'c'.repeat(128);
+      assert.equal((await r.pin(name, owner, 'latest', dig, ['https://example.org/papers/'])).status, 'not a version');
+      assert.equal((await r.pin('../x', owner, 'v1', dig, ['https://example.org/papers/'])).status, 'not a version');
+      assert.deepEqual(asked, []);
+      assert.ok(r.notes.some((n) => /the pin 'latest' sha512='c+' is not a line, an object version and a digest/.test(n.message)));
+    });
+
 A branch point is judged on the bytes of `parent/object.json` as read,
 as in opensheaf-py's `test_inconsistent_branch_point`: a level that
 states the right digests but reads a forged `parent/object.json` is

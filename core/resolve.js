@@ -2,7 +2,7 @@
 import { Archive, baseOf } from './archive.js';
 import { LIMITS } from './http.js';
 import { isVersion, versionNumber } from './paths.js';
-import { objectId, isNameOf, parseSheaf, readGenesis, isObject } from './names.js';
+import { objectId, isNameOf, parseSheaf, readGenesis, isObject, NAME } from './names.js';
 import { titleOf, creatorsOf, historyOf } from './versions.js';
 import { SIGNED, VOUCHED, CONTESTED, UNCHECKED, UNSIGNED, INVALID } from './signatures.js';
 
@@ -321,6 +321,14 @@ export class Resolver {
   }
 
   async pin(name, owner, version, digest, where = [], options = {}) {
+    if (!([name, owner].every((x) => typeof x === 'string' && NAME.test(x)) &&
+          typeof version === 'string' && /^v[1-9][0-9]*$/.test(version) &&
+          typeof digest === 'string' && /^[0-9a-f]{128}$/.test(digest))) {
+      const repr = (x) => (typeof x === 'string' ? `'${x}'` : 'None');
+      this.note('warning', `sheaf:${name}:${owner}: the pin ${repr(version)} sha512=${repr(digest)} is not a line, ` +
+                'an object version and a digest (section 8.5)');
+      return found('not a version', null, typeof version === 'string' ? version : null, digest, []);
+    }
     if (name === owner) {
       const log = await this.keyLog(owner, where, options);
       const v = log && isVersion(version) ? log.lookup(versionNumber(version), digest) : null;

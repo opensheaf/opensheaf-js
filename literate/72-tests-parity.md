@@ -100,6 +100,7 @@ tests are skipped, with the reason.
     import { carryOut } from '../core/requests.js';
     import { loadSchemas } from '../core/schema.js';
     import { exampleKey } from '../core/keys.js';
+    import { reproducibleZip } from '../core/zenodo.js';
 
     <<running the two implementations>>
 

@@ -85,14 +85,16 @@ a storage has a `fetch` of its own, so the reading of archives written for
 the Explorer, over HTTP, reads a storage too, and a command judges the
 signatures of a line exactly as a verification does.
 
-**Three libraries.** Argon2id and XSalsa20-Poly1305, which encrypt the keys
+**Four libraries.** Argon2id and XSalsa20-Poly1305, which encrypt the keys
 kept outside an archive, are not in WebCrypto. They come from
 `hash-wasm` 4.12.0 and `tweetnacl` 1.0.3, pinned, loaded only when a key
 file is encrypted or decrypted (chapter [21](21-keys.md) says why these
 two). `hash-wasm` also gives MD5, for the fixity of OCFL inventories.
 YAML, read by `--from FILE` and `osheaf collection sync`, comes from
 `yaml` 2.8.1, pinned the same way and loaded only when a YAML file is read
-(chapter [33](33-inputs.md)).
+(chapter [33](33-inputs.md)). Deflate, for the `sources.zip` of a deposit on
+Zenodo, comes from `pako` 2.1.0, pinned and loaded only when the zip is
+made (chapter [46](46-zenodo.md)).
 
 **The command line on node: modules.** The command line could use
 `Deno.*`; it uses the built-in modules of Node instead (`node:fs`,
@@ -493,10 +495,10 @@ Where the two differ:
   that Zenodo reports otherwise, an error of the API, an e-print that is
   not gzip) ends here with a message and the status 1, where Python
   prints its traceback; the draft is discarded alike.
-- **`sources.zip`** is byte for byte opensheaf-py's when it is compressed
-  by zlib, which the command line takes from `node:zlib` (under Node and
-  Deno alike); in a browser, `CompressionStream` compresses otherwise,
-  and the archive, still valid, would not have the same digests.
+- **`sources.zip`** is byte for byte opensheaf-py's: it is compressed by
+  pako, a port of zlib's deflate, whose bytes are those of the zlib that
+  CPython links, in Deno, Node and browsers alike (the zlib of each
+  runtime, zlib-ng or Chromium's, compresses otherwise).
 - **Tar archives** are read by a reader of this program (chapter
   [45](45-arxiv-import.md)), which takes the members as `tarfile` does
   (POSIX prefixes, GNU long names, pax paths), but a GNU sparse file as

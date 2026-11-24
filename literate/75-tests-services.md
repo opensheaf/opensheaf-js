@@ -942,6 +942,72 @@ alike.
       }
     });
 
+### The bytes of sources.zip
+
+`sources.zip` is the same as opensheaf-py's only if the compression is
+zlib's, byte for byte (chapter [46](46-zenodo.md)). The zip of a set of
+files chosen to exercise the compressor, written by this program and by
+opensheaf-py's own `reproducible_zip`, is the same: empty and one-byte
+files; random bytes, which zlib stores; text in words, LaTeX and JSON;
+long runs of two letters, and runs broken by noise, which exercise long
+matches and lazy matching; sizes on both sides of zlib's window of 32
+KiB and of its blocks; and the chapters, sources and schemas of this
+repository. Half of the files are drawn from a seed fixed here, half
+from one drawn at each run, which a failure names, so that the test
+covers more inputs as it runs again.
+
+    // in tests/parity.test.js:
+    function corpus(seed) {
+      let x = seed >>> 0 || 1;
+      const next = () => ((x ^= x << 13, x ^= x >>> 17, x ^= x << 5) >>> 0) / 4294967296;
+      const pick = (list) => list[Math.floor(next() * list.length)];
+      const words = ['sheaf', 'object', 'version', 'archive', 'owner', 'catalogue', 'the', 'of', 'a', 'Zenodo', 'proof',
+                     'lemma', '\\section', '\\begin{equation}', 'x_{n+1}', '=', '\n', '  '];
+      const sizes = [0, 1, 2, 3, 100, 258, 1000, 32767, 32768, 32769, 65536, 100000, 300000];
+      const kinds = {
+        random: (n) => Uint8Array.from({ length: n }, () => Math.floor(next() * 256)),
+        words: (n) => new TextEncoder().encode(Array.from({ length: n }, () => pick(words)).join(' ').slice(0, n)),
+        runs: (n) => Uint8Array.from({ length: n }, () => (next() < 0.5 ? 97 : 98)),
+        noisy: (n) => Uint8Array.from({ length: n }, () => (next() < 0.05 ? Math.floor(next() * 256) : 65)),
+        json: (n) => new TextEncoder().encode(JSON.stringify(Array.from({ length: n / 40 }, () => ({ k: next(), w: pick(words) })), null, 1)),
+        repeats: (n) => { const unit = kinds.random(1 + Math.floor(next() * 300)); return Uint8Array.from({ length: n }, (_, i) => unit[i % unit.length]); },
+      };
+      const files = new Map();
+      for (const [kind, make] of Object.entries(kinds)) for (const n of sizes) files.set(`${seed}/${kind}-${n}`, make(n));
+      return files;
+    }
+
+    test('sources.zip: the bytes of opensheaf-py, compressed as zlib compresses, for files of every kind', { skip }, async () => {
+      const s = await sandbox();
+      try {
+        const seed = Math.floor(Math.random() * 2 ** 32);
+        const files = new Map([...corpus(20261124), ...corpus(seed)]);
+        for (const dir of ['literate', 'core', 'schemas']) {
+          for (const n of (await readdir(path.join(HERE, '..', dir))).sort()) {
+            files.set(`${dir}/${n}`, new Uint8Array(await readFile(path.join(HERE, '..', dir, n))));
+          }
+        }
+        const src = path.join(s.root, 'src');
+        for (const [name, bytes] of files) {
+          await mkdir(path.dirname(path.join(src, name)), { recursive: true });
+          await writeFile(path.join(src, name), bytes);
+        }
+        ok(s.run([path.join(path.dirname(PY), 'python3')], ['-c', PY_ZIPS, src, path.join(s.root, 'py.zip')]), 'py zip');
+        const py = new Uint8Array(await readFile(path.join(s.root, 'py.zip')));
+        const js = await reproducibleZip(files);
+        assert.ok(js.length === py.length && js.every((b, k) => b === py[k]),
+                  `sources.zip differs from opensheaf-py's (seed ${seed}, ${js.length} and ${py.length} bytes)`);
+      } finally {
+        await s.done();
+      }
+    });
+
+    const PY_ZIPS = `import sys, pathlib
+    from opensheaf.zenodo import reproducible_zip
+    src = pathlib.Path(sys.argv[1])
+    reproducible_zip(sys.argv[2], {p.relative_to(src).as_posix(): p for p in src.rglob('*') if p.is_file()})
+    `;
+
 ### Depositing on Zenodo
 
 A paper with a source in a folder, which goes to Zenodo in

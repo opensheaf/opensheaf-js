@@ -604,7 +604,6 @@ arguments ends with the status 2, as argparse does.
     import { Zenodo, SERVICES, zenodoCommand } from '../core/zenodo.js';
     import { securityCommand } from './keystore.js';
     import os from 'node:os';
-    import zlib from 'node:zlib';
     import { existsSync } from 'node:fs';
 
     export const VERSION = '0.1.0';
@@ -1790,8 +1789,6 @@ What the services need from outside, each replaceable by the tests:
   and another address of the API (a double of Zenodo); Zenodo is not
   reached through the locations of other archives, which an archive's
   configuration may set, since the token goes with every request;
-- `deflateRaw`: zlib's Deflate, for `sources.zip` (chapter
-  [46](46-zenodo.md)), from `node:zlib`;
 - `sandbox()`: a temporary folder, for the copy that a trial on Zenodo's
   sandbox works on.
 
@@ -1808,7 +1805,6 @@ What the services need from outside, each replaceable by the tests:
       }
       return null;
     };
-    env.deflateRaw ??= async (bytes) => new Uint8Array(zlib.deflateRawSync(bytes));
     env.sandbox ??= async () => {
       const where = await fs.mkdtemp(path.join(os.tmpdir(), 'opensheaf-zenodo-sandbox-'));
       return { storage: new DiskStorage(where), where, remove: () => fs.rm(where, { recursive: true, force: true }) };

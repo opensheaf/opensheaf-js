@@ -30,7 +30,6 @@ import { fetchPapers, authorPapers, politeGetter, importCommand } from '../core/
 import { Zenodo, SERVICES, zenodoCommand } from '../core/zenodo.js';
 import { securityCommand } from './keystore.js';
 import os from 'node:os';
-import zlib from 'node:zlib';
 import { existsSync } from 'node:fs';
 
 export const VERSION = '0.1.0';
@@ -474,7 +473,6 @@ export function makeEnvironment(archiveRoot = null, given = {}) {
     }
     return null;
   };
-  env.deflateRaw ??= async (bytes) => new Uint8Array(zlib.deflateRawSync(bytes));
   env.sandbox ??= async () => {
     const where = await fs.mkdtemp(path.join(os.tmpdir(), 'opensheaf-zenodo-sandbox-'));
     return { storage: new DiskStorage(where), where, remove: () => fs.rm(where, { recursive: true, force: true }) };

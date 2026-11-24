@@ -415,7 +415,7 @@ signed version, carried forward.
 
     // in Zenodo: the deposit in object.json:
     const upload = new Map([...files].filter(([lp]) => !skip.has(lp)));
-    const { plan, extra } = await uploadPlan(upload, obj, f.env.deflateRaw);
+    const { plan, extra } = await uploadPlan(upload, obj);
     const entry = { role: 'deposit', service: SERVICE_NAME, record: `${z.s.records}${recid}`, doi };
     if (extra.length) entry.files = extra;
     obj.external = [...(obj.external || []), entry];
@@ -547,12 +547,12 @@ digests go into the deposit's entry in `object.json`. A rendition in a
 folder stops the deposit.
 
     // in Zenodo: what is uploaded:
-    export async function uploadPlan(files, obj, deflateRaw) {
+    export async function uploadPlan(files, obj) {
       if (![...files.keys()].some((n) => n.includes('/')) && files.size <= MAX_FILES) return { plan: new Map(files), extra: [] };
       const keep = new Set([...METADATA_FILES, ...(obj.renditions || []).map((r) => r.path)]);
       if ([...keep].some((n) => n.includes('/'))) exit('renditions in sub-folders cannot be uploaded to Zenodo');
       const sources = new Map([...files].filter(([n]) => !keep.has(n)));
-      const zip = await reproducibleZip(sources, deflateRaw);
+      const zip = await reproducibleZip(sources);
       const plan = new Map([...files].filter(([n]) => keep.has(n)));
       plan.set('sources.zip', zip);
       return { plan, extra: [{ name: 'sources.zip', sha512: await sha512hex(zip), md5: await md5hex(zip), bytes: zip.length }] };
@@ -563,10 +563,19 @@ opensheaf-py: entries in the byte order of their names, each compressed
 by Deflate, dated 1 January 1980, with the permissions `0644` of Unix and
 no extra fields, so that both programs write the same bytes from the
 same files, and anyone can check the record against the archive. The
-compression must be zlib's, at its default level, for the bytes to be
-the same: the command line gives `node:zlib` (whose output is zlib's
-under Node and Deno alike), and the `CompressionStream` of the platform
-serves otherwise, giving a valid archive whose bytes may differ.
+compression must be zlib's, at its default level (6, a window of 32 KiB,
+the default memory level and strategy, as `zipfile` asks), for the bytes
+to be the same. The compressors at hand are not zlib's: Deno builds both
+`node:zlib` and `CompressionStream` on zlib-ng, Node on the zlib of
+Chromium, browsers on theirs, and each compresses most inputs into other
+bytes than the zlib that CPython links (the system's, 1.2.11 to 1.3.1),
+some only on some processors. The compression is therefore
+[pako](https://github.com/nodeca/pako) 2.1.0, pinned, a port of zlib's
+deflate to JavaScript that gives zlib's bytes, the same in Deno, Node and
+browsers; a parity test checks it against opensheaf-py's `sources.zip`
+for a varied set of files. It is imported, like the libraries of the
+keys (chapter [21](21-keys.md)), by its bare name, and only when a zip is
+made.
 
     // in Zenodo: a reproducible sources.zip:
     const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
@@ -581,19 +590,14 @@ serves otherwise, giving a valid archive whose bytes may differ.
       return (c ^ 0xffffffff) >>> 0;
     }
 
-    async function deflateStream(bytes) {
-      const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
-      return new Uint8Array(await new Response(stream).arrayBuffer());
-    }
-
-    export async function reproducibleZip(files, deflateRaw = null) {
-      const deflate = deflateRaw || deflateStream;
+    export async function reproducibleZip(files) {
+      const { deflateRaw } = await import('pako');
       const encoder = new TextEncoder();
       const parts = [], central = [];
       let offset = 0;
       const names = [...files.keys()].sort((a, b) => compareBytes(encoder.encode(a), encoder.encode(b)));
       for (const name of names) {
-        const data = files.get(name), packed = await deflate(data), nameBytes = encoder.encode(name);
+        const data = files.get(name), packed = deflateRaw(data), nameBytes = encoder.encode(name);
         const flags = /^[\x00-\x7f]*$/.test(name) ? 0 : 0x800;
         const crc = crc32(data);
         const local = new DataView(new ArrayBuffer(30));

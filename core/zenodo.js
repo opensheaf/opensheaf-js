@@ -129,19 +129,14 @@ export function crc32(bytes) {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-async function deflateStream(bytes) {
-  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-export async function reproducibleZip(files, deflateRaw = null) {
-  const deflate = deflateRaw || deflateStream;
+export async function reproducibleZip(files) {
+  const { deflateRaw } = await import('pako');
   const encoder = new TextEncoder();
   const parts = [], central = [];
   let offset = 0;
   const names = [...files.keys()].sort((a, b) => compareBytes(encoder.encode(a), encoder.encode(b)));
   for (const name of names) {
-    const data = files.get(name), packed = await deflate(data), nameBytes = encoder.encode(name);
+    const data = files.get(name), packed = deflateRaw(data), nameBytes = encoder.encode(name);
     const flags = /^[\x00-\x7f]*$/.test(name) ? 0 : 0x800;
     const crc = crc32(data);
     const local = new DataView(new ArrayBuffer(30));
@@ -201,12 +196,12 @@ export function quote(name) {
     : '%' + b.toString(16).toUpperCase().padStart(2, '0'))).join('');
 }
 
-export async function uploadPlan(files, obj, deflateRaw) {
+export async function uploadPlan(files, obj) {
   if (![...files.keys()].some((n) => n.includes('/')) && files.size <= MAX_FILES) return { plan: new Map(files), extra: [] };
   const keep = new Set([...METADATA_FILES, ...(obj.renditions || []).map((r) => r.path)]);
   if ([...keep].some((n) => n.includes('/'))) exit('renditions in sub-folders cannot be uploaded to Zenodo');
   const sources = new Map([...files].filter(([n]) => !keep.has(n)));
-  const zip = await reproducibleZip(sources, deflateRaw);
+  const zip = await reproducibleZip(sources);
   const plan = new Map([...files].filter(([n]) => keep.has(n)));
   plan.set('sources.zip', zip);
   return { plan, extra: [{ name: 'sources.zip', sha512: await sha512hex(zip), md5: await md5hex(zip), bytes: zip.length }] };
@@ -356,7 +351,7 @@ export async function deposit(f, label, z) {
     if (!dateOf(dc, 'Available')) setDate(dc, 'Available', today);
     setDate(dc, 'Updated', today);
     const upload = new Map([...files].filter(([lp]) => !skip.has(lp)));
-    const { plan, extra } = await uploadPlan(upload, obj, f.env.deflateRaw);
+    const { plan, extra } = await uploadPlan(upload, obj);
     const entry = { role: 'deposit', service: SERVICE_NAME, record: `${z.s.records}${recid}`, doi };
     if (extra.length) entry.files = extra;
     obj.external = [...(obj.external || []), entry];

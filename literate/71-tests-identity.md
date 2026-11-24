@@ -37,8 +37,9 @@ deterministic.
       from '../core/signatures.js';
     import { Key, exampleKey } from '../core/keys.js';
     import { genesisRecord, signatureFile as writeSignatureFile, newOwner } from '../core/write.js';
-    import { rotate, end, recordFork, extendInventory } from '../core/keylogs.js';
-    import { inventoryFile, sidecar } from '../core/write.js';
+    import { rotate, end, recordFork, extendInventory, loadKeyLog, completeOrphan } from '../core/keylogs.js';
+    import { inventoryFile, sidecar, writeKeyLog } from '../core/write.js';
+    import { MemoryStorage } from '../core/storage.js';
 
     <<the examples of appendix C>>
 
@@ -451,6 +452,52 @@ the key log itself, a version held after an ending version is no version.
       const forged = new KeyLog(theirs.genesis, theirs.owner, [...theirs.versions, after]);
       const { warnings } = await forged.check();
       assert.ok(warnings.some((w) => /^v3: held after an ending version/.test(w)), warnings.join('\n'));
+    });
+
+A version written and not completed, as in opensheaf-py's
+`test_a_version_written_and_not_completed`: a write stopped before the
+root inventory is replaced leaves `v2` after the head; read again, the
+key log keeps it aside and signs no other `v2`, nor writes one over it;
+`completeOrphan` makes it the head, removes a version without
+signatures, and leaves a signed one that is not a version for a person.
+
+    // in tests of key logs:
+    test('a version written and not completed', async () => {
+      const [a, r1, r2, n1, n2, n3] = await Promise.all(['a', 'r1', 'r2', 'n1', 'n2', 'n3']
+        .map((x) => exampleKey(`not completed ${x}`)));
+      const user = { name: 'Doe, Jane' }, created = '2026-01-01T00:00:00Z';
+      const storage = new MemoryStorage();
+      const log = await newOwner([a], [r1, r2], { threshold: 1, nextThreshold: 1 });
+      await writeKeyLog(storage, 'kl', log);
+      const v2 = await rotate(log, [r1], { nextKeys: [n1], nextThreshold: 1, user, created });
+      const broken = Object.create(storage);
+      broken.rename = async () => { throw new Error('the disk is full'); };
+      await assert.rejects(writeKeyLog(broken, 'kl', log), /the disk is full/);
+      let back = await loadKeyLog(storage, 'kl');
+      assert.equal(back.versions.length, 1);
+      assert.equal(back.orphan.number, 2);
+      assert.ok(back.orphan.witnesses.size);
+      await assert.rejects(rotate(back, [r1], { nextKeys: [n2], nextThreshold: 1, user, created }), /osheaf owner complete/);
+      const other = await loadKeyLog(storage, 'kl');
+      other.orphan = null;
+      await rotate(other, [r1], { nextKeys: [n2], nextThreshold: 1, user, created });
+      await assert.rejects(writeKeyLog(storage, 'kl', other), /another version/);
+      assert.equal(await completeOrphan(storage, 'kl'), 'completed');
+      back = await loadKeyLog(storage, 'kl');
+      assert.equal(back.orphan, null);
+      assert.equal(back.versions.at(-1).digest, v2.digest);
+      assert.deepEqual((await back.check()).errors, []);
+      assert.equal(await completeOrphan(storage, 'kl'), null);
+      const v3 = await rotate(log, [n1], { nextKeys: [n3], nextThreshold: 1, user, created });
+      await storage.write('kl/v3/inventory.json', v3.inventory);
+      assert.equal(await completeOrphan(storage, 'kl'), 'removed');
+      assert.equal(await storage.kind('kl/v3'), null);
+      await writeKeyLog(storage, 'kl', log);
+      assert.equal((await loadKeyLog(storage, 'kl')).versions.at(-1).digest, v3.digest);
+      await storage.write('kl/v4/inventory.json', utf8('{}'));
+      await storage.write('kl/extensions/opensheaf-witnesses/v4/signature-x.json', utf8('{}'));
+      await assert.rejects(completeOrphan(storage, 'kl'), /left for a person/);
+      assert.equal(await storage.kind('kl/v4'), 'dir');
     });
 
 The rules of section 6.1 across versions, each broken once, on the

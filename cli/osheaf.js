@@ -193,6 +193,8 @@ export const COMMANDS = {
       end: { help: 'the last version of the key log (section 6.3)', positionals: [],
              options: { '--successor': value('successor'), '--expose': value('expose', { repeat: true }),
                         ...ROTATION_OPTIONS, ...level(false) } },
+      complete: { help: 'settle a version of the key log left by an interrupted write', positionals: [],
+                  options: { '--owner': value('owner') } },
       show: { help: 'the key log of the owner', positionals: [],
               options: { '--owner': value('owner'), '--offline': flag('offline') } },
       pull: { help: 'meet another copy of the key log: extend it, or record a fork', positionals: ['place!'],
@@ -768,7 +770,7 @@ const RUN = {
       await owners.ownerPull(f, a);
     } else {
       const run = { init: owners.ownerInitCommand, rotate: owners.ownerRotate, expose: owners.ownerExpose,
-                    end: owners.ownerEnd, show: owners.ownerShow }[args.action];
+                    end: owners.ownerEnd, complete: owners.ownerComplete, show: owners.ownerShow }[args.action];
       await run(f, args);
     }
     if (args.action !== 'show') await present(f);
@@ -929,7 +931,7 @@ the format in incompatible ways, and archives may have to be rebuilt.`;
 
 function usageOf(cmd, action) {
   if (COMMANDS[cmd].actions && !action) {
-    const acts = Object.entries(COMMANDS[cmd].actions).map(([a, x]) => `  ${a.padEnd(8)}${x.help}`).join('\n');
+    const acts = Object.entries(COMMANDS[cmd].actions).map(([a, x]) => `  ${a.padEnd(8)}${a.length >= 8 ? ' ' : ''}${x.help}`).join('\n');
     return `usage: osheaf ${cmd} [-h] {${Object.keys(COMMANDS[cmd].actions).join(',')}} ...\n\n${COMMANDS[cmd].help}\n\n${acts}`;
   }
   const s = action ? COMMANDS[cmd].actions[action] : COMMANDS[cmd];

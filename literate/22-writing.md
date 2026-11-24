@@ -271,7 +271,10 @@ manifest puts them, its inventory and checksum file, its witness files
 each written under a name of its own and renamed over the old one, so
 that the object never names a version it does not have. A version already held
 must have the inventory the key log has, or the folder holds another key
-log.
+log. A folder of a version not held that is there already (left by an
+interrupted write) is completed if it holds the same inventory, and
+refused if it holds another one, as opensheaf-py's `write_key_log`
+decides: writing over it would sign a second version of that number.
 
     // in writing a key log:
     export async function writeKeyLog(storage, dir, log) {
@@ -287,6 +290,15 @@ log.
         }
       }
       for (const v of log.versions.slice(held)) {
+        if (await storage.kind(joinPath(dir, `v${v.number}`))) {
+          const there = await storage.read(joinPath(dir, `v${v.number}`, 'inventory.json'));
+          if (!there || there.length !== v.inventory.length || there.some((b, k) => b !== v.inventory[k])) {
+            throw new StorageError(`${dir}: v${v.number} is there already, another version than the one written now: ` +
+                                   'an earlier write of the key log was interrupted before its root inventory was replaced; ' +
+                                   'osheaf owner complete settles it (it completes a signed version, removes an unsigned one), ' +
+                                   'and signing another version of that number would fork the key log (section 6.3)');
+          }
+        }
         const inv = JSON.parse(new TextDecoder().decode(v.inventory));
         const byDigest = new Map();
         for (const bytes of v.files.values()) byDigest.set(await sha512hex(bytes), bytes);

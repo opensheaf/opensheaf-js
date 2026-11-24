@@ -53,7 +53,7 @@ The module is `core/owner.js`.
     import { joinPath, readJson, writeText } from './storage.js';
     import { collect } from './collect.js';
     import { stop, exit, short, plural, CONFIG_NAME, OBJ } from './folder.js';
-    import { rotate, end, pull, describeLog, loadKeyLog, checked, OwnerError } from './keylogs.js';
+    import { rotate, end, pull, describeLog, loadKeyLog, checked, completeOrphan, OwnerError } from './keylogs.js';
     import { keeperLink, keeperOf, successorClaim, NOT_CHECKED } from './keepers.js';
     import { WalletError, parseWallet, configuredWallet, archiveRepositories, putKey, getKey, readAny,
              addPasskey as addPasskeyToWallet, listing, locks, describeEntry, risk, CommandWallet, OFFLINE,
@@ -496,6 +496,34 @@ exposing keys if asked.
       await writeLog(f, log);
       await writeDiscovery(f);
       f.env.out(`Done: the owner ${who} has ended, at v${v.number} of its key log` + (successor ? `; its successor is ${successor}.` : '.'));
+    }
+
+`osheaf owner complete` settles a version of the key log that an
+interrupted write left after its head (chapter
+[34](34-key-logs.md)), as opensheaf-py's `owner_complete`: a signed one
+that passes the checks becomes the head, an unsigned one is removed, and
+one that fails the checks stops the command, left for a person.
+
+    // in end an owner:
+    export async function ownerComplete(f, args) {
+      const [owner, log] = await ownerOf(f, args);
+      const who = short(owner);
+      if (!log.orphan) {
+        f.env.out(`The key log of ${who} has no version written after its head: nothing to do.`);
+        return;
+      }
+      const n = log.orphan.number;
+      let done;
+      try {
+        done = await completeOrphan(f.storage, await f.dirOf(log.id));
+      } catch (error) {
+        if (error instanceof OwnerError) stop(error.message);
+        throw error;
+      }
+      f.changed();
+      await writeDiscovery(f);
+      f.env.out(`Done: v${n} of the key log of ${who} ` +
+                (done === 'completed' ? 'is completed: it is the head.' : 'carried no signature, and is removed.'));
     }
 
 Show an owner

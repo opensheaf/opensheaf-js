@@ -5,7 +5,7 @@ import { KeyLog, Version, ownerObject, keyRules, jsonOrNull, sidecarDigest, RESE
 import { WITNESSES } from './signatures.js';
 import { jsonBytes, orderedInventory, inventoryFile, sidecar, sha512hex, signatureFile, signatureFileName,
          utcNow } from './write.js';
-import { joinPath } from './storage.js';
+import { joinPath, replaceFile } from './storage.js';
 
 export class OwnerError extends Error {}
 
@@ -68,7 +68,16 @@ export async function checked(log) {
   return log.check();
 }
 
+export const ORPHAN_HELP = 'an earlier write of the key log was interrupted before its root inventory was replaced; ' +
+  'osheaf owner complete settles it (it completes a signed version, removes an unsigned one), ' +
+  'and signing another version of that number would fork the key log (section 6.3)';
+
+function refuseOrphan(log) {
+  if (log.orphan) throw new OwnerError(`v${log.orphan.number} of the key log of ${log.owner} is on disk after its head: ${ORPHAN_HELP}`);
+}
+
 async function prepare(log, signers) {
+  refuseOrphan(log);
   const { errors } = await checked(log);
   if (errors.length) throw new OwnerError('the key log has errors: ' + errors.join('; '));
   if (log.ended) throw new OwnerError(`the owner ${log.owner} has ended (section 6.3): nothing is signed for it`);
@@ -84,6 +93,7 @@ async function prepare(log, signers) {
 }
 
 export async function append(log, version) {
+  refuseOrphan(log);
   log.versions.push(version);
   const { errors } = await checked(log);
   if (errors.length) {
@@ -301,8 +311,62 @@ export async function loadKeyLog(storage, dir, where = dir) {
   }
   const log = await KeyLog.of(versions[0].files.get(GENESIS), versions, problems);
   if (rootInv.id !== log.id) problems.push(`the identifier of the object is not ${log.id}, that of the owner its genesis record names`);
+  log.orphan = await readOrphan(storage, dir, head + 1);
   await log.check();
   return log;
+}
+
+async function readOrphan(storage, dir, n) {
+  const vdir = joinPath(dir, `v${n}`);
+  if ((await storage.kind(vdir)) !== 'dir') return null;
+  const invBytes = (await storage.read(joinPath(vdir, 'inventory.json'))) || new Uint8Array();
+  const sc = (await storage.read(joinPath(vdir, 'inventory.json.sha512'))) || new Uint8Array();
+  const files = new Map();
+  const entry = jsonOrNull(invBytes);
+  const state = entry?.versions?.[`v${n}`]?.state;
+  if (isObject(state) && isObject(entry.manifest)) {
+    for (const [d, paths] of Object.entries(state)) {
+      const cp = entry.manifest[d]?.[0];
+      if (!Array.isArray(paths) || !contentPath(cp, entry, n)) continue;
+      const bytes = await storage.read(joinPath(dir, cp));
+      if (bytes) for (const p of paths) files.set(p, bytes);
+    }
+  }
+  const witnesses = new Map();
+  const wdir = joinPath(dir, WITNESSES, `v${n}`);
+  for (const { name, kind } of (await storage.list(wdir)) || []) {
+    if (kind === 'file') witnesses.set(name, await storage.read(joinPath(wdir, name)));
+  }
+  return Version.make(n, files, invBytes, sc, witnesses);
+}
+
+async function removeFolder(storage, path) {
+  if ((await storage.kind(path)) === 'dir') {
+    for (const entry of (await storage.list(path)) || []) await removeFolder(storage, joinPath(path, entry.name));
+  }
+  if (await storage.kind(path)) await storage.remove(path);
+}
+
+export async function completeOrphan(storage, dir, where = dir) {
+  const log = await loadKeyLog(storage, dir, where);
+  const o = log.orphan;
+  if (!o) return null;
+  const trial = await KeyLog.of(log.genesis, [...log.versions, o]);
+  const { errors } = await trial.check();
+  if (!errors.length && !(await checked(log)).errors.length) {
+    await replaceFile(storage, joinPath(dir, 'inventory.json'), o.inventory);
+    await replaceFile(storage, joinPath(dir, 'inventory.json.sha512'), o.sidecar?.length ? o.sidecar : await sidecar(o.inventory));
+    return 'completed';
+  }
+  if (!o.witnesses.size) {
+    await removeFolder(storage, joinPath(dir, `v${o.number}`));
+    await removeFolder(storage, joinPath(dir, WITNESSES, `v${o.number}`));
+    return 'removed';
+  }
+  throw new OwnerError(`${where}: v${o.number}, written by an interrupted write, carries signatures and is not ` +
+                       `a version of the key log (${errors.join('; ') || 'the key log before it has errors'}): it is ` +
+                       `left for a person; remove v${o.number}/ and ${WITNESSES}/v${o.number}/ only if they ` +
+                       'were never copied anywhere (section 6.3)');
 }
 
 export { INVENTORY_TYPE, objectId };

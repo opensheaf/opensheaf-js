@@ -323,28 +323,32 @@ function typed(input, prompt) {
   });
 }
 
-export function passphrases(env = process.env, warn = () => {}) {
-  let asked = null;
+export function passphrases(env = process.env, warn = () => {}, read = hidden) {
+  const asked = new Map();
   const ask = async ({ confirm = true, where = null } = {}) => {
     if (env.OPENSHEAF_PASSPHRASE) return env.OPENSHEAF_PASSPHRASE;
-    if (asked !== null) return asked;
+    if (asked.has(where)) return asked.get(where);
     const command = (env.OPENSHEAF_PASSPHRASE_COMMAND || '').trim();
     if (command) {
       try {
         const out = execSync(command, { encoding: 'utf-8', stdio: ['inherit', 'pipe', 'pipe'] });
         const given = out.endsWith('\n') ? out.slice(0, -1) : out;
-        if (given) return (asked = given);
+        if (given) {
+          asked.set(where, given);
+          return given;
+        }
         warn('OPENSHEAF_PASSPHRASE_COMMAND gave no passphrase: ');
       } catch (error) {
         warn(`OPENSHEAF_PASSPHRASE_COMMAND gave no passphrase: ${String(error.stderr || '').trim()}`);
       }
     }
-    const first = await hidden(where ? `Passphrase of the keys in ${where}: ` : 'Passphrase of the keys: ');
+    const first = await read(where ? `Passphrase of the keys in ${where}: ` : 'Passphrase of the keys: ');
     if (!first) throw new Stop(sentence('an empty passphrase: give --no-passphrase to export the keys without a passphrase lock'));
-    if (confirm && (await hidden('The passphrase again: ')) !== first) throw new Stop(sentence('the two passphrases differ'));
-    return (asked = first);
+    if (confirm && (await read('The passphrase again: ')) !== first) throw new Stop(sentence('the two passphrases differ'));
+    asked.set(where, first);
+    return first;
   };
-  ask.known = () => Boolean(env.OPENSHEAF_PASSPHRASE) || asked !== null;
+  ask.known = (where = null) => Boolean(env.OPENSHEAF_PASSPHRASE) || asked.has(where);
   return ask;
 }
 

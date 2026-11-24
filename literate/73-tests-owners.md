@@ -933,6 +933,22 @@ and `test_files_are_written_whole_with_the_usual_permissions`.
       }
     });
 
+A passphrase is asked once per place of keys, as in opensheaf-py's
+`test_a_passphrase_per_place`: that of the files, then that of a wallet.
+
+    // in tests of the key stores:
+    test('a passphrase per place', async () => {
+      const { passphrases } = await import('../cli/keystore.js');
+      const typed = ['for the files', 'for the wallet'];
+      const ask = passphrases({}, () => {}, async () => typed.shift());
+      assert.equal(await ask({ confirm: false }), 'for the files');
+      assert.equal(await ask({ confirm: false }), 'for the files');
+      assert.ok(!ask.known('github:me/keys'));
+      assert.equal(await ask({ confirm: false, where: 'github:me/keys' }), 'for the wallet');
+      assert.equal(await ask({ confirm: false, where: 'github:me/keys' }), 'for the wallet');
+      assert.ok(ask.known('github:me/keys'));
+    });
+
 The wallet named with `--keys` gives the rotation keys before the one
 configured, which is read when the first holds too few, as in
 opensheaf-py's `test_an_explicit_wallet_wins`.

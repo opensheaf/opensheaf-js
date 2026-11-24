@@ -837,7 +837,7 @@ async function walletEntries(w, owner) {
 }
 
 async function walletPassphrase(env, w, owner) {
-  if (env.passphrase.known?.()) return env.passphrase({ where: w.name });
+  if (env.passphrase.known?.(w.name)) return env.passphrase({ where: w.name });
   let texts = [];
   try {
     texts = (await walletEntries(w, owner)).map(([, t]) => t).filter((t) => wrapsOf(t).length);

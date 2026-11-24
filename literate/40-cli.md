@@ -441,8 +441,8 @@ The passphrase of exported keys comes from `OPENSHEAF_PASSPHRASE`, or from
 the output of the command `OPENSHEAF_PASSPHRASE_COMMAND` (which, as in
 opensheaf-py, has the standard input of `osheaf`, so that a command such
 as `pass` or `gpg` can ask its own questions), or is asked,
-twice, without echo; it is asked once per command (`known()` says
-whether it is given or asked already). Answers to questions
+twice, without echo; it is asked once per command and place of keys
+(`known(where)` says whether it is given or asked already). Answers to questions
 are read from the standard input.
 
 The standard input is read through one buffer, line by line: what a read
@@ -565,28 +565,40 @@ input, as `getpass` falls back to it.
       });
     }
 
-    export function passphrases(env = process.env, warn = () => {}) {
-      let asked = null;
+The passphrase is asked once per place of keys and command, as
+opensheaf-py's `passphrase` keeps one for each `where` (none for files,
+the wallet's name otherwise): a rotation from rotation-key files into a
+wallet asks for the wallet's passphrase, instead of locking the new keys
+with that of the files. `read` asks for it (the terminal; the tests give
+another).
+
+    // in cli/keystore.js:
+    export function passphrases(env = process.env, warn = () => {}, read = hidden) {
+      const asked = new Map();
       const ask = async ({ confirm = true, where = null } = {}) => {
         if (env.OPENSHEAF_PASSPHRASE) return env.OPENSHEAF_PASSPHRASE;
-        if (asked !== null) return asked;
+        if (asked.has(where)) return asked.get(where);
         const command = (env.OPENSHEAF_PASSPHRASE_COMMAND || '').trim();
         if (command) {
           try {
             const out = execSync(command, { encoding: 'utf-8', stdio: ['inherit', 'pipe', 'pipe'] });
             const given = out.endsWith('\n') ? out.slice(0, -1) : out;
-            if (given) return (asked = given);
+            if (given) {
+              asked.set(where, given);
+              return given;
+            }
             warn('OPENSHEAF_PASSPHRASE_COMMAND gave no passphrase: ');
           } catch (error) {
             warn(`OPENSHEAF_PASSPHRASE_COMMAND gave no passphrase: ${String(error.stderr || '').trim()}`);
           }
         }
-        const first = await hidden(where ? `Passphrase of the keys in ${where}: ` : 'Passphrase of the keys: ');
+        const first = await read(where ? `Passphrase of the keys in ${where}: ` : 'Passphrase of the keys: ');
         if (!first) throw new Stop(sentence('an empty passphrase: give --no-passphrase to export the keys without a passphrase lock'));
-        if (confirm && (await hidden('The passphrase again: ')) !== first) throw new Stop(sentence('the two passphrases differ'));
-        return (asked = first);
+        if (confirm && (await read('The passphrase again: ')) !== first) throw new Stop(sentence('the two passphrases differ'));
+        asked.set(where, first);
+        return first;
       };
-      ask.known = () => Boolean(env.OPENSHEAF_PASSPHRASE) || asked !== null;
+      ask.known = (where = null) => Boolean(env.OPENSHEAF_PASSPHRASE) || asked.has(where);
       return ask;
     }
 

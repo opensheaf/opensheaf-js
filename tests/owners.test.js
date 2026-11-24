@@ -748,6 +748,18 @@ test('no version through a linked object; files written whole, with the usual pe
   }
 });
 
+test('a passphrase per place', async () => {
+  const { passphrases } = await import('../cli/keystore.js');
+  const typed = ['for the files', 'for the wallet'];
+  const ask = passphrases({}, () => {}, async () => typed.shift());
+  assert.equal(await ask({ confirm: false }), 'for the files');
+  assert.equal(await ask({ confirm: false }), 'for the files');
+  assert.ok(!ask.known('github:me/keys'));
+  assert.equal(await ask({ confirm: false, where: 'github:me/keys' }), 'for the wallet');
+  assert.equal(await ask({ confirm: false, where: 'github:me/keys' }), 'for the wallet');
+  assert.ok(ask.known('github:me/keys'));
+});
+
 test('an explicit wallet wins', async () => {
   const { fromWallets } = await import('../core/owner.js');
   const given = { name: 'github:me/given' }, conf = { name: 'github:me/conf' };

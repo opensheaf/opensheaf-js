@@ -25,7 +25,7 @@ listener's refusals. The module is `tests/owners.test.js`.
     import { test } from 'node:test';
     import assert from 'node:assert/strict';
     import { mkdtemp, rm, readdir, readFile, writeFile, cp, mkdir, symlink, realpath, rename, stat } from 'node:fs/promises';
-    import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+    import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
     import os from 'node:os';
     import path from 'node:path';
     import { main } from '../cli/osheaf.js';
@@ -876,6 +876,30 @@ and `test_files_are_written_whole_with_the_usual_permissions`.
         const umask = process.umask();
         assert.equal((await stat(path.join(box.root, 'w', 'x', 'y.txt'))).mode & 0o777, 0o666 & ~umask);
         assert.deepEqual(await readdir(path.join(box.root, 'w', 'x')), ['y.txt']);
+      } finally {
+        await box.done();
+      }
+    });
+
+A label of the discovery document that is a path is left out, with a
+warning, and `osheaf index` writes nothing outside the archive, as in
+opensheaf-py's `test_a_label_that_is_a_path_is_left_out`.
+
+    // in tests of the key stores:
+    test('a label that is a path is left out', async () => {
+      const box = await sandbox();
+      try {
+        const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+        await deposit(box, a, 'paper-a', 'one', true);
+        const file = path.join(a.dir, 'opensheaf.json');
+        const disc = JSON.parse(await readFile(file, 'utf-8'));
+        for (const o of disc.objects) if (o.label === 'paper-a') o.label = '../../escaped';
+        await writeFile(file, JSON.stringify(disc));
+        const r = await box.run([...a.r, 'index']);
+        assert.equal(r.status, 0, r.said);
+        assert.match(r.err, /^warning: opensheaf\.json: the label '\.\.\/\.\.\/escaped' of 'sheaf:[a-z2-7]+:[a-z2-7]+' is not a label of a line/m);
+        assert.ok(!existsSync(path.join(box.root, 'escaped')));
+        assert.ok(!JSON.parse(await readFile(file, 'utf-8')).objects.some((o) => o.label === '../../escaped'));
       } finally {
         await box.done();
       }

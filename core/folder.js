@@ -29,6 +29,18 @@ export function exit(text) {
   throw new Stop(text);
 }
 
+export function pyRepr(value) {
+  if (typeof value === 'string') {
+    const escaped = value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+    if (value.includes("'") && !value.includes('"')) return `"${escaped}"`;
+    return `'${escaped.replace(/'/g, "\\'")}'`;
+  }
+  if (value === null || value === undefined) return 'None';
+  if (typeof value === 'boolean') return value ? 'True' : 'False';
+  if (typeof value === 'number') return String(value);
+  return JSON.stringify(value);
+}
+
 export function short(name) {
   if (name.startsWith('did:key:')) name = name.slice('did:key:'.length);
   return [...name].length <= 14 ? name : `${name.slice(0, 8)}…${name.slice(-4)}`;
@@ -124,11 +136,34 @@ export class ArchiveFolder {
     } else {
       this.unreadPages = null;
     }
-    this.labels = new Map(listed.filter((o) => o && typeof o === 'object' && o.label).map((o) => [o.label, o.id]));
+    this.labels = await this.labelsOf(listed);
     this.catalogues = new Map((disc.owners || []).filter((e) => e && typeof e === 'object' && e.owner && e.catalogue)
       .map((e) => [e.owner, e.catalogue]));
     this.tombstones = [...(disc.tombstones || [])];
     return this;
+  }
+
+  async labelsOf(listed) {
+    const out = new Map();
+    for (const o of listed) {
+      if (!o || typeof o !== 'object' || o.label === undefined || o.label === null) continue;
+      const { label, id } = o;
+      let ok = typeof label === 'string' && LABEL.test(label) && label.length <= 64 && typeof id === 'string';
+      if (ok) {
+        try {
+          await pathOf(id, OWNER_NAME_LAYOUT);
+        } catch {
+          ok = false;
+        }
+      }
+      if (!ok) {
+        this.env.err(`warning: opensheaf.json: the label ${pyRepr(label)} of ${pyRepr(id)} is not a label of a line ` +
+                     '(^[a-z0-9]+(-[a-z0-9]+)*$, at most 64 characters): left out (osheaf label gives the line another one)');
+        continue;
+      }
+      out.set(label, id);
+    }
+    return out;
   }
 
   archiveOwners() {

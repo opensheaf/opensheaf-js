@@ -178,7 +178,13 @@ reads JSON only, and says so.
       'specification 0.2 (section 16.1)';
 
     export async function readConfig(storage) {
-      const cfg = await readJson(storage, CONFIG_NAME);
+      let cfg;
+      try {
+        cfg = await readJson(storage, CONFIG_NAME);
+      } catch (error) {
+        exit(`${CONFIG_NAME}: cannot be read (${error.message.replace(/^osheaf\.json: /, '')})`);
+      }
+      if (cfg !== null && (typeof cfg !== 'object' || Array.isArray(cfg))) exit(`${CONFIG_NAME}: the configuration is a mapping of settings`);
       if (cfg !== null) return cfg;
       for (const n of CONFIG_NAMES.slice(1)) {
         if (await storage.kind(n)) exit(`${n}: opensheaf-js reads osheaf.json only (opensheaf-py also reads YAML)`);
@@ -199,7 +205,15 @@ forms of the current draft are read, in the discovery document as in the
 configuration: `mainCollection`, and owners given as bare names, of
 earlier drafts of 0.2, are not. `writeConfig` writes
 `osheaf.json` back, as Python's `json.dumps(..., indent=2)` writes it, and
-the settings of this run with it (opensheaf-py's `write_config`).
+the settings of this run with it (opensheaf-py's `write_config`). A
+configuration that cannot be read stops the command with a message. A
+discovery document that cannot be read (not JSON, not an object) stops
+no command when the archive is opened, as opensheaf-py's
+`read_discovery` decides: it is read as empty, and noted
+(`unreadDiscovery`), so that the commands that write stop, as for pages of
+objects missing, and `osheaf index` writes it again from the storage
+root, warning that its labels are lost; its fields of the wrong type are
+read as none.
 
     // in the archive folder:
     function settingsOf(cfg) {
@@ -228,7 +242,17 @@ the settings of this run with it (opensheaf-py's `write_config`).
 
       async configure() {
         const cfg = await readConfig(this.storage);
-        const disc = (await readJson(this.storage, 'opensheaf.json')) || {};
+        let disc = {};
+        this.unreadDiscovery = null;
+        try {
+          disc = (await readJson(this.storage, 'opensheaf.json')) ?? {};
+        } catch (error) {
+          this.unreadDiscovery = `the discovery document cannot be read (${error.message.replace(/^opensheaf\.json: /, '')})`;
+        }
+        if (disc === null || typeof disc !== 'object' || Array.isArray(disc)) {
+          disc = {};
+          this.unreadDiscovery = 'the discovery document is not a JSON object';
+        }
         this.old = 'archiveId' in cfg || disc.specification === '0.1';
         this.layout = cfg.storageLayout || OWNER_NAME_LAYOUT;
         this.archive = settingsOf(cfg);
@@ -246,14 +270,14 @@ the settings of this run with it (opensheaf-py's `write_config`).
           const paged = new Archive(new Http({ fetch: storageFetch(this.storage, ORIGIN), budget: null }), ORIGIN, disc);
           await paged.loadPages();
           listed = paged.pageProblems.length ? [] : paged.listed();
-          this.unreadPages = paged.pageProblems[0] ?? null;
+          this.unreadPages = paged.pageProblems[0] ?? this.unreadDiscovery;
         } else {
-          this.unreadPages = null;
+          this.unreadPages = this.unreadDiscovery;
         }
         this.labels = await this.labelsOf(listed);
-        this.catalogues = new Map((disc.owners || []).filter((e) => e && typeof e === 'object' && e.owner && e.catalogue)
-          .map((e) => [e.owner, e.catalogue]));
-        this.tombstones = [...(disc.tombstones || [])];
+        this.catalogues = new Map((Array.isArray(disc.owners) ? disc.owners : [])
+          .filter((e) => e && typeof e === 'object' && e.owner && e.catalogue).map((e) => [e.owner, e.catalogue]));
+        this.tombstones = (Array.isArray(disc.tombstones) ? disc.tombstones : []).filter((t) => t && typeof t === 'object' && !Array.isArray(t));
         return this;
       }
 
@@ -305,7 +329,8 @@ page.
         if (this.unreadPages) {
           exit(`opensheaf.json: ${this.unreadPages}: the labels of the lines are not known, and writing ` +
                'the discovery document or the website now would lose them; nothing is written ' +
-               '(restore the pages of objects, from git for instance, and run the command again)');
+               '(restore it, or its pages of objects, from git for instance, and run the command again' +
+               (this.unreadDiscovery ? '; osheaf index writes it again from the storage root, without the labels)' : ')'));
         }
       }
 

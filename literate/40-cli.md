@@ -611,7 +611,7 @@ arguments ends with the status 2, as argparse does.
     import { keyStore, exportFolder, passphrases, readLine } from './keystore.js';
     import { outside } from './outside.js';
     import { enroll, unlock, systemBrowser } from './unlock.js';
-    import { ArchiveFolder, environment, Stop, CONFIG_NAMES, REBUILD, sentence } from '../core/folder.js';
+    import { ArchiveFolder, environment, Stop, CONFIG_NAMES, REBUILD, sentence, readConfig } from '../core/folder.js';
     import { init } from '../core/init.js';
     import { deposit, checkRights } from '../core/deposit.js';
     import { collect } from '../core/collect.js';
@@ -1002,7 +1002,7 @@ commands that do not change the archive are those of opensheaf-py's
       const where = await findRoot(root || process.cwd());
       const f = await ArchiveFolder.open(new DiskStorage(where), env);
       if (f.old) throw new Stop(REBUILD);
-      if (env.changesArchive) f.refuseUnreadPages();
+      if (env.changesArchive && !(env.command === 'index' && f.unreadDiscovery)) f.refuseUnreadPages();
       env.locations = f.archive.locations || {};
       env.archiveRoot = where;
       env.exportFolder = exportFolder(where);
@@ -1263,6 +1263,11 @@ the archive writes the website again, when the archive has one.
 
       async index(root, args, env) {
         const f = await openArchive(root, env);
+        if (f.unreadDiscovery && f.unreadPages === f.unreadDiscovery) {
+          env.err(`warning: opensheaf.json: ${f.unreadDiscovery}: it is written again from the storage root, ` +
+                  'without the labels it held (osheaf label gives them again)');
+          f.unreadPages = null;
+        }
         await writeDiscovery(f);
         if (hasWebsite(f)) await readableIndex(f);
         else env.out('opensheaf.json and the indexes written (no readable index configured)');
@@ -1277,12 +1282,8 @@ next to the program (a binary made by `deno compile` carries them, with
       async verify(root, args, env) {
         const where = await findRoot(root || process.cwd());
         const schemas = await loadSchemas(async (url) => JSON.parse(await fs.readFile(fileURLToPath(url), 'utf-8')));
-        let configured = {};
-        try {
-          configured = JSON.parse(await fs.readFile(path.join(where, 'osheaf.json'), 'utf-8')).locations || {};
-        } catch {
-          // no locations
-        }
+        const disk = new DiskStorage(where);
+        const configured = (await disk.kind('osheaf.json')) ? (await readConfig(disk)).locations || {} : {};
         env.locations = configured;
         const report = await verifyFolder(new DiskStorage(where), { schemas, remote: Boolean(args.remote),
                                                                     fetch: env.fetch, fetchJson: env.fetchJson });
@@ -1375,6 +1376,7 @@ an error of the program itself (`TypeError`, `RangeError`,
       }
       try {
         env.changesArchive = changesArchive(cmd, action, args) || cmd === 'index';
+        env.command = cmd;
         return await RUN[cmd](root, { ...args, action }, env);
       } catch (error) {
         if (error instanceof Stop) {

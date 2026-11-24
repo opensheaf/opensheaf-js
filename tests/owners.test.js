@@ -739,6 +739,45 @@ test('no version through a linked object; files written whole, with the usual pe
   }
 });
 
+test('a broken discovery document, a broken configuration', async () => {
+  for (const text of ['{"format": "opensheaf-archive/0.2", "objects": [', '[]', '{"objects": 5, "owners": "x", "tombstones": 3}']) {
+    const box = await sandbox();
+    try {
+      const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+      await deposit(box, a, 'paper-a', 'one', true);
+      await writeFile(path.join(a.dir, 'opensheaf.json'), text);
+      const v = await box.run([...a.r, 'verify']);
+      assert.equal(v.status, 1, text);
+      assert.match(v.out, /opensheaf\.json/);
+      if (text.startsWith('{"objects": 5')) {
+        await box.ok([...a.r, 'collect']);
+        continue;
+      }
+      const c = await box.run([...a.r, 'collect']);
+      assert.equal(c.status, 1);
+      assert.match(c.err, /nothing is written/);
+      const i = await box.ok([...a.r, 'index']);
+      assert.match(i.err, /without the labels/);
+      const disc = JSON.parse(await readFile(path.join(a.dir, 'opensheaf.json'), 'utf-8'));
+      assert.equal(disc.format, 'opensheaf-archive/0.2');
+      assert.ok(disc.objects.length >= 2);
+    } finally {
+      await box.done();
+    }
+  }
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+    await writeFile(path.join(a.dir, 'osheaf.json'), '{"owner": ');
+    assert.match((await box.run([...a.r, 'verify'])).err, /osheaf\.json: cannot be read/);
+    assert.match((await box.run([...a.r, 'collect'])).err, /osheaf\.json: cannot be read/);
+    await writeFile(path.join(a.dir, 'osheaf.json'), '[]');
+    assert.match((await box.run([...a.r, 'collect'])).err, /mapping/);
+  } finally {
+    await box.done();
+  }
+});
+
 test('a label that is a path is left out', async () => {
   const box = await sandbox();
   try {

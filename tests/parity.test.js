@@ -1443,11 +1443,11 @@ import { main as jsMain } from '../cli/osheaf.js';
 
 const FAKE_TOKEN = 'fake-token-of-the-tests';
 const GUARD = `
-import os, sys, time, urllib.parse, urllib.request
+import os, socket, sys, time, urllib.parse, urllib.request
 FAKE = os.environ["OSHEAF_FAKE_HOSTS"]
 assert FAKE.startswith("http://127.0.0.1:"), FAKE
-real = urllib.request.urlopen
-def guarded(req, *a, **k):
+real = urllib.request.OpenerDirector.open
+def guarded(self, req, *a, **k):
     if isinstance(req, str):
         req = urllib.request.Request(req)
     u = urllib.parse.urlsplit(req.full_url)
@@ -1456,8 +1456,14 @@ def guarded(req, *a, **k):
         req.add_header("X-osheaf-guarded", "1")
     if urllib.parse.urlsplit(req.full_url).hostname != "127.0.0.1":
         raise SystemExit("a test reached for the network: " + req.full_url)
-    return real(req, *a, **k)
-urllib.request.urlopen = guarded
+    return real(self, req, *a, **k)
+urllib.request.OpenerDirector.open = guarded
+resolve = socket.getaddrinfo
+def loopback_only(host, *a, **k):
+    if host not in ("127.0.0.1", b"127.0.0.1"):
+        raise SystemExit(f"a test reached for the network: {host!r}")
+    return resolve(host, *a, **k)
+socket.getaddrinfo = loopback_only
 time.sleep = lambda s: None
 from opensheaf.cli import main
 sys.exit(main(sys.argv[1:]))

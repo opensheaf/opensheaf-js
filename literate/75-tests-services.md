@@ -695,10 +695,15 @@ address as the API, they are on that address.
 ### Running the two against it
 
 opensheaf-py reaches arXiv and Zenodo at their own addresses, with
-`urllib`. It runs here with a guard put in front of `urllib`: every
-address that is not the loopback's is sent to the double, as
-`/<host>/<path>`, and an address that would still leave the computer
-stops the command; the waits between requests to arXiv are skipped. Its
+`urllib`. It runs here with a guard put in front of every opener of
+`urllib` (`OpenerDirector.open`, through which `urlopen` and the openers
+opensheaf-py builds itself, such as Zenodo's that follows redirects only
+on one host, all pass): every address that is not the loopback's is sent
+to the double, as `/<host>/<path>`. Below it, the resolution of names is
+refused for any host but the loopback, so that a request made by any
+other way stops the command instead of leaving the computer (a guard on
+`urlopen` alone let opensheaf-py's own opener of Zenodo reach zenodo.org
+with the fake token). The waits between requests to arXiv are skipped. Its
 Python is the one named by the first lines of its `osheaf` command.
 This program is told the address of the double's API
 (`OPENSHEAF_ZENODO_API`); arXiv, which only its `fetch` command reads, is
@@ -711,11 +716,11 @@ loopback's.
 
     const FAKE_TOKEN = 'fake-token-of-the-tests';
     const GUARD = `
-    import os, sys, time, urllib.parse, urllib.request
+    import os, socket, sys, time, urllib.parse, urllib.request
     FAKE = os.environ["OSHEAF_FAKE_HOSTS"]
     assert FAKE.startswith("http://127.0.0.1:"), FAKE
-    real = urllib.request.urlopen
-    def guarded(req, *a, **k):
+    real = urllib.request.OpenerDirector.open
+    def guarded(self, req, *a, **k):
         if isinstance(req, str):
             req = urllib.request.Request(req)
         u = urllib.parse.urlsplit(req.full_url)
@@ -724,8 +729,14 @@ loopback's.
             req.add_header("X-osheaf-guarded", "1")
         if urllib.parse.urlsplit(req.full_url).hostname != "127.0.0.1":
             raise SystemExit("a test reached for the network: " + req.full_url)
-        return real(req, *a, **k)
-    urllib.request.urlopen = guarded
+        return real(self, req, *a, **k)
+    urllib.request.OpenerDirector.open = guarded
+    resolve = socket.getaddrinfo
+    def loopback_only(host, *a, **k):
+        if host not in ("127.0.0.1", b"127.0.0.1"):
+            raise SystemExit(f"a test reached for the network: {host!r}")
+        return resolve(host, *a, **k)
+    socket.getaddrinfo = loopback_only
     time.sleep = lambda s: None
     from opensheaf.cli import main
     sys.exit(main(sys.argv[1:]))

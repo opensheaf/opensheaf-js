@@ -961,7 +961,11 @@ export async function main(argv, given = {}) {
       env.err(`osheaf: error: ${error.message}`);
       return 2;
     }
-    throw error;
+    if (!(error instanceof Error) || [TypeError, RangeError, ReferenceError, SyntaxError].some((c) => error instanceof c)) {
+      throw error;
+    }
+    env.err(error.message);
+    return 1;
   }
 }
 

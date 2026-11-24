@@ -505,7 +505,9 @@ with a current key not exposed (section 7.3), as in opensheaf-py's test.
         ArchiveFolder.prototype.installVersion = async () => {
           throw new Error('the disk is full');
         };
-        await assert.rejects(box.run([...a.r, 'zenodo', 'p', '--production']), /the disk is full/);
+        const full = await box.run([...a.r, 'zenodo', 'p', '--production']);
+        assert.equal(full.status, 1);
+        assert.match(full.err, /the disk is full/);
         ArchiveFolder.prototype.installVersion = install;
         let l = await lineOf(a.dir, 'p');
         const [, name, owner] = l.id.split(':');

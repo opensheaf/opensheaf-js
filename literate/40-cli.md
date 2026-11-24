@@ -1246,6 +1246,13 @@ next to the program (a binary made by `deno compile` carries them, with
 
 ### The entry point
 
+A command stopped (`Stop`) says why, and exits with 1; a usage refused
+by a command, with 2, as `argparse`. The errors of what a command uses (a
+storage, a key store, a wallet, a key log, GitHub, a fetch) are said the
+same way, their message alone, with 1, as opensheaf-py says them; only
+an error of the program itself (`TypeError`, `RangeError`,
+`ReferenceError`, `SyntaxError`) keeps its trace, for a report.
+
     // in the entry point:
     export const USAGE = `usage: osheaf [-h] [--version] [--root ROOT] COMMAND ...
 
@@ -1319,7 +1326,11 @@ next to the program (a binary made by `deno compile` carries them, with
           env.err(`osheaf: error: ${error.message}`);
           return 2;
         }
-        throw error;
+        if (!(error instanceof Error) || [TypeError, RangeError, ReferenceError, SyntaxError].some((c) => error instanceof c)) {
+          throw error;
+        }
+        env.err(error.message);
+        return 1;
       }
     }
 

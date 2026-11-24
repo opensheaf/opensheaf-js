@@ -785,6 +785,27 @@ a link into an archive is inside that archive.
       }
     });
 
+An error of the storage under a command (here the discovery document
+linked out of the archive, which is not written through) is said as a
+message, with the status 1, not as a trace.
+
+    // in tests of the key stores:
+    test('an error of the storage is said, not thrown', async () => {
+      const box = await sandbox();
+      try {
+        const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+        await writeFile(path.join(box.root, 'elsewhere.json'), '{}\n');
+        await rm(path.join(a.dir, 'opensheaf.json'));
+        await symlink(path.join(box.root, 'elsewhere.json'), path.join(a.dir, 'opensheaf.json'));
+        const r = await box.run([...a.r, 'index']);
+        assert.equal(r.status, 1, r.said);
+        assert.match(r.err, /^opensheaf\.json passes through a symbolic link$/m);
+        assert.equal(await readFile(path.join(box.root, 'elsewhere.json'), 'utf-8'), '{}\n');
+      } finally {
+        await box.done();
+      }
+    });
+
 The hand-off
 ------------
 

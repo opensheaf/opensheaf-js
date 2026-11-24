@@ -631,6 +631,22 @@ test('links are not followed: writing through them is refused, and an export fol
   }
 });
 
+test('an error of the storage is said, not thrown', async () => {
+  const box = await sandbox();
+  try {
+    const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);
+    await writeFile(path.join(box.root, 'elsewhere.json'), '{}\n');
+    await rm(path.join(a.dir, 'opensheaf.json'));
+    await symlink(path.join(box.root, 'elsewhere.json'), path.join(a.dir, 'opensheaf.json'));
+    const r = await box.run([...a.r, 'index']);
+    assert.equal(r.status, 1, r.said);
+    assert.match(r.err, /^opensheaf\.json passes through a symbolic link$/m);
+    assert.equal(await readFile(path.join(box.root, 'elsewhere.json'), 'utf-8'), '{}\n');
+  } finally {
+    await box.done();
+  }
+});
+
 const HAND_OFF = { sk: '3MnQ1WVJ9j-gIHW04onidnPAdXBkj8Ex38awjc_xIFU', pk: 'EDUGNAoWiXZye3oZT1uexqCDj6g-_pOiwL6N01HzQX0',
                    esk: 'XsIioGnOBETGr9GuOkvzh0s9Mnee8lz8KkfLHClLxGc', epk: 'wz_hpV5NNJh92Eqb4TE6dA7IVbA2LrWBmV8GisGgjBE',
                    state: 'Zaz8C5ywR4VKbNOX7dQHUg', mode: 'unlock',

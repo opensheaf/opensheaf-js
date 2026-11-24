@@ -601,6 +601,8 @@ an envelope opens with its passphrase and with each passkey, never with a
 key-encryption key that is not its own; passkey locks are removed by
 credential or relying party, never the last passphrase lock; a text goes
 through the clipboard and the standard input, and lands in the key store.
+A passphrase is read in NFC: its spellings in NFC and in NFD open the same
+key file and text, whichever wrote it.
 
     // in tests of wallets:
     test('key files, passkey locks and texts', async () => {
@@ -624,6 +626,16 @@ through the clipboard and the standard input, and lands in the key store.
       assert.equal((await readKey(plain)).key.did, k.did);
       const locked = await keyText(k, owner, 'current', 'pass', COST);
       assert.equal((await readKey(locked, 'pass')).key.did, k.did);
+      const accented = '\u00c9lan caf\u00e9, cr\u00e8me br\u00fbl\u00e9e';
+      const nfc = accented.normalize('NFC'), nfd = accented.normalize('NFD');
+      assert.notEqual(nfc, nfd);
+      for (const [one, other] of [[nfc, nfd], [nfd, nfc]]) {
+        for (const t of [await keyFileText(k, owner, 'current', 2, one, { cost: COST }), await keyText(k, owner, 'current', one, COST)]) {
+          assert.equal((await readKey(t, other)).key.did, k.did);
+          assert.equal((await readKey(t, one)).key.did, k.did);
+        }
+      }
+      await assert.rejects(readKey(await keyText(k, owner, 'current', nfc, COST), 'Elan cafe, creme brulee'), /wrong passphrase/);
       const box = await sandbox();
       try {
         const a = await archive(box, 'arch', ['--export', path.join(box.root, 'k1'), '--no-passphrase']);

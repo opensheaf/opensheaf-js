@@ -215,6 +215,16 @@ decrypted, so that a program that only verifies (the Explorer) never
 loads them. hash-wasm also gives MD5, which OCFL fixity needs and
 WebCrypto lacks (chapter [22](22-writing.md)).
 
+**The passphrase in Unicode NFC.** The same accented letter can be typed
+as one character or as a letter and a combining accent, depending on the
+keyboard, the operating system or the password manager. A passphrase is
+normalised to NFC before Argon2id reads it, in UTF-8, as opensheaf-py
+does, so that both spellings open the same key, in either program. This
+function is the one place where a passphrase becomes bytes: a seed
+encrypted on its own, the passphrase lock of an envelope, a key file, a
+key text and a wallet all go through it. An ASCII passphrase is unchanged
+by NFC.
+
     // in encrypting a seed under a passphrase:
     export const OPSLIMIT = 3, MEMLIMIT = 268435456;
     const ARGON2ID = { opsMin: 1, opsMax: 4, memMin: 8192, memMax: 1073741824, saltBytes: 16 };
@@ -229,7 +239,7 @@ WebCrypto lacks (chapter [22](22-writing.md)).
       }
       if (salt.length !== ARGON2ID.saltBytes) throw new KeyError('the encryption of the key is damaged');
       const hashWasm = await import('hash-wasm');
-      return hashWasm.argon2id({ password: utf8(passphrase), salt, parallelism: 1, iterations: ops,
+      return hashWasm.argon2id({ password: utf8(passphrase.normalize('NFC')), salt, parallelism: 1, iterations: ops,
                                  memorySize: Math.floor(mem / 1024), hashLength: 32, outputType: 'binary' });
     }
 

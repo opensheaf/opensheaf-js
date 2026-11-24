@@ -849,11 +849,15 @@ test('key texts exported by either are imported by the other', { skip }, async (
   try {
     ok(s.py(await initArgs('arch', path.join(s.root, 'keys'))), 'py init');
     const arch = path.join(s.root, 'arch');
-    const pass = { OPENSHEAF_PASSPHRASE: 'correct horse' };
+    const accented = '\u00c9lan caf\u00e9, cr\u00e8me br\u00fbl\u00e9e';
+    const pass = { OPENSHEAF_PASSPHRASE: accented.normalize('NFC') };
+    const spelled = { py: pass, js: { OPENSHEAF_PASSPHRASE: accented.normalize('NFD') } };
+    assert.notEqual(spelled.py.OPENSHEAF_PASSPHRASE, spelled.js.OPENSHEAF_PASSPHRASE);
     for (const [from, to, extra] of [['py', 'js', []], ['js', 'py', []], ['py', 'js', ['--encrypt']], ['js', 'py', ['--encrypt']]]) {
-      const text = ok(s[from](['key', 'export', '--stdout', ...extra], { cwd: arch, more: pass }), `${from} export`).stdout;
+      const text = ok(s[from](['key', 'export', '--stdout', ...extra], { cwd: arch, more: spelled[from] }), `${from} export`).stdout;
       assert.match(text, /^opensheaf-key-text\/0\.2\n/);
-      const other = { ...pass, XDG_CONFIG_HOME: path.join(s.root, `xdg-${from}-${to}-${extra.length}`) };
+      assert.equal(text.includes('encryption '), extra.length > 0);
+      const other = { ...spelled[to], XDG_CONFIG_HOME: path.join(s.root, `xdg-${from}-${to}-${extra.length}`) };
       const r = ok(s[to](['key', 'import', '--stdin'], { cwd: arch, more: other, input: text }), `${to} import`);
       assert.match(r.stdout, /is now kept in a file of this computer\./);
       assert.match(ok(s[from](['owner', 'show', '--offline'], { cwd: arch, more: other }), 'show').stdout, /\(on this computer\)/);

@@ -108,7 +108,7 @@ async function argon2id(passphrase, salt, opslimit, memlimit) {
   }
   if (salt.length !== ARGON2ID.saltBytes) throw new KeyError('the encryption of the key is damaged');
   const hashWasm = await import('hash-wasm');
-  return hashWasm.argon2id({ password: utf8(passphrase), salt, parallelism: 1, iterations: ops,
+  return hashWasm.argon2id({ password: utf8(passphrase.normalize('NFC')), salt, parallelism: 1, iterations: ops,
                              memorySize: Math.floor(mem / 1024), hashLength: 32, outputType: 'binary' });
 }
 

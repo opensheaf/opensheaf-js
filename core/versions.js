@@ -147,6 +147,11 @@ export function documentVersionErrors(inv, objOf) {
     const obj = objOf(ver);
     if (!obj || (obj.kind !== 'document' && obj.kind !== 'collection')) return errors;
     const n = obj.documentVersion;
+    if (!Number.isInteger(n) || n < 1) {
+      const repr = typeof n === 'string' ? `'${n}'` : n === null || n === undefined ? 'None' : JSON.stringify(n);
+      add(ver, `documentVersion is a positive integer, not ${repr} (section 4.3): the document versions are not checked further`);
+      return errors;
+    }
     const newDoc = !seen.has(n);
     const own = ownFiles(inv, ver, obj);
     const change = obj.changes?.text ?? null;

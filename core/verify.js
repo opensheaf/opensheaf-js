@@ -170,8 +170,11 @@ class Verification {
     } else {
       const layout = jsonOrNull(await read('ocfl_layout.json'));
       if (layout?.extension !== HASHED_LAYOUT) this.add('error', 'ocfl', `ocfl_layout.json must name the extension ${HASHED_LAYOUT} (section 3.2)`);
-      const config = jsonOrNull(await read(`extensions/${HASHED_LAYOUT}/config.json`));
-      if (config && ((config.digestAlgorithm ?? 'sha256') !== 'sha256' || (config.tupleSize ?? 3) !== 3 || (config.numberOfTuples ?? 3) !== 3)) {
+      const raw = await read(`extensions/${HASHED_LAYOUT}/config.json`);
+      const config = raw === null ? {} : jsonOrNull(raw);
+      if (!isObject(config)) {
+        this.add('error', 'ocfl', `extensions/${HASHED_LAYOUT}/config.json is not a JSON object`);
+      } else if ((config.digestAlgorithm ?? 'sha256') !== 'sha256' || (config.tupleSize ?? 3) !== 3 || (config.numberOfTuples ?? 3) !== 3) {
         this.add('error', 'ocfl', 'the hashed layout keeps its default parameters (section 3.2)');
       }
     }

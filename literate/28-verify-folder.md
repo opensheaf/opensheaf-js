@@ -96,7 +96,9 @@ over the network, through `fetch`.
         if (!(error instanceof FetchError)) throw error;
         report = new Report(base, { remote, digests });
         report.add(finding('error', 'opensheaf.json', error.kind === 'not-found'
-          ? 'the discovery document is missing (section 3.1)' : `not JSON: ${error.detail}`));
+          ? 'the discovery document is missing (section 3.1)'
+          : error.detail === 'is not a JSON object' ? 'the discovery document is a JSON object (section 3.1)'
+            : `not JSON: ${error.detail}`));
       }
       if (!report.findings.some((f) => f.message === 'specification 0.1: rebuild (section 16.1)')) {
         report.add(...await lookForKeys(storage));
@@ -165,14 +167,21 @@ Keepers
 
 The keeper an owner names (section 6.6) is reported for every key log held:
 not checked, unless `--remote` reads its ORCID record or its domain; a
-place that cannot be read is a warning.
+place that cannot be read is a warning. An object whose `object.json`
+cannot be read is left to the checks of the storage root, which report it.
 
     // in keepers:
     export async function keeperFindings(f, remote, fetchJson = null) {
       const out = [];
       for (const { id, dir, inv } of await f.objects()) {
         if (!inv || typeof id !== 'string') continue;
-        if ((await f.readObjectJson(dir, inv, 'object.json'))?.kind !== 'owner') continue;
+        let kind;
+        try {
+          kind = (await f.readObjectJson(dir, inv, 'object.json'))?.kind;
+        } catch {
+          continue;
+        }
+        if (kind !== 'owner') continue;
         let log;
         try {
           log = await f.keyLog(id.split(':')[2]);

@@ -295,6 +295,10 @@ not be read, as opensheaf-py does. A branch numbers its own document
 versions from 1, as every line does (section 9.4); `parent.documentVersion`
 keeps the parent's number.
 
+A `documentVersion` that is not a positive integer stops the check of the
+numbering, as in opensheaf-py's `document_version_errors`: what follows
+would be measured against it.
+
     // in the rules of document versions:
     export function documentVersionErrors(inv, objOf) {
       const errors = [];
@@ -312,6 +316,11 @@ keeps the parent's number.
         const obj = objOf(ver);
         if (!obj || (obj.kind !== 'document' && obj.kind !== 'collection')) return errors;
         const n = obj.documentVersion;
+        if (!Number.isInteger(n) || n < 1) {
+          const repr = typeof n === 'string' ? `'${n}'` : n === null || n === undefined ? 'None' : JSON.stringify(n);
+          add(ver, `documentVersion is a positive integer, not ${repr} (section 4.3): the document versions are not checked further`);
+          return errors;
+        }
         const newDoc = !seen.has(n);
         const own = ownFiles(inv, ver, obj);
         const change = obj.changes?.text ?? null;

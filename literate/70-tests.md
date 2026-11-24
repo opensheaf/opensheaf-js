@@ -1462,6 +1462,78 @@ they do not have the digest the inventory states.
       await assert.rejects(r.describe(res), (e) => e.kind === 'digest' && /does not have the digest/.test(e.message));
     });
 
+The verifier reports what it cannot read, and goes on, as in
+opensheaf-py's `test_the_verifier_reports_what_it_cannot_read`: a
+`documentVersion` that is text, or missing; a discovery document that is
+a list; an inventory nested too deeply, or whose versions are a list, or
+whose user is text; an `object.json` that is not UTF-8; a `config.json`
+of the hashed layout that is not JSON. Each case is made in an archive
+of its own, its files rewritten with their digests. An inventory whose
+versions are not a mapping is one this verifier cannot read, and a user
+that is not a mapping is reported by the rule of section 4.1, in words
+of their own.
+
+    // in tests of keepers and of options read from files:
+    async function rewriteInventory(storage, dir, change) {
+      const inv = JSON.parse(new TextDecoder().decode(await storage.read(`${dir}/inventory.json`)));
+      change(inv);
+      const bytes = utf8(JSON.stringify(inv, null, 2));
+      const sc = utf8(`${await sha512hex(bytes)} inventory.json\n`);
+      for (const at of [dir, `${dir}/${typeof inv.head === 'string' ? inv.head : 'v1'}`]) {
+        await storage.write(`${at}/inventory.json`, bytes);
+        await storage.write(`${at}/inventory.json.sha512`, sc);
+      }
+    }
+
+    async function rewriteFile(storage, dir, logical, bytes) {
+      const inv = JSON.parse(new TextDecoder().decode(await storage.read(`${dir}/inventory.json`)));
+      const state = inv.versions[inv.head].state;
+      const old = Object.keys(state).find((k) => state[k].includes(logical));
+      await storage.write(`${dir}/${inv.manifest[old][0]}`, bytes);
+      const d = await sha512hex(bytes);
+      await rewriteInventory(storage, dir, (i) => {
+        i.manifest[d] = i.manifest[old];
+        delete i.manifest[old];
+        for (const v of Object.values(i.versions)) {
+          if (v.state[old]) {
+            v.state[d] = v.state[old];
+            delete v.state[old];
+          }
+        }
+      });
+    }
+
+    test('the verifier reports what it cannot read', async () => {
+      const cases = {
+        'documentVersion text': [/documentVersion is a positive integer/, async (s, dir, f) => {
+          const obj = await f.readObjectJson(dir, await f.inventory(dir), 'object.json');
+          await rewriteFile(s, dir, 'object.json', utf8(JSON.stringify({ ...obj, documentVersion: '1' })));
+        }],
+        'documentVersion missing': [/documentVersion is a positive integer/, async (s, dir, f) => {
+          const obj = await f.readObjectJson(dir, await f.inventory(dir), 'object.json');
+          await rewriteFile(s, dir, 'object.json', utf8(JSON.stringify({ ...obj, documentVersion: null })));
+        }],
+        'discovery list': [/is a JSON object/, async (s) => s.write('opensheaf.json', utf8('[]'))],
+        'deep inventory': [/without a readable inventory|inventory/, async (s, dir) => s.write(`${dir}/inventory.json`, utf8('['.repeat(100000)))],
+        'object.json latin-1': [/cannot be read|UTF-8/, async (s, dir) => rewriteFile(s, dir, 'object.json', new Uint8Array([0xff, 0xfe, 0x7b, 0x7d]))],
+        'hashed config': [/config\.json is not a JSON object/, async (s) => {
+          await s.write('ocfl/extensions/0003-hash-and-id-n-tuple-storage-layout/config.json', utf8('[1'));
+        }, { layout: 'hashed' }],
+        'versions list': [/without a readable inventory/, async (s, dir) => rewriteInventory(s, dir, (i) => { i.versions = ['v1']; })],
+        'user text': [/a version has a user with a name/, async (s, dir) => rewriteInventory(s, dir, (i) => { i.versions.v1.user = 'me'; })],
+      };
+      for (const [name, [expected, breakIt, options = {}]] of Object.entries(cases)) {
+        const { storage, f } = await newArchive(options);
+        await deposit(f, paper('paper-a'));
+        const dir = await f.dirOf(f.labels.get('paper-a'));
+        await breakIt(storage, dir, f);
+        const report = await verifyFolder(storage, { schemas });
+        const errors = report.findings.filter((x) => x.level === 'error').map((x) => x.text);
+        assert.ok(errors.some((e) => expected.test(e)), `${name}:\n${errors.join('\n')}`);
+        assert.ok(!errors.some((e) => /stopped on a file/.test(e)), `${name}:\n${errors.join('\n')}`);
+      }
+    });
+
 A pin that is not one (an object version `latest`, a name that is a
 path) is *not a version*, noted, and nothing is fetched for it, as in
 opensheaf-py's `test_a_pin_that_is_not_one`.

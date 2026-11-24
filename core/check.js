@@ -39,7 +39,9 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
     if (!(error instanceof FetchError)) throw error;
     report = new Report(base, { remote, digests });
     report.add(finding('error', 'opensheaf.json', error.kind === 'not-found'
-      ? 'the discovery document is missing (section 3.1)' : `not JSON: ${error.detail}`));
+      ? 'the discovery document is missing (section 3.1)'
+      : error.detail === 'is not a JSON object' ? 'the discovery document is a JSON object (section 3.1)'
+        : `not JSON: ${error.detail}`));
   }
   if (!report.findings.some((f) => f.message === 'specification 0.1: rebuild (section 16.1)')) {
     report.add(...await lookForKeys(storage));
@@ -83,7 +85,13 @@ export async function keeperFindings(f, remote, fetchJson = null) {
   const out = [];
   for (const { id, dir, inv } of await f.objects()) {
     if (!inv || typeof id !== 'string') continue;
-    if ((await f.readObjectJson(dir, inv, 'object.json'))?.kind !== 'owner') continue;
+    let kind;
+    try {
+      kind = (await f.readObjectJson(dir, inv, 'object.json'))?.kind;
+    } catch {
+      continue;
+    }
+    if (kind !== 'owner') continue;
     let log;
     try {
       log = await f.keyLog(id.split(':')[2]);

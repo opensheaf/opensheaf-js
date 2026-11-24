@@ -1016,9 +1016,15 @@ description not of the form expected fails here. Anything that fails
 makes the archive count as not answering, and the next one in `at` is
 tried; when none answers, the entry shows the cached citation, and the
 rest of the website is written, as opensheaf-py's `remote_view` does.
+A member whose pins are not pins is not looked up; the versions read for
+a member without a history are those the inventory pinned records, which
+must be the inventory of the version pinned, never a count taken from
+the pin (`v999999999999`, with an inventory of that version alone, would
+have the build run for ever).
 
     // in the entries of members:
     async function remoteView(site, m) {
+      if (!pinsOk(m)) return null;
       const id = objectId(m.name, m.owner);
       const [pinVer, pin] = lastPin(m);
       for (const at of m.at || []) {
@@ -1047,7 +1053,10 @@ rest of the website is written, as opensheaf-py's `remote_view` does.
               shown = hist[hist.length - 1];
             } else {
               const last = new Map();
-              for (let k = 1; k <= Number(pinVer.slice(1)); k++) {
+              if (inv.head !== pinVer || !inv.versions || Object.keys(inv.versions).length !== Number(pinVer.slice(1))) {
+                throw new Error(`the inventory pinned is not that of ${pinVer}`);
+              }
+              for (let k = 1; k <= Object.keys(inv.versions).length; k++) {
                 const o = Object.hasOwn(inv.versions, `v${k}`) ? await read(`v${k}`, OBJ) : null;
                 if (o) last.set(o.documentVersion, `v${k}`);
               }

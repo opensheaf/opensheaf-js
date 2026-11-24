@@ -836,6 +836,34 @@ citation.
       assert.match(home, /archive unavailable: cached citation/);
     });
 
+A pin whose number bounds nothing: an archive serving an inventory of
+`v999999999999` alone, which the pin matches, is not read version by
+version up to that number, as in opensheaf-py's
+`test_a_pin_whose_number_bounds_nothing`.
+
+    // in tests of collections and the website:
+    test('a pin whose number bounds nothing', async () => {
+      const obj = utf8(JSON.stringify({ documentVersion: 1 }));
+      const d = await sha512hex(obj);
+      const ver = 'v999999999999';
+      const inv = utf8(JSON.stringify({ head: ver, versions: { [ver]: { state: { [d]: ['object.json'] } } },
+                                        manifest: { [d]: [`${ver}/content/object.json`] } }));
+      const { storage, f, env } = await newArchive();
+      env.fetch = async (url) => {
+        const u = String(url);
+        if (u.endsWith('opensheaf.json')) return new Response(JSON.stringify({ specification: '0.2' }));
+        return new Response(u.endsWith('inventory.json') ? inv : obj);
+      };
+      await collections.newCollection(f, { label: 'list', type: 'catalogue', title: 'List' });
+      const m = { kind: 'document', name: 'a'.repeat(52), owner: 'b'.repeat(51) + 'a', at: ['https://evil.example/'],
+                  version: ver, inventorySha512: await sha512hex(inv), cite: { title: 'Cached' } };
+      const mem = (await head(f, 'list', 'members.json')).json;
+      await collections.write(f, f.labels.get('list'), { ...mem, members: [m] }, { message: 'by hand' });
+      f.index.html.featured = 'list';
+      await readableIndex(f);
+      assert.match(new TextDecoder().decode(await storage.read('index.html')), /archive unavailable: cached citation/);
+    });
+
 An archive whose home page is a TeXmacs index has its landing pages
 written after a change (`present`, which the command line calls), and by
 `osheaf index`, as opensheaf-py writes

@@ -786,6 +786,7 @@ async function remoteSource(site, at) {
 }
 
 async function remoteView(site, m) {
+  if (!pinsOk(m)) return null;
   const id = objectId(m.name, m.owner);
   const [pinVer, pin] = lastPin(m);
   for (const at of m.at || []) {
@@ -814,7 +815,10 @@ async function remoteView(site, m) {
           shown = hist[hist.length - 1];
         } else {
           const last = new Map();
-          for (let k = 1; k <= Number(pinVer.slice(1)); k++) {
+          if (inv.head !== pinVer || !inv.versions || Object.keys(inv.versions).length !== Number(pinVer.slice(1))) {
+            throw new Error(`the inventory pinned is not that of ${pinVer}`);
+          }
+          for (let k = 1; k <= Object.keys(inv.versions).length; k++) {
             const o = Object.hasOwn(inv.versions, `v${k}`) ? await read(`v${k}`, OBJ) : null;
             if (o) last.set(o.documentVersion, `v${k}`);
           }

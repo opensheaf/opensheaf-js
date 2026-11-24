@@ -1126,6 +1126,13 @@ test('labels read from the pages of the discovery documents, here and elsewhere 
     assert.ok(there.ok, there.message);
     const list = text(await m.read('collections/reading.yaml'));
     assert.ok(list.includes('label: papers-two') && list.includes('https://example.org/other/'), list);
+    const fetch = env.fetch;
+    env.fetch = async () => new Response(new ReadableStream({ pull: (c) => c.enqueue(new Uint8Array(1 << 16).fill(32)) }));
+    const endless = await carryOut(m, env, 'add', { 'In collection': 'reading', 'New member': 'other-one',
+      'Archive of the new member': 'https://example.org/other/' }, {}, { schemas });
+    assert.equal(endless.ok, false);
+    assert.match(endless.message, /The archive at `https:\/\/example\.org\/other\/` could not be read \(more than \d+ bytes\)/);
+    env.fetch = fetch;
     const gone = await carryOut(other, env, 'withdraw', { Label: 'other-two', 'Reason for the withdrawal': 'A duplicate.' }, {});
     assert.ok(gone.ok, gone.message);
     const again = await carryOut(m, env, 'add', { 'In collection': 'reading', 'New member': 'papers-one' }, {}, { schemas });

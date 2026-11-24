@@ -8,6 +8,7 @@ import { writeDiscovery, listedObjects } from './discovery.js';
 import { present, readableIndex, hasWebsite } from './website.js';
 import { verifyFolder } from './check.js';
 import { readJson, readText, writeText, joinPath, MemoryStorage } from './storage.js';
+import { Http } from './http.js';
 import { jsonText } from './write.js';
 import { parseData } from './inputs.js';
 import { init } from './init.js';
@@ -212,21 +213,23 @@ async function entryKey(r, entry) {
 }
 
 async function readDiscovery(r, base) {
+  const http = new Http({ fetch: r.env.fetch, budget: null });
   try {
-    const res = await r.env.fetch(base + 'opensheaf.json');
-    if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
-    const disc = await res.json();
+    const disc = await http.json(base + 'opensheaf.json');
     if (disc && typeof disc === 'object' && Object.hasOwn(disc, 'objectPages')) {
       disc.objects = await listedObjects(disc, async (path) => {
-        const page = await r.env.fetch(base + path);
-        if (page.status === 404 || page.status === 410) return null;
-        if (!page.ok) throw new Error(`HTTP Error ${page.status}`);
-        return new Uint8Array(await page.arrayBuffer());
+        try {
+          return await http.request(base + path);
+        } catch (error) {
+          if (error.kind === 'not-found') return null;
+          throw error;
+        }
       });
     }
     return disc;
   } catch (error) {
-    throw new Problem(`The archive at \`${base}\` could not be read (${error.message}): give the address of an ` +
+    const why = error.status ? `HTTP Error ${error.status}` : error.detail || error.message;
+    throw new Problem(`The archive at \`${base}\` could not be read (${why}): give the address of an ` +
                       'OpenSheaf archive of specification 0.2, the folder that holds its `opensheaf.json`.');
   }
 }

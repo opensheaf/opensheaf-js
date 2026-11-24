@@ -42,6 +42,7 @@ The module is `core/requests.js`.
     import { present, readableIndex, hasWebsite } from './website.js';
     import { verifyFolder } from './check.js';
     import { readJson, readText, writeText, joinPath, MemoryStorage } from './storage.js';
+    import { Http } from './http.js';
     import { jsonText } from './write.js';
     import { parseData } from './inputs.js';
     import { init } from './init.js';
@@ -284,7 +285,11 @@ A member is written in a collection's file as `{label: L}` (a line of
 this archive) or `{uri: sheaf:<name>:<owner>, at: [URL, ...]}` (a line
 of any archive), and known by its name and owner. A member named by a
 label of another archive is looked up in that archive's discovery
-document, read with the `fetch` of the environment.
+document, and its pages of objects, read with the `fetch` of the
+environment through the HTTP client of chapter [10](10-http.md): within
+its time limits and the size limit of a JSON file, so that an archive
+that answers slowly, or without end, does not hold the request. A page
+missing (404 or 410) is a page left out, as in the template's script.
 
     // in members of collections:
     function parseSheaf(text) {
@@ -305,21 +310,23 @@ document, read with the `fetch` of the environment.
     }
 
     async function readDiscovery(r, base) {
+      const http = new Http({ fetch: r.env.fetch, budget: null });
       try {
-        const res = await r.env.fetch(base + 'opensheaf.json');
-        if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
-        const disc = await res.json();
+        const disc = await http.json(base + 'opensheaf.json');
         if (disc && typeof disc === 'object' && Object.hasOwn(disc, 'objectPages')) {
           disc.objects = await listedObjects(disc, async (path) => {
-            const page = await r.env.fetch(base + path);
-            if (page.status === 404 || page.status === 410) return null;
-            if (!page.ok) throw new Error(`HTTP Error ${page.status}`);
-            return new Uint8Array(await page.arrayBuffer());
+            try {
+              return await http.request(base + path);
+            } catch (error) {
+              if (error.kind === 'not-found') return null;
+              throw error;
+            }
           });
         }
         return disc;
       } catch (error) {
-        throw new Problem(`The archive at \`${base}\` could not be read (${error.message}): give the address of an ` +
+        const why = error.status ? `HTTP Error ${error.status}` : error.detail || error.message;
+        throw new Problem(`The archive at \`${base}\` could not be read (${why}): give the address of an ` +
                           'OpenSheaf archive of specification 0.2, the folder that holds its `opensheaf.json`.');
       }
     }

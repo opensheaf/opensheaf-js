@@ -102,8 +102,10 @@ PDF gives no sources; a single file is named after the paper, with
 `.tex` if it looks like TeX; the files of a tar archive go under
 `source/`, in their folders. The archive is untrusted (section 15): only
 regular files are taken, links and devices are noted, a path with `..`
-is refused and a leading `/` dropped, a path that differs only in case
-from one taken is skipped; and the archive is refused as a whole if it
+is refused and a leading `/` dropped, a path equal to one taken in NFC
+and lower case (in case only, or in Unicode normalisation, which collide
+on macOS) is skipped, and so is a file of the name of a folder taken, or
+a file under a file taken, each with a note; and the archive is refused as a whole if it
 expands to more than `MAX_UNPACKED` bytes (1 GiB) or has more than
 `MAX_MEMBERS` members (10000), or if the sizes its files declare add up
 to more, before anything is kept. The limits are those of opensheaf-py,
@@ -129,7 +131,7 @@ opensheaf-py writes them: a storage takes bytes.
       if (members.filter((m) => m.isFile).reduce((n, m) => n + m.size, 0) > LIMITS.unpacked) {
         exit(`${src}: its files add up to more than ${LIMITS.unpacked / 2 ** 20 | 0} MiB; refused (section 15)`);
       }
-      const seen = new Set();
+      const seen = new Set(), folders = new Set();
       for (const m of members) {
         if (m.isDir) continue;
         const logical = safeLogical(m.name);
@@ -141,11 +143,19 @@ opensheaf-py writes them: a storage takes bytes.
           notes.push(`skipped unsafe path ${m.name}`);
           continue;
         }
-        if (seen.has(logical.toLowerCase())) {
-          notes.push(`skipped ${m.name}: differs only in case from another file`);
+        const key = logical.normalize('NFC').toLowerCase();
+        if (seen.has(key)) {
+          notes.push(`skipped ${m.name}: differs only in case or Unicode normalisation from another file`);
           continue;
         }
-        seen.add(logical.toLowerCase());
+        const parts = key.split('/');
+        const parents = parts.slice(1).map((_, k) => parts.slice(0, k + 1).join('/'));
+        if (folders.has(key) || parents.some((x) => seen.has(x))) {
+          notes.push(`skipped ${m.name}: a file and a folder of the same name`);
+          continue;
+        }
+        seen.add(key);
+        for (const x of parents) folders.add(x);
         files.push([`source/${logical}`, m.data()]);
       }
       return { kind: 'tar', files, notes };
@@ -254,7 +264,7 @@ same way, after its leading zeros. A member never ends elsewhere, since
           rest = rest.subarray(k);
         }
       } catch (error) {
-        exit(`${src}: not a gzip file (${error.message})`);
+        exit(`${src}: neither a PDF nor a gzip file (${error.message}); refused`);
       }
       const out = new Uint8Array(Math.min(size, limit));
       let k = 0;

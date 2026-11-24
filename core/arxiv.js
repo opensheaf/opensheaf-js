@@ -300,7 +300,7 @@ export async function unpack(data, src, baseId) {
   if (members.filter((m) => m.isFile).reduce((n, m) => n + m.size, 0) > LIMITS.unpacked) {
     exit(`${src}: its files add up to more than ${LIMITS.unpacked / 2 ** 20 | 0} MiB; refused (section 15)`);
   }
-  const seen = new Set();
+  const seen = new Set(), folders = new Set();
   for (const m of members) {
     if (m.isDir) continue;
     const logical = safeLogical(m.name);
@@ -312,11 +312,19 @@ export async function unpack(data, src, baseId) {
       notes.push(`skipped unsafe path ${m.name}`);
       continue;
     }
-    if (seen.has(logical.toLowerCase())) {
-      notes.push(`skipped ${m.name}: differs only in case from another file`);
+    const key = logical.normalize('NFC').toLowerCase();
+    if (seen.has(key)) {
+      notes.push(`skipped ${m.name}: differs only in case or Unicode normalisation from another file`);
       continue;
     }
-    seen.add(logical.toLowerCase());
+    const parts = key.split('/');
+    const parents = parts.slice(1).map((_, k) => parts.slice(0, k + 1).join('/'));
+    if (folders.has(key) || parents.some((x) => seen.has(x))) {
+      notes.push(`skipped ${m.name}: a file and a folder of the same name`);
+      continue;
+    }
+    seen.add(key);
+    for (const x of parents) folders.add(x);
     files.push([`source/${logical}`, m.data()]);
   }
   return { kind: 'tar', files, notes };
@@ -400,7 +408,7 @@ export async function gunzip(data, limit, src = 'data') {
       rest = rest.subarray(k);
     }
   } catch (error) {
-    exit(`${src}: not a gzip file (${error.message})`);
+    exit(`${src}: neither a PDF nor a gzip file (${error.message}); refused`);
   }
   const out = new Uint8Array(Math.min(size, limit));
   let k = 0;

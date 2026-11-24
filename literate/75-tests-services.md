@@ -278,9 +278,13 @@ while other bytes after it are refused; as `tarfile`, a file cut short
 by the end of the archive is refused, not imported short. The kind of an e-print is told from one decompressed
 tar block, as opensheaf-py's `test_source_kind_reads_one_block`: ten
 megabytes of zeros compressed are `gz`, found without decompressing them.
+Names that collide, as in opensheaf-py's `test_unpack_names_that_collide`:
+a file and a folder of one name (either first), names equal in NFC and
+lower case, skipped with a note; an e-print neither a PDF nor gzip (a
+page of a rate limit) refused with a message.
 
     // in services: the sources:
-    test('e-prints unpacked, within their limits', async () => {
+    test('e-prints unpacked, within their limits, names that collide skipped', async () => {
       const record = (key, value) => {
         const rest = new TextEncoder().encode(` ${key}=${value}\n`).length;
         let n = rest + 1;
@@ -308,10 +312,17 @@ megabytes of zeros compressed are `gz`, found without decompressing them.
                        new Uint8Array(3));
       assert.equal(new TextDecoder().decode((await arxiv.gunzip(two, Infinity)).subarray(256)), '\\documentclass{x}');
       assert.equal((await arxiv.gunzip(two, Infinity)).length, 256 + 17);
-      await assert.rejects(arxiv.gunzip(join(zlib.gzipSync('x'), 'junk'), Infinity, 'junk'), /junk: not a gzip file/);
+      await assert.rejects(arxiv.gunzip(join(zlib.gzipSync('x'), 'junk'), Infinity, 'junk'), /junk: neither a PDF nor a gzip file/);
       const whole = zlib.gunzipSync(tarGz([['main.tex', '\\documentclass{article}' + ' '.repeat(2000)]]));
       const cut = new Uint8Array(zlib.gzipSync(whole.subarray(0, 512 + 1000)));
       await assert.rejects(arxiv.unpack(cut, 'cut', '2611.14296'), /cut: main\.tex: unexpected end of data/);
+      const collide = await arxiv.unpack(tarGz(['a', 'a/b', 'c/d', 'c', '\u00e9.tex', 'e\u0301.tex', 'E\u0301.TEX', 'main.tex']
+        .map((n) => [n, 'x'])), 'collide', '2611.14296');
+      assert.deepEqual(collide.files.map(([lp]) => lp), ['source/a', 'source/c/d', 'source/\u00e9.tex', 'source/main.tex']);
+      assert.equal(collide.notes.filter((n) => n.includes('a file and a folder')).length, 2);
+      assert.equal(collide.notes.filter((n) => n.includes('Unicode normalisation')).length, 2);
+      await assert.rejects(arxiv.unpack(new TextEncoder().encode('<html>rate limited</html>'), 'html', '2611.14296'),
+                           /html: neither a PDF nor a gzip file/);
       const limits = { ...arxiv.LIMITS };
       try {
         arxiv.LIMITS.members = 3;

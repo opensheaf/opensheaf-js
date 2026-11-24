@@ -725,6 +725,10 @@ test('the link to a keeper', async () => {
   assert.deepEqual([link.status, link.reason], [NOT_CHECKED, 'offline: x: HTTP 500']);
   const g = await newArchive({ keeper: 'https://example.org/' });
   const glog = await g.f.keyLog(g.f.archive.owner);
+  await assert.rejects(newArchive({ keeper: 'https://127.0.0.1/' }), /ORCID iD|DNS name/);
+  const { KeyLog } = await import('../core/owners.js');
+  const local = await KeyLog.of(utf8(new TextDecoder().decode(glog.genesis).replace('example.org', '127.0.0.1')));
+  assert.equal((await keeperLink(local, async (url) => assert.fail(url))).status, NOT_CHECKED);
   let asked = null;
   link = await keeperLink(glog, async (url) => {
     asked = url;

@@ -245,7 +245,16 @@ export function orcidValid(text) {
   return (r === 10 ? 'X' : String(r)) === digits[15];
 }
 
-export function keeperValid(uri) {
+export function keeperValid(uri, strict = false) {
   if (uri.startsWith('https://orcid.org/')) return orcidValid(uri);
-  return /^https:\/\/[a-z0-9.-]+\/$/.test(uri);
+  return /^https:\/\/[a-z0-9.-]+\/$/.test(uri) && (!strict || keeperDomain(uri));
+}
+
+const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+export function keeperDomain(uri) {
+  if (typeof uri !== 'string' || !/^https:\/\/[a-z0-9.-]+\/$/.test(uri)) return false;
+  const labels = uri.slice('https://'.length, -1).split('.');
+  return labels.length >= 2 && labels.every((x) => DNS_LABEL.test(x)) && !/^[0-9]+$/.test(labels.at(-1)) &&
+    labels.at(-1) !== 'localhost' && uri.length - 'https:///'.length <= 253;
 }

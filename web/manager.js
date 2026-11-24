@@ -470,7 +470,7 @@ export async function newOwnerKeys({ workflows = true, rotation = ROTATION_KEYS 
 }
 
 export async function ownerKeyLog(keys, { keeper = null, created = null, nonce = null } = {}) {
-  if (keeper && !keeperValid(keeper)) {
+  if (keeper && !keeperValid(keeper, true)) {
     throw new OwnerError(`a keeper is an ORCID iD (with its check digit) or https://<domain>/: ${keeper}`);
   }
   return newOwner([keys.current, ...(keys.workflows ? [keys.workflows] : [])], keys.rotation,

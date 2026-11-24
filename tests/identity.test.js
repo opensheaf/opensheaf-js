@@ -140,13 +140,19 @@ test('canonical JSON (RFC 8785)', () => {
     `{"format":"opensheaf-object/0.2","kind":"owner","name":"${A}","owner":"${A}","previous":"${KL1}","specification":"0.2","status":"active"}`);
 });
 
-test('keepers: ORCID check digits and domains (section 6.6)', () => {
+test('keepers: ORCID check digits and domains, DNS names where written (section 6.6)', () => {
   assert.ok(orcidValid('https://orcid.org/0000-0002-1234-5677'));
   assert.ok(!orcidValid('https://orcid.org/0000-0002-1234-5678'));
   assert.ok(orcidValid('0000-0002-1694-006X'));
   assert.ok(orcidValid('https://orcid.org/0000-0002-1825-0097'));
   assert.ok(keeperValid('https://journal.example.org/'));
   assert.ok(!keeperValid('http://journal.example.org/'));
+  for (const noDomain of ['https://127.0.0.1/', 'https://localhost/', 'https://./', 'https://a..b/',
+                          'https://example/', 'https://-a.org/', 'https://10.0.0.1/']) {
+    assert.ok(!keeperValid(noDomain, true), noDomain);
+  }
+  assert.ok(keeperValid('https://127.0.0.1/'));
+  assert.ok(keeperValid('https://unlock.opensheaf.org/', true));
 });
 
 test('sheaf: URIs (sections 12.1, 12.2 and C.7)', () => {

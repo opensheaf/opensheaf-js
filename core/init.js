@@ -72,7 +72,7 @@ export async function ownerInit(f, args, { done = true } = {}) {
   if (!(nextThreshold >= 1 && nextThreshold <= nRot) || !(threshold >= 1 && threshold <= 1 + others.length)) {
     stop('a threshold is at least 1, and at most the number of keys (section 6.1, rule 1)');
   }
-  if (args.keeper && !keeperValid(args.keeper)) {
+  if (args.keeper && !keeperValid(args.keeper, true)) {
     stop(`a keeper is an ORCID iD (with its check digit) or https://<domain>/: ${args.keeper}`);
   }
   const w = await levelWallet(f, args);

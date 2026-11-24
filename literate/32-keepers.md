@@ -20,7 +20,7 @@ same statuses and reasons; the landing pages mark a confirmed keeper
 URL, `fetchJson`, which the tests replace.
 
     // in core/keepers.js:
-    import { readGenesis, OWNER_NAME } from './names.js';
+    import { readGenesis, OWNER_NAME, keeperDomain } from './names.js';
     import { parseJson } from './http.js';
 
     export const KEEPER_FORMAT = 'opensheaf-keeper/0.2';
@@ -82,6 +82,7 @@ The link to a keeper
       if (keeper === null) return { keeper: null, status: ABSENT, reason: 'the owner names no keeper', successor: null };
       const link = (status, reason, successor = null) => ({ keeper, status, reason, successor });
       const orcid = keeper.startsWith('https://orcid.org/');
+      if (!orcid && !keeperDomain(keeper)) return link(NOT_CHECKED, 'not a DNS name (an address, localhost): not fetched');
       const url = orcid ? ORCID_API.replace('{}', keeper.slice(keeper.lastIndexOf('/') + 1)) : keeper + '.well-known/opensheaf';
       let data;
       try {

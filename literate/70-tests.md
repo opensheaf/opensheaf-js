@@ -915,7 +915,9 @@ Keepers, and options read from files
 
 The link to a keeper, read with a fetch of the tests: an ORCID record that
 links the owner (and names a successor), one that does not, a domain that
-lists the owner, a place that does not answer.
+lists the owner, a place that does not answer; a keeper that is no DNS
+name is not written, and, read, not fetched (opensheaf-py's
+`test_keeper_link`).
 
     // in tests of keepers and of options read from files:
     test('the link to a keeper', async () => {
@@ -933,6 +935,10 @@ lists the owner, a place that does not answer.
       assert.deepEqual([link.status, link.reason], [NOT_CHECKED, 'offline: x: HTTP 500']);
       const g = await newArchive({ keeper: 'https://example.org/' });
       const glog = await g.f.keyLog(g.f.archive.owner);
+      await assert.rejects(newArchive({ keeper: 'https://127.0.0.1/' }), /ORCID iD|DNS name/);
+      const { KeyLog } = await import('../core/owners.js');
+      const local = await KeyLog.of(utf8(new TextDecoder().decode(glog.genesis).replace('example.org', '127.0.0.1')));
+      assert.equal((await keeperLink(local, async (url) => assert.fail(url))).status, NOT_CHECKED);
       let asked = null;
       link = await keeperLink(glog, async (url) => {
         asked = url;

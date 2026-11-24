@@ -116,8 +116,8 @@ collection names its originator, an owner name, and nothing else.
         if (problems.length) throw new Error(problems.join('; '));
         if (keeper !== null) {
           rec.keeper = typeof keeper === 'string' ? [keeper] : [...keeper];
-          if (rec.keeper.length !== 1 || !keeperValid(rec.keeper[0])) {
-            throw new Error(`a keeper is one ORCID iD or https://<domain>/: '${keeper}'`);
+          if (rec.keeper.length !== 1 || !keeperValid(rec.keeper[0], true)) {
+            throw new Error(`a keeper is one ORCID iD or https://<domain>/, a DNS name: '${keeper}'`);
           }
         }
         if (extensions) rec.extensions = extensions;

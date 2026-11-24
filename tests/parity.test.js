@@ -315,6 +315,8 @@ test('init by both writes the same configuration, and the templates of this repo
     }
     const top = async (d) => (await readdir(path.join(s.root, d))).sort();
     assert.deepEqual(await top('ja'), await top('pa'));
+    assert.equal(await readFile(path.join(s.root, 'ja', '.gitignore'), 'utf-8'),
+                 await readFile(path.join(s.root, 'pa', '.gitignore'), 'utf-8'));
     assert.deepEqual(verified(s, path.join(s.root, 'ja')).filter((f) => !f.startsWith('result: ')), []);
     const offline = { https_proxy: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9' };
     const keeper = ['--keeper', 'https://example.org/'];

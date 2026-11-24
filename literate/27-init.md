@@ -221,6 +221,26 @@ owner-name layout of section 3.2 unless `--layout hashed`.
     *.pdf binary
     `;
 
+Two things in the folder of an archive are never committed: the private
+TeXmacs profile `texmacs_home/` of opensheaf-py, which is the machine's
+(and code that TeXmacs runs), and the staging folders `.staging-*` of
+versions being built. `osheaf init` adds them to `.gitignore`, keeping
+what is there, as opensheaf-py's `init` does.
+
+    // in a new archive:
+    export const GITIGNORE = ['texmacs_home/', '.staging-*'];
+
+    async function keepOutOfGit(storage) {
+      const bytes = (await storage.kind('.gitignore')) === 'file' ? await storage.read('.gitignore') : null;
+      const ignore = bytes ? new TextDecoder().decode(bytes) : '';
+      const lines = ignore.split(/\r\n|\r|\n/);
+      const missing = GITIGNORE.filter((x) => !lines.includes(x));
+      if (missing.length) {
+        await writeText(storage, '.gitignore', ignore + (ignore && !ignore.endsWith('\n') ? '\n' : '') +
+                        missing.map((x) => `${x}\n`).join(''));
+      }
+    }
+
     export async function init(storage, env, args, where) {
       for (const n of CONFIG_NAMES) if (await storage.kind(n)) exit(`${where} has a configuration already`);
       const layout = LAYOUTS[args.layout || 'owner-name'];
@@ -274,6 +294,7 @@ owner-name layout of section 3.2 unless `--layout hashed`.
       if (args.newOwner && walletConfig(args, log.owner)) cfg.keys = walletConfig(args, log.owner);
       await writeText(storage, CONFIG_NAME, jsonText(cfg));
       if (!(await storage.kind('.gitattributes'))) await writeText(storage, '.gitattributes', GITATTRIBUTES);
+      await keepOutOfGit(storage);
       for (const name of TEMPLATES) {
         if (!(await storage.kind(`templates/${name}`))) await storage.write(`templates/${name}`, await env.template(name));
       }

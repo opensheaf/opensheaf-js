@@ -23,7 +23,9 @@ The command line reads the files and gives them as bytes; the module,
     import { sha512 } from './http.js';
     import { jsonBytes } from './write.js';
     import { writeDiscovery } from './discovery.js';
-    import { OBJ, OBJ_FORMAT, GENESIS, SPEC, exit } from './folder.js';
+    import { OBJ, OBJ_FORMAT, GENESIS, SPEC, exit, pyRepr } from './folder.js';
+    import { logicalPathProblem } from './paths.js';
+    import { RESERVED } from './verify.js';
     import { joinPath } from './storage.js';
 
     <<licences>>
@@ -257,6 +259,24 @@ the versions withdrawn stay withdrawn (section 13.1), and the new
 version's change note should say why the work is back. The new version is
 written afresh, `active` and without the withdrawal; the deposit says so.
 
+A further source (`--extra-source FILE=PATH`) is refused at a path the
+verifier would report (not relative, not NFC, an empty, `.` or `..`
+segment, a backslash), at a name section 4.1 reserves, and at the path
+of another file of the deposit, the main source or `paper.pdf`, as
+opensheaf-py's `deposit_path_problem` refuses it.
+
+    // in a deposit:
+    export function depositPathProblem(logical, files) {
+      if (!logical || logical.startsWith('/') || logicalPathProblem(logical) || /[\u0000-\u001f\u007f]/.test(logical)) {
+        return `${pyRepr(logical)} is not a logical path of section 4.1 (relative, NFC, no empty, . or .. segments)`;
+      }
+      if (RESERVED.includes(logical.split('/')[0])) return `${logical}: the name ${logical.split('/')[0]} is reserved by section 4.1`;
+      if (files.has(logical) || logical === 'paper.pdf') return `${logical} is another file of the deposit already`;
+      return null;
+    }
+
+The deposit itself:
+
     // in a deposit:
     export async function deposit(f, a) {
       const label = a.label;
@@ -322,8 +342,8 @@ written afresh, `active` and without the withdrawal; the deposit says so.
       formats.push('application/pdf');
       for (const extra of a.extraSource || []) {
         const logical = extra.logical || extra.name.slice(extra.name.lastIndexOf('/') + 1);
-        const parts = logical.split('/');
-        if (logical.startsWith('/') || parts.includes('..') || parts.includes('.')) exit(`bad logical path ${logical}`);
+        const problem = depositPathProblem(logical, files);
+        if (problem) exit(`--extra-source ${extra.name}${extra.logical ? `=${extra.logical}` : ''}: ${problem}`);
         files.set(logical, extra.bytes);
         if (logical.endsWith('.bib') && !formats.includes('application/x-bibtex')) formats.push('application/x-bibtex');
       }

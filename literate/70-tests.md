@@ -1534,6 +1534,31 @@ of their own.
       }
     });
 
+Reserved names, as in opensheaf-py's `test_reserved_names_in_a_document`:
+the verifier reports `members.json`, `keys.json`, `parent/` and `forked/`
+in a document, and not a figure; `--extra-source` refuses them, the
+paths the verifier would report, and the paths of other files of the
+deposit.
+
+    // in tests of keepers and of options read from files:
+    test('reserved names in a document', async () => {
+      const { reservedNameErrors } = await import('../core/verify.js');
+      const errors = reservedNameErrors({ kind: 'document' }, ['object.json', 'datacite.json', 'members.json', 'keys.json',
+                                                                'parent/object.json', 'forked/x', 'figs/a.png']);
+      for (const name of ['members.json', 'keys.json', 'parent/object.json', 'forked/x']) {
+        assert.ok(errors.some((e) => e.startsWith(`${name}: the name`)), name);
+      }
+      assert.ok(!errors.some((e) => e.includes('figs/a.png')));
+      assert.deepEqual(reservedNameErrors({ kind: 'collection', parent: {} }, ['members.json', 'parent/object.json']), []);
+      const { f } = await newArchive();
+      for (const logical of ['members.json', 'parent/object.json', 'genesis.json', 'paper.pdf', 'paper.tex',
+                             'a//b', 'a\\b', 'e\u0301.tex', './x']) {
+        await assert.rejects(deposit(f, paper('paper-b', { extraSource: [{ name: 'main.tex', bytes: utf8('x'), logical }] })),
+                             /--extra-source/, logical);
+      }
+      await deposit(f, paper('paper-b', { extraSource: [{ name: 'main.tex', bytes: utf8('x'), logical: 'sub/main.tex' }] }));
+    });
+
 A pin that is not one (an object version `latest`, a name that is a
 path) is *not a version*, noted, and nothing is fetched for it, as in
 opensheaf-py's `test_a_pin_that_is_not_one`.

@@ -5,7 +5,9 @@ import { dateOf, isEvidence, ownFiles, currentVersion } from './versions.js';
 import { sha512 } from './http.js';
 import { jsonBytes } from './write.js';
 import { writeDiscovery } from './discovery.js';
-import { OBJ, OBJ_FORMAT, GENESIS, SPEC, exit } from './folder.js';
+import { OBJ, OBJ_FORMAT, GENESIS, SPEC, exit, pyRepr } from './folder.js';
+import { logicalPathProblem } from './paths.js';
+import { RESERVED } from './verify.js';
 import { joinPath } from './storage.js';
 
 export const RIGHTS = {
@@ -165,6 +167,15 @@ export async function carriedFiles(f, dir, inv) {
   return out;
 }
 
+export function depositPathProblem(logical, files) {
+  if (!logical || logical.startsWith('/') || logicalPathProblem(logical) || /[\u0000-\u001f\u007f]/.test(logical)) {
+    return `${pyRepr(logical)} is not a logical path of section 4.1 (relative, NFC, no empty, . or .. segments)`;
+  }
+  if (RESERVED.includes(logical.split('/')[0])) return `${logical}: the name ${logical.split('/')[0]} is reserved by section 4.1`;
+  if (files.has(logical) || logical === 'paper.pdf') return `${logical} is another file of the deposit already`;
+  return null;
+}
+
 export async function deposit(f, a) {
   const label = a.label;
   const draft = Boolean(a.draft);
@@ -229,8 +240,8 @@ export async function deposit(f, a) {
   formats.push('application/pdf');
   for (const extra of a.extraSource || []) {
     const logical = extra.logical || extra.name.slice(extra.name.lastIndexOf('/') + 1);
-    const parts = logical.split('/');
-    if (logical.startsWith('/') || parts.includes('..') || parts.includes('.')) exit(`bad logical path ${logical}`);
+    const problem = depositPathProblem(logical, files);
+    if (problem) exit(`--extra-source ${extra.name}${extra.logical ? `=${extra.logical}` : ''}: ${problem}`);
     files.set(logical, extra.bytes);
     if (logical.endsWith('.bib') && !formats.includes('application/x-bibtex')) formats.push('application/x-bibtex');
   }

@@ -284,6 +284,7 @@ class Verification {
       o.objs.set(ver, obj);
       if (!obj || kind === 'owner') continue;
       this.schema(`${where}/object.json`, obj, 'object', 'error', at(ver));
+      for (const message of reservedNameErrors(obj, logical)) this.add('error', where, message, at(ver));
       if (n === 1 || draft) {
         if (isObject(obj) && 'previous' in obj) this.add('error', where, 'a first version, or a draft, has no previous (section 4.3)', at(ver));
       } else if (!isObject(obj) || !('previous' in obj)) {
@@ -883,6 +884,21 @@ class Verification {
       this.progress({ phase: 'digests', done: ++checked, total: files.length, current: cp });
     }));
   }
+}
+
+export const RESERVED = ['object.json', 'datacite.json', 'genesis.json', 'members.json', 'keys.json', 'forked', 'parent'];
+
+export function reservedNameErrors(obj, logical) {
+  const out = [];
+  for (const p of [...logical].sort()) {
+    const top = p.split('/')[0];
+    if (!RESERVED.includes(top)) continue;
+    if (p === top && ['object.json', 'datacite.json', 'genesis.json'].includes(top)) continue;
+    if (p === top && top === 'members.json' && obj?.kind === 'collection') continue;
+    if (top === 'parent' && p !== top && isObject(obj) && 'parent' in obj) continue;
+    out.push(`${p}: the name ${top} is reserved for the file section 4.1 defines`);
+  }
+  return out;
 }
 
 function isEvidencePath(p) {

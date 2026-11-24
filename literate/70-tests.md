@@ -331,6 +331,32 @@ that does not sign, a content file changed behind the archive's back.
       await assert.rejects(deposit(f, paper('unsigned')), (e) => e instanceof Stop && /holds 0 of the current keys/.test(e.message));
     });
 
+No version is added on a head whose checksum file is missing, malformed
+or stale, as opensheaf-py's
+`test_no_version_on_a_head_whose_checksum_file_is_wrong`; repaired, the
+next version records the digest of the head's inventory as `previous`.
+
+    // in tests of an archive in memory:
+    test('no version on a head whose checksum file is wrong (section 4.1)', async () => {
+      const { storage, f } = await newArchive();
+      await deposit(f, paper('paper-a'));
+      const dir = await f.dirOf(f.labels.get('paper-a'));
+      const sc = `${dir}/v1/inventory.json.sha512`;
+      const good = await storage.read(sc);
+      for (const bad of [null, utf8('not a checksum file'), await sidecar(utf8('other bytes'))]) {
+        if (bad === null) await storage.remove(sc);
+        else await storage.write(sc, bad);
+        await assert.rejects(deposit(f, { ...paper('paper-a', { new: false }), pdf: { name: 'v2.pdf', bytes: utf8('%PDF-1.4 two') } }),
+                             /the checksum file of its inventory is missing/);
+        assert.equal((await f.inventory(dir)).head, 'v1');
+        assert.equal(await storage.kind(`${dir}/v2`), null);
+      }
+      await storage.write(sc, good);
+      await deposit(f, { ...paper('paper-a', { new: false }), pdf: { name: 'v2.pdf', bytes: utf8('%PDF-1.4 two') } });
+      const inv = await f.inventory(dir);
+      assert.equal((await f.readObjectJson(dir, inv, 'object.json')).previous, await sha512hex(await storage.read(`${dir}/v1/inventory.json`)));
+    });
+
 A deposit of the own files and change note of the current version is
 refused, writing nothing; a return to the files of an earlier version is
 a revert, a new document version (section 4.2). An object version that

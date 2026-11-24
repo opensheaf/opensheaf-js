@@ -471,7 +471,24 @@ leaves its state in `zenodo-staging/<path of the line>/state.json`, with
 the phase `published`, and no other version of the line is added until
 `osheaf zenodo` completes it, as appendix A.1 requires.
 
+The next version records as `previous` the digest of the head's inventory
+that its checksum file states, which must be the SHA-512 of the
+inventory's bytes, as opensheaf-py's `previous_digest` requires: a
+checksum file missing, malformed or stale stops the command, and no
+version is added until it is repaired.
+
     // in the archive folder:
+      async previousDigest(id, dir, head) {
+        const inv = await this.storage.read(joinPath(dir, head, 'inventory.json'));
+        const sc = await this.storage.read(joinPath(dir, head, 'inventory.json.sha512'));
+        const stated = sc ? sidecarDigest(sc) : null;
+        if (!inv || !stated || stated !== await sha512hex(inv)) {
+          exit(`${this.labelOf(id) || id} ${head}: the checksum file of its inventory is missing, or does not state ` +
+               'the digest of the inventory (section 4.1): no version is added until it is repaired');
+        }
+        return stated;
+      }
+
       async zenodoPending(id) {
         try {
           const state = await readJson(this.storage, joinPath('zenodo-staging', ...(await pathOf(id, this.layout)), 'state.json'));
@@ -499,7 +516,7 @@ the phase `published`, and no other version of the line is added until
                   fixity: { md5: {}, sha256: {} } };
         } else if (!draft) {
           await this.checkBeforeExtending(id, acknowledged);
-          obj.previous = sidecarDigest(await s.read(joinPath(dir, inv.head, 'inventory.json.sha512')));
+          obj.previous = await this.previousDigest(id, dir, inv.head);
         }
         const ver = `v${Number(inv.head.slice(1)) + 1}`;
         if (stageIn !== null && await s.kind(stageIn)) exit(`${stageIn} exists`);

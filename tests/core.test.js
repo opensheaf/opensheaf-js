@@ -242,6 +242,26 @@ test('what a deposit refuses', async () => {
   await assert.rejects(deposit(f, paper('unsigned')), (e) => e instanceof Stop && /holds 0 of the current keys/.test(e.message));
 });
 
+test('no version on a head whose checksum file is wrong (section 4.1)', async () => {
+  const { storage, f } = await newArchive();
+  await deposit(f, paper('paper-a'));
+  const dir = await f.dirOf(f.labels.get('paper-a'));
+  const sc = `${dir}/v1/inventory.json.sha512`;
+  const good = await storage.read(sc);
+  for (const bad of [null, utf8('not a checksum file'), await sidecar(utf8('other bytes'))]) {
+    if (bad === null) await storage.remove(sc);
+    else await storage.write(sc, bad);
+    await assert.rejects(deposit(f, { ...paper('paper-a', { new: false }), pdf: { name: 'v2.pdf', bytes: utf8('%PDF-1.4 two') } }),
+                         /the checksum file of its inventory is missing/);
+    assert.equal((await f.inventory(dir)).head, 'v1');
+    assert.equal(await storage.kind(`${dir}/v2`), null);
+  }
+  await storage.write(sc, good);
+  await deposit(f, { ...paper('paper-a', { new: false }), pdf: { name: 'v2.pdf', bytes: utf8('%PDF-1.4 two') } });
+  const inv = await f.inventory(dir);
+  assert.equal((await f.readObjectJson(dir, inv, 'object.json')).previous, await sha512hex(await storage.read(`${dir}/v1/inventory.json`)));
+});
+
 test('a deposit of the current files is refused; a revert is a new version (section 4.2)', async () => {
   const { storage, f } = await newArchive();
   const pdf = (text) => ({ name: 'p.pdf', bytes: utf8(`%PDF-1.4 ${text}`) });

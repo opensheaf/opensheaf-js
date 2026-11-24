@@ -282,6 +282,17 @@ export class ArchiveFolder {
     this.env.err(`warning: ${id}: extending versions that are not signed, or are contested:\n${lines}`);
   }
 
+  async previousDigest(id, dir, head) {
+    const inv = await this.storage.read(joinPath(dir, head, 'inventory.json'));
+    const sc = await this.storage.read(joinPath(dir, head, 'inventory.json.sha512'));
+    const stated = sc ? sidecarDigest(sc) : null;
+    if (!inv || !stated || stated !== await sha512hex(inv)) {
+      exit(`${this.labelOf(id) || id} ${head}: the checksum file of its inventory is missing, or does not state ` +
+           'the digest of the inventory (section 4.1): no version is added until it is repaired');
+    }
+    return stated;
+  }
+
   async zenodoPending(id) {
     try {
       const state = await readJson(this.storage, joinPath('zenodo-staging', ...(await pathOf(id, this.layout)), 'state.json'));
@@ -309,7 +320,7 @@ export class ArchiveFolder {
               fixity: { md5: {}, sha256: {} } };
     } else if (!draft) {
       await this.checkBeforeExtending(id, acknowledged);
-      obj.previous = sidecarDigest(await s.read(joinPath(dir, inv.head, 'inventory.json.sha512')));
+      obj.previous = await this.previousDigest(id, dir, inv.head);
     }
     const ver = `v${Number(inv.head.slice(1)) + 1}`;
     if (stageIn !== null && await s.kind(stageIn)) exit(`${stageIn} exists`);

@@ -521,7 +521,17 @@ export function locations(configured = {}, text = process.env.OPENSHEAF_LOCATION
 
 export function locate(url, found) {
   for (const prefix of Object.keys(found).sort((a, b) => b.length - a.length)) {
-    if (url.startsWith(prefix)) return found[prefix] + url.slice(prefix.length);
+    if (url.startsWith(prefix)) {
+      const rest = url.slice(prefix.length);
+      let segments;
+      try {
+        segments = decodeURIComponent(rest.split('?')[0].split('#')[0]);
+      } catch {
+        return null;
+      }
+      if (segments.replace(/\\/g, '/').split('/').some((x) => x === '.' || x === '..')) return null;
+      return found[prefix] + rest;
+    }
   }
   return url;
 }
@@ -529,6 +539,7 @@ export function locate(url, found) {
 export function locatedFetch(configured, base = globalThis.fetch?.bind(globalThis)) {
   return async (url, init = {}) => {
     const target = locate(String(url), locations(configured()));
+    if (target === null) throw new TypeError(`fetch failed: ${url} climbs out of the place it is mapped to`);
     if (/^https?:\/\//.test(target)) return base(target, init);
     const file = target.startsWith('file://') ? fileURLToPath(target.split('?')[0]) : decodeURIComponent(target.split('?')[0]);
     try {

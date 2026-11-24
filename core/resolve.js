@@ -186,7 +186,7 @@ export class Resolver {
     for (let k = path.length - 2; k >= 0; k--) if (path[k] === '/') cuts.push(k + 1);
     const guess = path.indexOf('/ocfl/');
     if (guess >= 0) cuts.unshift(guess + 1);
-    for (const k of [...new Set(cuts)]) {
+    for (const k of [...new Set(cuts)].slice(0, LIMITS.probes)) {
       const base = origin + path.slice(0, k);
       if (this.refused(base)) continue;
       let archive = this.archives.has(base) ? await this.archives.get(base) : null;
@@ -328,6 +328,11 @@ export class Resolver {
       this.note('warning', `sheaf:${name}:${owner}: the pin ${repr(version)} sha512=${repr(digest)} is not a line, ` +
                 'an object version and a digest (section 8.5)');
       return found('not a version', null, typeof version === 'string' ? version : null, digest, []);
+    }
+    this.pinned = (this.pinned ?? 0) + 1;
+    if (this.pinned > LIMITS.pins) {
+      this.note('warning', `at most ${LIMITS.pins} pins are resolved in one run (section 15.2): the others are not`);
+      return found('unavailable', null, version, digest, []);
     }
     if (name === owner) {
       const log = await this.keyLog(owner, where, options);

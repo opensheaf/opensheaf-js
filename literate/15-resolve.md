@@ -305,8 +305,10 @@ that end with `/` are tried, the conventional `.../ocfl/` cut first, then
 from the longest to the shortest; the first whose discovery document
 names a storage root (a relative path below the archive) that the URL is
 below is the archive. A prefix that is not an archive is not noted: it
-was only a guess. The answer, a list of one base URL or none, is kept,
-and so is the archive found.
+was only a guess. At most `LIMITS.probes` (8) prefixes are tried, as
+opensheaf-py's `MAX_PROBES`: a URL of thirty folders is not thirty
+requests. The answer, a list of one base URL or none, is kept, and so is
+the archive found.
 
     // in core/resolve.js:
       async archiveOf(url, options = {}) {
@@ -326,7 +328,7 @@ and so is the archive found.
         for (let k = path.length - 2; k >= 0; k--) if (path[k] === '/') cuts.push(k + 1);
         const guess = path.indexOf('/ocfl/');
         if (guess >= 0) cuts.unshift(guess + 1);
-        for (const k of [...new Set(cuts)]) {
+        for (const k of [...new Set(cuts)].slice(0, LIMITS.probes)) {
           const base = origin + path.slice(0, k);
           if (this.refused(base)) continue;
           let archive = this.archives.has(base) ? await this.archives.get(base) : null;
@@ -507,7 +509,9 @@ with that number and digest that fails the checks of the key log (section
 14.3) is *not a version*. A pin that is not one at all (a name that is
 not the name of a line, a version such as `latest`, a digest that is not
 128 hexadecimal digits) is *not a version*, noted, and nothing is
-fetched for it, as opensheaf-py's `pin` decides.
+fetched for it, as opensheaf-py's `pin` decides. One resolver resolves
+at most `LIMITS.pins` (2000) pins, as opensheaf-py's `MAX_PINS`; the
+others are *unavailable*, noted.
 
     // in core/resolve.js:
       async pin(name, owner, version, digest, where = [], options = {}) {
@@ -518,6 +522,11 @@ fetched for it, as opensheaf-py's `pin` decides.
           this.note('warning', `sheaf:${name}:${owner}: the pin ${repr(version)} sha512=${repr(digest)} is not a line, ` +
                     'an object version and a digest (section 8.5)');
           return found('not a version', null, typeof version === 'string' ? version : null, digest, []);
+        }
+        this.pinned = (this.pinned ?? 0) + 1;
+        if (this.pinned > LIMITS.pins) {
+          this.note('warning', `at most ${LIMITS.pins} pins are resolved in one run (section 15.2): the others are not`);
+          return found('unavailable', null, version, digest, []);
         }
         if (name === owner) {
           const log = await this.keyLog(owner, where, options);

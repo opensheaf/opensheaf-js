@@ -11,6 +11,7 @@ export const LIMITS = {
   depth: 3,                // levels of member collections followed
   pins: 2000,              // pins resolved in one walk through collections, or in one verification
   mirrors: 5,              // locations of copies (at, hints) tried for one line, after the archive explored
+  probes: 8,               // prefixes of a URL tried for the archive that holds it
   versions: 10_000,        // object versions of one object
   objects: 10_000,         // objects of one archive listed or verified
   nesting: 64,             // levels of arrays and objects in a JSON file

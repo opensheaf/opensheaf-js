@@ -2,7 +2,7 @@
 import { readGenesis, objectId, parseId, SheafUri } from './names.js';
 import { historyOf, currentVersion, dateOf, pdfOf, memberPins, withdrawnVersions } from './versions.js';
 import { CONTESTED, SIGNED, VOUCHED } from './signatures.js';
-import { Http, parseJson } from './http.js';
+import { Http, parseJson, LIMITS } from './http.js';
 import { pathOf } from './paths.js';
 import { sha512hex } from './write.js';
 import { compareText, joinPath } from './storage.js';
@@ -786,10 +786,11 @@ async function remoteSource(site, at) {
 }
 
 async function remoteView(site, m) {
-  if (!pinsOk(m)) return null;
+  if (!pinsOk(m) || !Array.isArray(m.at) || (site.lookedUp ?? 0) >= LIMITS.pins) return null;
+  site.lookedUp = (site.lookedUp ?? 0) + 1;
   const id = objectId(m.name, m.owner);
   const [pinVer, pin] = lastPin(m);
-  for (const at of m.at || []) {
+  for (const at of m.at.filter((x) => typeof x === 'string').slice(0, LIMITS.mirrors)) {
     try {
       const src = await remoteSource(site, at);
       const path = src.root + (await pathOf(id, src.disc.storageLayout)).join('/');

@@ -1160,6 +1160,32 @@ test('a pin that is not one', async () => {
   assert.ok(r.notes.some((n) => /the pin 'latest' sha512='c+' is not a line, an object version and a digest/.test(n.message)));
 });
 
+test('addresses given by others, and what one run reads', async () => {
+  const { locate } = await import('../cli/osheaf.js');
+  const { LIMITS } = await import('../core/http.js');
+  const found = { 'https://example.org/': '/tmp/a/' };
+  for (const climb of ['https://example.org/../secret/', 'https://example.org/%2e%2e/secret/',
+                       'https://example.org/x/..%2f..%2fsecret/']) {
+    assert.equal(locate(climb, found), null, climb);
+  }
+  assert.equal(locate('https://example.org/a/opensheaf.json', found), '/tmp/a/a/opensheaf.json');
+  const seen = [];
+  const r = new Resolver(new Http({ fetch: async (url) => { seen.push(String(url)); return new Response('no', { status: 404 }); },
+                                    budget: null }));
+  assert.deepEqual(await r.archiveOf('https://example.org/' + 'x/'.repeat(30) + 'v1/'), []);
+  assert.equal(new Set(seen.map((u) => u.replace(/opensheaf\.json.*$/, ''))).size, LIMITS.probes);
+  const pins = LIMITS.pins;
+  LIMITS.pins = 1;
+  try {
+    const name = 'a'.repeat(52), owner = 'b'.repeat(51) + 'a', dig = 'c'.repeat(128);
+    await r.pin(name, owner, 'v1', dig, ['https://example.org/a/']);
+    assert.equal((await r.pin(name, owner, 'v1', dig, ['https://example.org/a/'])).status, 'unavailable');
+    assert.ok(r.notes.some((n) => /at most 1 pins are resolved in one run/.test(n.message)));
+  } finally {
+    LIMITS.pins = pins;
+  }
+});
+
 test('a branch point reading a parent/object.json that its parent inventory does not record', async () => {
   const one = await newArchive();
   await deposit(one.f, paper('first', { rights: 'cc-by-4.0' }));

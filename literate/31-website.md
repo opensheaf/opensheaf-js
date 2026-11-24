@@ -33,7 +33,7 @@ website only, and warns.
     import { readGenesis, objectId, parseId, SheafUri } from './names.js';
     import { historyOf, currentVersion, dateOf, pdfOf, memberPins, withdrawnVersions } from './versions.js';
     import { CONTESTED, SIGNED, VOUCHED } from './signatures.js';
-    import { Http, parseJson } from './http.js';
+    import { Http, parseJson, LIMITS } from './http.js';
     import { pathOf } from './paths.js';
     import { sha512hex } from './write.js';
     import { compareText, joinPath } from './storage.js';
@@ -1020,14 +1020,20 @@ A member whose pins are not pins is not looked up; the versions read for
 a member without a history are those the inventory pinned records, which
 must be the inventory of the version pinned, never a count taken from
 the pin (`v999999999999`, with an inventory of that version alone, would
-have the build run for ever).
+have the build run for ever). What one build reads is bounded, as in
+opensheaf-py: each archive is opened once (its failure kept too), at
+most `LIMITS.mirrors` (5) locations of a member are tried, and at most
+`LIMITS.pins` (2000) members are looked up elsewhere; the addresses are
+`http` or `https` URLs only, which the HTTP client of chapter
+[10](10-http.md) holds them to, and JSON files are read within its limit.
 
     // in the entries of members:
     async function remoteView(site, m) {
-      if (!pinsOk(m)) return null;
+      if (!pinsOk(m) || !Array.isArray(m.at) || (site.lookedUp ?? 0) >= LIMITS.pins) return null;
+      site.lookedUp = (site.lookedUp ?? 0) + 1;
       const id = objectId(m.name, m.owner);
       const [pinVer, pin] = lastPin(m);
-      for (const at of m.at || []) {
+      for (const at of m.at.filter((x) => typeof x === 'string').slice(0, LIMITS.mirrors)) {
         try {
           const src = await remoteSource(site, at);
           const path = src.root + (await pathOf(id, src.disc.storageLayout)).join('/');

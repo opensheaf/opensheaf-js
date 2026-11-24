@@ -1021,6 +1021,9 @@ reads them: `locations` of `osheaf.json` and `OPENSHEAF_LOCATIONS`
 of one, to another URL or to a folder of this computer; the longest prefix
 applies. An archive under development, or a copy of it, is so read where
 it is while its members record the address where it will be published.
+A URL whose rest, after the prefix, has a `.` or `..` segment (plain or
+%-encoded) is mapped nowhere, as opensheaf-py's `locate` decides: it
+would climb out of the place it is mapped to, and is not read.
 
     // in running a command:
     export function locations(configured = {}, text = process.env.OPENSHEAF_LOCATIONS || '') {
@@ -1034,7 +1037,17 @@ it is while its members record the address where it will be published.
 
     export function locate(url, found) {
       for (const prefix of Object.keys(found).sort((a, b) => b.length - a.length)) {
-        if (url.startsWith(prefix)) return found[prefix] + url.slice(prefix.length);
+        if (url.startsWith(prefix)) {
+          const rest = url.slice(prefix.length);
+          let segments;
+          try {
+            segments = decodeURIComponent(rest.split('?')[0].split('#')[0]);
+          } catch {
+            return null;
+          }
+          if (segments.replace(/\\/g, '/').split('/').some((x) => x === '.' || x === '..')) return null;
+          return found[prefix] + rest;
+        }
       }
       return url;
     }
@@ -1042,6 +1055,7 @@ it is while its members record the address where it will be published.
     export function locatedFetch(configured, base = globalThis.fetch?.bind(globalThis)) {
       return async (url, init = {}) => {
         const target = locate(String(url), locations(configured()));
+        if (target === null) throw new TypeError(`fetch failed: ${url} climbs out of the place it is mapped to`);
         if (/^https?:\/\//.test(target)) return base(target, init);
         const file = target.startsWith('file://') ? fileURLToPath(target.split('?')[0]) : decodeURIComponent(target.split('?')[0]);
         try {

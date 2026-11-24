@@ -32,9 +32,10 @@ export function link(u, label, cls = '') {
   return cls ? `<span${attr}>${label}</span>` : label;
 }
 
+const PLACEHOLDER = /\{\{([A-Za-z0-9_]+)\}\}/g;
+
 export function fill(text, values) {
-  for (const [k, v] of Object.entries(values)) text = text.split(`{{${k}}}`).join(v);
-  return text;
+  return text.replace(PLACEHOLDER, (all, k) => (Object.hasOwn(values, k) ? values[k] : all));
 }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September',
@@ -112,6 +113,27 @@ function lastPin(m) {
   const pins = memberPins(m);
   const p = pins[pins.length - 1];
   return [p.version, p.pin];
+}
+
+const PIN = /^[0-9a-f]{128}$/;
+const OBJECT_VERSION = /^v[1-9][0-9]*$/;
+const DAY = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+
+export function number(n) {
+  return Number.isInteger(n) && n > 0 ? String(n) : '?';
+}
+
+export function pinHtml(pin) {
+  if (typeof pin === 'string' && PIN.test(pin)) return `<span class="pin" title="${pin}">pin ${pin.slice(0, 32)}…</span>`;
+  return '<span class="contested">no valid pin</span>';
+}
+
+export function pinsOk(m, line = null) {
+  if (m === null || typeof m !== 'object' || (Object.hasOwn(m, 'revisions') && !Array.isArray(m.revisions))) return false;
+  const pins = memberPins(m);
+  return pins.length > 0 && pins.every(({ version: v, pin: d }) =>
+    typeof v === 'string' && OBJECT_VERSION.test(v) && typeof d === 'string' && PIN.test(d) &&
+    (line === null || Object.hasOwn(line.inv.versions, v)));
 }
 
 export async function pageAddress(f, id) {
@@ -213,10 +235,10 @@ export function withdrawalHtml(state, where = '') {
 
 export function versionsLine(m, obj) {
   if (m.revisions?.length) {
-    const ns = m.revisions.map((r) => String(r.documentVersion));
+    const ns = m.revisions.map((r) => number(r?.documentVersion));
     return `vetted: version${ns.length > 1 ? 's' : ''} ${ns.join(', ')}`;
   }
-  return `version ${obj.documentVersion}`;
+  return `version ${number(obj.documentVersion)}`;
 }
 
 async function versionBlock(f, line, ver, shown, notices, root, vetted = null) {
@@ -230,7 +252,7 @@ async function versionBlock(f, line, ver, shown, notices, root, vetted = null) {
   if (par && (vs.indexOf(first) === 0 || !same(line.objOf(vs[vs.indexOf(first) - 1])?.parent ?? null, par))) {
     labels.unshift(`the parent's version ${par.documentVersion}`);
   }
-  let head = `Version ${n}` + (labels.length ? ` (${esc(labels.join(', '))})` : '');
+  let head = `Version ${number(n)}` + (labels.length ? ` (${esc(labels.join(', '))})` : '');
   if (obj.stage) head += ` <span class="stage">${esc(obj.stage.value)}</span>`;
   if (vetted !== null && vetted.has(n)) head += ' <span class="current">vetted</span>';
   else if (vetted === null && n === shown) head += ' <span class="current">current</span>';
@@ -261,7 +283,7 @@ async function versionBlock(f, line, ver, shown, notices, root, vetted = null) {
     files.push(`<a href="https://arxiv.org/abs/${esc(arxiv)}">arXiv:${esc(arxiv)}</a>`);
   }
   if (dc.doi) files.push(`<a href="https://doi.org/${esc(dc.doi)}">doi:${esc(dc.doi)}</a>`);
-  const out = [`<li class="version${n === shown ? ' is-current' : ''}" id="v${n}">`,
+  const out = [`<li class="version${n === shown ? ' is-current' : ''}" id="v${number(n)}">`,
                `<div class="version-head">${head}</div>`];
   if (when) out.push(`<div class="version-date">${esc(when)}</div>`);
   const withdrawn = withdrawnVersions(line.inv, line.objOf, line.signed || line.inv.head);
@@ -451,7 +473,7 @@ export async function render(f, members, { home = true, featured = null, keeperF
     while (queue.length) {
       const qm = queue.shift();
       const line = await site.held(qm);
-      if (!line) continue;
+      if (!line || !pinsOk(qm, line)) continue;
       if (!pages.has(line.id)) pages.set(line.id, qm);
       if (qm.kind === 'collection' && !followed.has(line.id)) {
         followed.add(line.id);
@@ -507,7 +529,7 @@ export async function render(f, members, { home = true, featured = null, keeperF
       head: await metaTags(site, f, line, cur, obj, dc), title: esc(dc.titles[0].title),
       issued: esc(fmtDate(issued)), withdrawn: withdrawalHtml(line.state), contested,
       versions: blocks.join('\n'), licence, cite,
-      pin, pin_url: `${root}ocfl/${at}/${pinVer}/inventory.json`,
+      pin: esc(pin), pin_url: `${root}ocfl/${at}/${pinVer}/inventory.json`,
       sheaf_uri: esc(fullUri(line)), sheaf_short: esc(shortUri(line)),
       owner: await ownerHtml(site, line.owner, root),
     };
@@ -528,14 +550,15 @@ export async function render(f, members, { home = true, featured = null, keeperF
     } else {
       page = fill(pageT, { ...common,
         authors: esc(authorsOf(dc)), abstract: abstractHtml(dc),
-        pdf: esc((await fileUrl(f, root, line, cur, pdfOf(obj))) || `#v${obj.documentVersion}`),
+        pdf: esc((await fileUrl(f, root, line, cur, pdfOf(obj))) || `#v${number(obj.documentVersion)}`),
         html_link: htmlLink });
     }
     for (const address of new Set([line.home, line.slug])) {
       await f.storage.write(`paper/${address}/index.html`, new TextEncoder().encode(page));
       written.push(address);
     }
-    const lastmod = line.inv.versions[line.inv.head].created.slice(0, 10);
+    let lastmod = String(line.inv.versions[line.inv.head].created ?? '').slice(0, 10);
+    lastmod = DAY.test(lastmod) ? lastmod : null;
     urls.push([`${base}paper/${line.slug}/`, lastmod]);
     if (htmlLink) urls.push([`${base}site/${line.slug}/${line.slug}.html`, lastmod]);
   }
@@ -670,6 +693,7 @@ async function writeHome(site, members, featured, fline, fmembers, groups) {
 async function localEntry(site, m, root = '', showOwner = false) {
   const f = site.f;
   const line = await site.held(m);
+  if (!pinsOk(m, line)) return remoteEntry(site, m, root, showOwner);
   const cur = presentedVersion(m, line.inv, line.objOf);
   const [pinVer, pin] = lastPin(m);
   const obj = await line.json(OBJ, cur);
@@ -687,7 +711,7 @@ async function localEntry(site, m, root = '', showOwner = false) {
       (showOwner ? ` · ${await ownerTag(site, m.owner, root)}` : '') + ` · ${versionsLine(m, obj)}` +
       (pdf ? ` · <a href="${esc(pdf)}">PDF</a>` : '') +
       (contested ? ' · <span class="contested">contested</span>' : '') +
-      ` · <span class="pin" title="${pin}">pin ${pin.slice(0, 32)}…</span></div>`,
+      ` · ${pinHtml(pin)}</div>`,
     abstract ? `<details><summary>${summary}</summary>${abstract}</details>` : '',
     '</li>'].join('\n');
 }
@@ -696,12 +720,13 @@ async function remoteEntry(site, m, root = '', showOwner = false) {
   const cite = m.cite || {};
   let title = cite.title || m.name, by = namesJoined(cite.creators || []);
   const year = cite.year ?? '';
-  const pin = lastPin(m)[1];
+  const pin = pinsOk(m) ? lastPin(m)[1] : null;
   const links = [];
   let abstract = '', landing = '', withdrawn = '';
-  let at = (m.at?.length ? m.at : [''])[0];
+  let at = (Array.isArray(m.at) && m.at.length ? m.at : [''])[0];
+  at = typeof at === 'string' ? at : '';
   let archiveName = at;
-  const view = await remoteView(site, m);
+  const view = pin ? await remoteView(site, m) : null;
   if (view === null) {
     links.push('<span class="missing">archive unavailable: cached citation</span>');
   } else if (view.mismatch) {
@@ -721,7 +746,7 @@ async function remoteEntry(site, m, root = '', showOwner = false) {
       ` · in ${link(at, esc(archiveName))}` +
       (m.revisions ? ` · ${versionsLine(m, {})}` : '') +
       (links.length ? ' · ' + links.join(' · ') : '') +
-      ` · <span class="pin" title="${pin}">pin ${pin.slice(0, 32)}…</span></div>`,
+      ` · ${pinHtml(pin)}</div>`,
     withdrawn,
     abstract ? `<details><summary>Abstract</summary>${abstract}</details>` : '',
     '</li>'].join('\n');

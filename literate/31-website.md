@@ -69,9 +69,11 @@ Small pieces
 ------------
 
 Text is escaped as Python's `html.escape` escapes it, quotes included.
-Placeholders `{{name}}` are replaced one after the other, in the order
-opensheaf-py gives them, with no interpretation of the text put in (a
-`$` stays a `$`).
+Placeholders `{{name}}` are replaced in one pass over the template, as
+opensheaf-py's `fill` replaces them: a value is never read again for
+placeholders, so a title holding `{{versions}}` stays that text instead of
+receiving the list of versions; a placeholder no value names is left as it
+is, and the text put in is not interpreted (a `$` stays a `$`).
 
     // in small pieces:
     export function esc(s) {
@@ -101,9 +103,10 @@ is shown as text, without a link.
       return cls ? `<span${attr}>${label}</span>` : label;
     }
 
+    const PLACEHOLDER = /\{\{([A-Za-z0-9_]+)\}\}/g;
+
     export function fill(text, values) {
-      for (const [k, v] of Object.entries(values)) text = text.split(`{{${k}}}`).join(v);
-      return text;
+      return text.replace(PLACEHOLDER, (all, k) => (Object.hasOwn(values, k) ? values[k] : all));
     }
 
 Dates are shown in words: a day (`3 June 2026`), a month (`June 2026`)
@@ -196,6 +199,37 @@ cannot put the parser into its escaped-script state and break the page.
       const pins = memberPins(m);
       const p = pins[pins.length - 1];
       return [p.version, p.pin];
+    }
+
+A member's pins and document versions are another archive's text, or
+text a curator wrote, and they go into attributes, addresses and the
+sitemap. They are checked before a page uses them, as opensheaf-py's
+`pins_ok`, `number` and `pin_html` check them: a pin is 128 hexadecimal
+digits and its object version `vN` (one of the line's, when the line is
+held here); a member whose pins fail gets no landing page and is shown as
+one held elsewhere, with its cached citation and `no valid pin`. A
+document version that is not a positive integer is shown as `?`.
+
+    // in small pieces:
+    const PIN = /^[0-9a-f]{128}$/;
+    const OBJECT_VERSION = /^v[1-9][0-9]*$/;
+    const DAY = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+
+    export function number(n) {
+      return Number.isInteger(n) && n > 0 ? String(n) : '?';
+    }
+
+    export function pinHtml(pin) {
+      if (typeof pin === 'string' && PIN.test(pin)) return `<span class="pin" title="${pin}">pin ${pin.slice(0, 32)}…</span>`;
+      return '<span class="contested">no valid pin</span>';
+    }
+
+    export function pinsOk(m, line = null) {
+      if (m === null || typeof m !== 'object' || (Object.hasOwn(m, 'revisions') && !Array.isArray(m.revisions))) return false;
+      const pins = memberPins(m);
+      return pins.length > 0 && pins.every(({ version: v, pin: d }) =>
+        typeof v === 'string' && OBJECT_VERSION.test(v) && typeof d === 'string' && PIN.test(d) &&
+        (line === null || Object.hasOwn(line.inv.versions, v)));
     }
 
 The landing page of a line is written at the address built from its
@@ -340,10 +374,10 @@ The links to the files of a version, and the version itself:
 
     export function versionsLine(m, obj) {
       if (m.revisions?.length) {
-        const ns = m.revisions.map((r) => String(r.documentVersion));
+        const ns = m.revisions.map((r) => number(r?.documentVersion));
         return `vetted: version${ns.length > 1 ? 's' : ''} ${ns.join(', ')}`;
       }
-      return `version ${obj.documentVersion}`;
+      return `version ${number(obj.documentVersion)}`;
     }
 
     async function versionBlock(f, line, ver, shown, notices, root, vetted = null) {
@@ -352,7 +386,7 @@ The links to the files of a version, and the version itself:
       const n = obj.documentVersion;
       const labels = (obj.external || []).filter((e) => e.role === 'source' && e.label).map((e) => `${e.service} ${e.label}`);
       <<the number in the parent line of a version of a branch>>
-      let head = `Version ${n}` + (labels.length ? ` (${esc(labels.join(', '))})` : '');
+      let head = `Version ${number(n)}` + (labels.length ? ` (${esc(labels.join(', '))})` : '');
       if (obj.stage) head += ` <span class="stage">${esc(obj.stage.value)}</span>`;
       if (vetted !== null && vetted.has(n)) head += ' <span class="current">vetted</span>';
       else if (vetted === null && n === shown) head += ' <span class="current">current</span>';
@@ -383,7 +417,7 @@ The links to the files of a version, and the version itself:
         files.push(`<a href="https://arxiv.org/abs/${esc(arxiv)}">arXiv:${esc(arxiv)}</a>`);
       }
       if (dc.doi) files.push(`<a href="https://doi.org/${esc(dc.doi)}">doi:${esc(dc.doi)}</a>`);
-      const out = [`<li class="version${n === shown ? ' is-current' : ''}" id="v${n}">`,
+      const out = [`<li class="version${n === shown ? ' is-current' : ''}" id="v${number(n)}">`,
                    `<div class="version-head">${head}</div>`];
       if (when) out.push(`<div class="version-date">${esc(when)}</div>`);
       const withdrawn = withdrawnVersions(line.inv, line.objOf, line.signed || line.inv.head);
@@ -613,7 +647,7 @@ collection. It returns the number of landing pages.
         while (queue.length) {
           const qm = queue.shift();
           const line = await site.held(qm);
-          if (!line) continue;
+          if (!line || !pinsOk(qm, line)) continue;
           if (!pages.has(line.id)) pages.set(line.id, qm);
           if (qm.kind === 'collection' && !followed.has(line.id)) {
             followed.add(line.id);
@@ -669,7 +703,7 @@ collection. It returns the number of landing pages.
           head: await metaTags(site, f, line, cur, obj, dc), title: esc(dc.titles[0].title),
           issued: esc(fmtDate(issued)), withdrawn: withdrawalHtml(line.state), contested,
           versions: blocks.join('\n'), licence, cite,
-          pin, pin_url: `${root}ocfl/${at}/${pinVer}/inventory.json`,
+          pin: esc(pin), pin_url: `${root}ocfl/${at}/${pinVer}/inventory.json`,
           sheaf_uri: esc(fullUri(line)), sheaf_short: esc(shortUri(line)),
           owner: await ownerHtml(site, line.owner, root),
         };
@@ -690,14 +724,15 @@ collection. It returns the number of landing pages.
         } else {
           page = fill(pageT, { ...common,
             authors: esc(authorsOf(dc)), abstract: abstractHtml(dc),
-            pdf: esc((await fileUrl(f, root, line, cur, pdfOf(obj))) || `#v${obj.documentVersion}`),
+            pdf: esc((await fileUrl(f, root, line, cur, pdfOf(obj))) || `#v${number(obj.documentVersion)}`),
             html_link: htmlLink });
         }
         for (const address of new Set([line.home, line.slug])) {
           await f.storage.write(`paper/${address}/index.html`, new TextEncoder().encode(page));
           written.push(address);
         }
-        const lastmod = line.inv.versions[line.inv.head].created.slice(0, 10);
+        let lastmod = String(line.inv.versions[line.inv.head].created ?? '').slice(0, 10);
+        lastmod = DAY.test(lastmod) ? lastmod : null;
         urls.push([`${base}paper/${line.slug}/`, lastmod]);
         if (htmlLink) urls.push([`${base}site/${line.slug}/${line.slug}.html`, lastmod]);
       }
@@ -858,12 +893,15 @@ A member held here is shown in the version its collection presents, with
 its PDF and its pin; a member held elsewhere is read from the first
 location of its `at` that answers and whose copy matches the pin (its
 title, authors, abstract, landing page and PDF), or else shown from the
-citation cached in the member.
+citation cached in the member. A member whose pins are not pins of the
+line held here is shown as one held elsewhere, and one whose pins are not
+pins at all is not looked for in other archives.
 
     // in the entries of members:
     async function localEntry(site, m, root = '', showOwner = false) {
       const f = site.f;
       const line = await site.held(m);
+      if (!pinsOk(m, line)) return remoteEntry(site, m, root, showOwner);
       const cur = presentedVersion(m, line.inv, line.objOf);
       const [pinVer, pin] = lastPin(m);
       const obj = await line.json(OBJ, cur);
@@ -881,7 +919,7 @@ citation cached in the member.
           (showOwner ? ` · ${await ownerTag(site, m.owner, root)}` : '') + ` · ${versionsLine(m, obj)}` +
           (pdf ? ` · <a href="${esc(pdf)}">PDF</a>` : '') +
           (contested ? ' · <span class="contested">contested</span>' : '') +
-          ` · <span class="pin" title="${pin}">pin ${pin.slice(0, 32)}…</span></div>`,
+          ` · ${pinHtml(pin)}</div>`,
         abstract ? `<details><summary>${summary}</summary>${abstract}</details>` : '',
         '</li>'].join('\n');
     }
@@ -890,12 +928,13 @@ citation cached in the member.
       const cite = m.cite || {};
       let title = cite.title || m.name, by = namesJoined(cite.creators || []);
       const year = cite.year ?? '';
-      const pin = lastPin(m)[1];
+      const pin = pinsOk(m) ? lastPin(m)[1] : null;
       const links = [];
       let abstract = '', landing = '', withdrawn = '';
-      let at = (m.at?.length ? m.at : [''])[0];
+      let at = (Array.isArray(m.at) && m.at.length ? m.at : [''])[0];
+      at = typeof at === 'string' ? at : '';
       let archiveName = at;
-      const view = await remoteView(site, m);
+      const view = pin ? await remoteView(site, m) : null;
       if (view === null) {
         links.push('<span class="missing">archive unavailable: cached citation</span>');
       } else if (view.mismatch) {
@@ -915,7 +954,7 @@ citation cached in the member.
           ` · in ${link(at, esc(archiveName))}` +
           (m.revisions ? ` · ${versionsLine(m, {})}` : '') +
           (links.length ? ' · ' + links.join(' · ') : '') +
-          ` · <span class="pin" title="${pin}">pin ${pin.slice(0, 32)}…</span></div>`,
+          ` · ${pinHtml(pin)}</div>`,
         withdrawn,
         abstract ? `<details><summary>Abstract</summary>${abstract}</details>` : '',
         '</li>'].join('\n');

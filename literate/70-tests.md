@@ -42,7 +42,8 @@ The tests are written with `node:test` and `node:assert`, which both
     import { loadSchemas } from '../core/schema.js';
     import { notice, withdraw, relate, relicense, describe, complete } from '../core/describe.js';
     import * as collections from '../core/collections.js';
-    import { esc, fmtDate, pyJson, jsonInScript, namesJoined, readableIndex, present, safeUrl, link } from '../core/website.js';
+    import { esc, fmtDate, pyJson, jsonInScript, namesJoined, readableIndex, present, safeUrl, link, fill, number }
+      from '../core/website.js';
     import { keeperLink, successorClaim, CONFIRMED, CLAIMED, NOT_CHECKED, KeeperUnreachable } from '../core/keepers.js';
     import { loadEntries, merge, normalise } from '../core/inputs.js';
     import { mirror, fetchObject, Unavailable } from '../core/mirror.js';
@@ -760,6 +761,53 @@ verification fails when a landing page is missing.
       assert.equal(new TextDecoder().decode(await storage.read(`paper/${oneName}/index.html`)), landing);
       await storage.remove(`paper/${oneName}/index.html`);
       assert.ok((await errorsOf(storage)).some((e) => /no landing page giving the sheaf: URI of one/.test(e)));
+    });
+
+What a member says is escaped, as in opensheaf-py's
+`test_what_a_member_says_is_escaped`: templates are filled in one pass,
+a document version that is not a positive integer is shown as `?`, a
+member whose pins are not pins is not looked for elsewhere (no request
+is made) and is shown with `no valid pin`, one whose object version is not
+one of the line held here is shown as held elsewhere, and no page holds
+the script or the image the members carry; a title holding `{{versions}}`
+keeps it.
+
+    // in tests of collections and the website:
+    test('what a member says is escaped', async () => {
+      assert.equal(fill('{{a}} {{b}} {{c}}', { a: '{{b}}', b: 'X' }), '{{b}} X {{c}}');
+      assert.equal(number(3), '3');
+      assert.equal(number('<b>'), '?');
+      assert.equal(number(true), '?');
+      const { storage, f, env } = await newArchive();
+      const asked = [];
+      env.fetch = async (url) => { asked.push(url); throw new TypeError(`no network in the tests: ${url}`); };
+      await deposit(f, paper('one'));
+      await collections.newCollection(f, { label: 'list', type: 'catalogue', title: '{{versions}}' });
+      const [, nm, owner] = f.labels.get('one').split(':');
+      const m = { kind: 'document', name: 'a'.repeat(64), owner: 'b'.repeat(64), at: ['https://example.org/other/'],
+                  revisions: [{ version: 'v1', documentVersion: '<img src=x onerror=alert(1)>',
+                                inventorySha512: '"><script>alert(2)</script>' }],
+                  cite: { title: '{{versions}}' } };
+      const bad = { kind: 'document', name: nm, owner, version: 'v99', at: [],
+                    inventorySha512: '"><script>alert(3)</script>' };
+      const listId = f.labels.get('list');
+      const mem = (await head(f, 'list', 'members.json')).json;
+      await collections.write(f, listId, { ...mem, members: [bad, m] }, { message: 'by hand' });
+      f.index.html.featured = 'list';
+      await readableIndex(f);
+      assert.deepEqual(asked, []);
+      const pages = ['index.html', ...((await storage.list('paper')) || []).map((e) => `paper/${e.name}/index.html`)];
+      for (const p of pages) {
+        const page = new TextDecoder().decode(await storage.read(p));
+        assert.ok(!page.includes('<script>alert') && !page.includes('<img src=x'), p);
+      }
+      const home = new TextDecoder().decode(await storage.read('index.html'));
+      assert.match(home, /no valid pin/);
+      assert.match(home, /vetted: version \?/);
+      const page = new TextDecoder().decode(await storage.read('paper/list/index.html'));
+      assert.ok(page.includes('{{versions}}'));
+      assert.equal(page.split('<li class="version').length - 1, 2);
+      assert.match(new TextDecoder().decode(await storage.read('sitemap.xml')), /<lastmod>/);
     });
 
 An archive whose home page is a TeXmacs index has its landing pages

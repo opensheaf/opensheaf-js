@@ -248,7 +248,9 @@ its files under `source/`, an unsafe path skipped and noted; then the limits, lo
 them: too many members, and a gzip bomb. As Python's `gzip`, members
 concatenated are read as one stream and zeros after a member skipped,
 while other bytes after it are refused; as `tarfile`, a file cut short
-by the end of the archive is refused, not imported short.
+by the end of the archive is refused, not imported short. The kind of an e-print is told from one decompressed
+tar block, as opensheaf-py's `test_source_kind_reads_one_block`: ten
+megabytes of zeros compressed are `gz`, found without decompressing them.
 
     // in services: the sources:
     test('e-prints unpacked, within their limits', async () => {
@@ -269,6 +271,9 @@ by the end of the archive is refused, not imported short.
       assert.equal(arxiv.mainTex(files), 'source/main.tex');
       assert.equal(await arxiv.sourceKind(ok), 'tar.gz');
       assert.equal(await arxiv.sourceKind(new Uint8Array(zlib.gzipSync('\\documentclass{x}'))), 'gz');
+      assert.equal(await arxiv.sourceKind(new Uint8Array(zlib.gzipSync(new Uint8Array(10_000_000)))), 'gz');
+      assert.equal(await arxiv.sourceKind(new Uint8Array([0x1f, 0x8b, ...new TextEncoder().encode('broken')])), 'gz');
+      assert.equal(await arxiv.sourceKind(new TextEncoder().encode('%PDF-1.4')), 'pdf');
       const single = await arxiv.unpack(new Uint8Array(zlib.gzipSync('\\documentclass{x}')), 'single', 'math/0601001');
       assert.deepEqual(single.files.map(([lp]) => lp), ['source/math-0601001.tex']);
       const join = (...parts) => new Uint8Array(Buffer.concat(parts.map((p) => Buffer.from(p))));

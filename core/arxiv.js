@@ -778,13 +778,13 @@ export function politeGetter({ fetch = globalThis.fetch?.bind(globalThis), wait 
 export async function sourceKind(data) {
   if (data[0] === 0x25 && data[1] === 0x50 && data[2] === 0x44 && data[3] === 0x46) return 'pdf';
   if (data[0] === 0x1f && data[1] === 0x8b) {
-    let raw;
+    let block;
     try {
-      raw = await gunzip(data, Infinity);
+      block = await gunzip(data, 512);
     } catch {
       return 'gz';
     }
-    return tarMembers(raw) === null ? 'gz' : 'tar.gz';
+    return block.length === 512 && !block.every((b) => b === 0) && header(block) ? 'tar.gz' : 'gz';
   }
   return 'bin';
 }

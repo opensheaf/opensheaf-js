@@ -167,6 +167,9 @@ test('e-prints unpacked, within their limits', async () => {
   assert.equal(arxiv.mainTex(files), 'source/main.tex');
   assert.equal(await arxiv.sourceKind(ok), 'tar.gz');
   assert.equal(await arxiv.sourceKind(new Uint8Array(zlib.gzipSync('\\documentclass{x}'))), 'gz');
+  assert.equal(await arxiv.sourceKind(new Uint8Array(zlib.gzipSync(new Uint8Array(10_000_000)))), 'gz');
+  assert.equal(await arxiv.sourceKind(new Uint8Array([0x1f, 0x8b, ...new TextEncoder().encode('broken')])), 'gz');
+  assert.equal(await arxiv.sourceKind(new TextEncoder().encode('%PDF-1.4')), 'pdf');
   const single = await arxiv.unpack(new Uint8Array(zlib.gzipSync('\\documentclass{x}')), 'single', 'math/0601001');
   assert.deepEqual(single.files.map(([lp]) => lp), ['source/math-0601001.tex']);
   const join = (...parts) => new Uint8Array(Buffer.concat(parts.map((p) => Buffer.from(p))));

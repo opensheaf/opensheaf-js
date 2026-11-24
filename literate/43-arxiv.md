@@ -151,17 +151,24 @@ versions); the **PDF and the e-print** of every version, from
 **licence and comments** of every version, from its abstract page, since
 the record has only those of the current version.
 
+The kind of an e-print is told from its first bytes: a PDF, or a gzip
+stream, of which one tar block (512 bytes) is decompressed, no more, and
+read as a tar header, as opensheaf-py's `_source_kind` reads it
+(`TarInfo.frombuf`): `tar.gz` when it is one (a whole block, not all
+zeros, with its checksum), `gz` otherwise or when the stream is broken.
+A gzip bomb is so never decompressed here; unpacking keeps its own limit.
+
     // in arXiv: the kind of an e-print:
     export async function sourceKind(data) {
       if (data[0] === 0x25 && data[1] === 0x50 && data[2] === 0x44 && data[3] === 0x46) return 'pdf';
       if (data[0] === 0x1f && data[1] === 0x8b) {
-        let raw;
+        let block;
         try {
-          raw = await gunzip(data, Infinity);
+          block = await gunzip(data, 512);
         } catch {
           return 'gz';
         }
-        return tarMembers(raw) === null ? 'gz' : 'tar.gz';
+        return block.length === 512 && !block.every((b) => b === 0) && header(block) ? 'tar.gz' : 'gz';
       }
       return 'bin';
     }

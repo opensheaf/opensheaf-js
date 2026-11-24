@@ -913,6 +913,33 @@ no temporary file is left behind.
       assert.deepEqual(await errorsOf(storage), []);
     });
 
+A key log whose first version takes a file from the content of its
+second is read with the same problem from a folder and from a remote
+archive: a content path out of the object (`content_path(cp, inv, n)` of
+opensheaf-py).
+
+    // in tests of keepers and of options read from files:
+    test('a key-log version cannot take its content from a later one', async () => {
+      const { storage, f, env } = await newArchive();
+      const owner = f.archive.owner;
+      const keys = [...env.exported.keys()].filter((p) => p.startsWith('/keys/')).sort();
+      env.readText = async (p) => env.exported.get(p);
+      await ownerRotate(f, { rotationKey: keys.slice(0, 2), export: '/k2', yes: true });
+      const kd = await f.dirOf(`sheaf:${owner}:${owner}`);
+      const inv = JSON.parse(new TextDecoder().decode(await storage.read(`${kd}/v1/inventory.json`)));
+      const [d] = Object.entries(inv.manifest).find(([, ps]) => ps[0] === 'v1/content/genesis.json');
+      inv.manifest[d] = ['v2/content/genesis.json'];
+      await storage.write(`${kd}/v2/content/genesis.json`, await storage.read(`${kd}/v1/content/genesis.json`));
+      await storage.write(`${kd}/v1/inventory.json`, utf8(jsonText(inv)));
+      const out = "v1: a content path out of the object: 'v2/content/genesis.json'";
+      const local = await loadKeyLog(storage, kd);
+      assert.ok(local.problems.includes(out), local.problems.join('\n'));
+      const archive = await Archive.open(new Http({ fetch: storageFetch(storage, 'https://example.org/papers/'), budget: null }),
+                                         'https://example.org/papers/');
+      const remote = await archive.keyLog(owner);
+      assert.deepEqual(remote.problems, local.problems);
+    });
+
 A verification cancelled while it reads a copy of an inventory stops
 there: the cancellation is not taken for a copy that is missing, and
 reported as one.

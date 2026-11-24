@@ -459,8 +459,11 @@ folder, with the same problems: each version's inventory copy and
 checksum file, every file of its state, checked against its digest, and
 the signature files of its rotation keys, whose names the version before
 gives (`signature-<k>.json`, `<k>` the first 16 characters of a digest of
-`next`). A fork record carries the signatures of the other side in its
-content (section 6.3). The key log is then checked (chapter
+`next`). A content path must be one of the object (`contentUrl`) and of
+this version or an earlier one, as `content_path(cp, inv, n)` requires
+in opensheaf-py: a version cannot take its content from a later one. A
+fork record carries the signatures of the other side in its content
+(section 6.3). The key log is then checked (chapter
 [07](07-owners.md)), and kept: `null` when the archive holds no such
 object, an exception when it cannot be read as a key log.
 
@@ -509,12 +512,18 @@ object, an exception when it cannot be read as a key log.
           for (const [d, paths] of Object.entries(entry.versions[ver].state)) {
             if (!Array.isArray(paths) || !paths.length) continue;
             let bytes = new Uint8Array();
-            try {
-              const cp = entry.manifest[d]?.[0];
-              bytes = await this.http.cached(this.contentUrl(id, entry, cp), { ...options, limit: LIMITS.json });
-            } catch (error) {
-              if (error.kind === 'aborted') throw error;
+            const cp = entry.manifest[d]?.[0];
+            const k = typeof cp === 'string' ? /^v([1-9][0-9]*)\//.exec(cp) : null;
+            if (!k || Number(k[1]) > n) {
+              problems.push(`${ver}: a content path out of the object: '${cp}'`);
               problems.push(`${ver}: the content of ${paths[0]} is missing`);
+            } else {
+              try {
+                bytes = await this.http.cached(this.contentUrl(id, entry, cp), { ...options, limit: LIMITS.json });
+              } catch (error) {
+                if (error.kind === 'aborted') throw error;
+                problems.push(`${ver}: the content of ${paths[0]} is missing`);
+              }
             }
             if ((await sha512(bytes)) !== d) problems.push(`${ver}: ${paths[0]} does not have the digest its inventory states`);
             for (const p of paths) files.set(p, bytes);

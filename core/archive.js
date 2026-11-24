@@ -323,12 +323,18 @@ export class Archive {
       for (const [d, paths] of Object.entries(entry.versions[ver].state)) {
         if (!Array.isArray(paths) || !paths.length) continue;
         let bytes = new Uint8Array();
-        try {
-          const cp = entry.manifest[d]?.[0];
-          bytes = await this.http.cached(this.contentUrl(id, entry, cp), { ...options, limit: LIMITS.json });
-        } catch (error) {
-          if (error.kind === 'aborted') throw error;
+        const cp = entry.manifest[d]?.[0];
+        const k = typeof cp === 'string' ? /^v([1-9][0-9]*)\//.exec(cp) : null;
+        if (!k || Number(k[1]) > n) {
+          problems.push(`${ver}: a content path out of the object: '${cp}'`);
           problems.push(`${ver}: the content of ${paths[0]} is missing`);
+        } else {
+          try {
+            bytes = await this.http.cached(this.contentUrl(id, entry, cp), { ...options, limit: LIMITS.json });
+          } catch (error) {
+            if (error.kind === 'aborted') throw error;
+            problems.push(`${ver}: the content of ${paths[0]} is missing`);
+          }
         }
         if ((await sha512(bytes)) !== d) problems.push(`${ver}: ${paths[0]} does not have the digest its inventory states`);
         for (const p of paths) files.set(p, bytes);

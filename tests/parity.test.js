@@ -505,6 +505,19 @@ test('collections with members of another archive, by both', { skip }, async () 
     await sameNewWork(a, b, 'synced');
     ({ a, b } = await both(s, arch, ['collection', 'sync', 'cat', '--from', '../coll.yaml'], { more }));
     await sameArchives(a, b);
+    await s.file('digest.yaml', ['type: selection', 'title: Digest', 'members:', `  - uri: ${theirs}`,
+                                 '    at: https://example.org/other/', '    revisions: [2, 1, 2]', ''].join('\n'));
+    ({ a, b } = await both(s, arch, ['collection', 'sync', 'digest', '--from', '../digest.yaml'], { more }));
+    await sameNewWork(a, b, 'digest');
+    ok(s.py(['collection', 'sync', 'digest', '--from', '../digest.yaml'], { cwd: arch, more }), 'sync digest');
+    ({ a, b } = await both(s, arch, ['collection', 'add', 'digest', theirs, ...at, '--revision', '3', '--revision', '3'], { more }));
+    await sameArchives(a, b);
+    const digest = await lineOf(b, 'digest');
+    const dinv = JSON.parse(await readFile(path.join(digest.dir, 'inventory.json'), 'utf-8'));
+    const [dm] = Object.entries(dinv.versions[dinv.head].state).find(([, ps]) => ps.includes('members.json'));
+    const dmembers = JSON.parse(await readFile(path.join(digest.dir, dinv.manifest[dm][0]), 'utf-8')).members;
+    assert.deepEqual(dmembers[0].revisions.map((x) => x.documentVersion), [1, 2, 3]);
+    ok(s.py(['collection', 'add', 'digest', theirs, ...at, '--revision', '3', '--revision', '3'], { cwd: arch, more }), 'add digest');
     await sameWebsite(s, arch, more);
     const remote = verified(s, arch, more, true);
     assert.ok(remote.some((f) => /^result: cat v\d+ member .* verified at https:\/\/example.org\/other\//.test(f)));

@@ -179,12 +179,15 @@ the archive's own base URL when its copy is held here.
     }
 
 The versions a member pins: the version a URI with a digest names; the
-document versions asked for, in a selection; or else the latest signed
+document versions asked for, in a selection, each once, in the order
+first asked (as opensheaf-py's `pinned` and `sync_member` take them: a
+document version vetted twice is pinned once); or else the latest signed
 version of the line, which a selection takes as its current document
 version.
 
     // in members and revisions:
     export async function pinned(r, name, owner, u, places, kind, revisions = []) {
+      revisions = [...new Set(revisions)];
       let founds;
       if (u?.sha512) {
         founds = [(await r.resolve(String(u), places)).found];
@@ -554,7 +557,7 @@ collection, and from there into the links of a website.
       at = typeof at === 'string' ? [at] : [...at];
       const { name, owner, u, places } = await target(f, r, String(text), at);
       const follow = [true, 'yes', 'true', 'latest'].includes(entry.follow);
-      const revs = (entry.revisions || []).map((x) => Number.parseInt(x, 10));
+      const revs = [...new Set((entry.revisions || []).map((x) => Number.parseInt(x, 10)))];
       if (kind === 'catalogue' && revs.length) exit(`${text}: revisions are for selections`);
       const old = oldMembers.find((m) => m.name === name && m.owner === owner) ?? null;
       if (old !== null && !u?.sha512) {

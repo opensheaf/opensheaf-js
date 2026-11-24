@@ -108,6 +108,7 @@ export function recordedAt(f, r, found, places) {
 }
 
 export async function pinned(r, name, owner, u, places, kind, revisions = []) {
+  revisions = [...new Set(revisions)];
   let founds;
   if (u?.sha512) {
     founds = [(await r.resolve(String(u), places)).found];
@@ -417,7 +418,7 @@ async function syncMember(f, r, entry, kind, oldMembers) {
   at = typeof at === 'string' ? [at] : [...at];
   const { name, owner, u, places } = await target(f, r, String(text), at);
   const follow = [true, 'yes', 'true', 'latest'].includes(entry.follow);
-  const revs = (entry.revisions || []).map((x) => Number.parseInt(x, 10));
+  const revs = [...new Set((entry.revisions || []).map((x) => Number.parseInt(x, 10)))];
   if (kind === 'catalogue' && revs.length) exit(`${text}: revisions are for selections`);
   const old = oldMembers.find((m) => m.name === name && m.owner === owner) ?? null;
   if (old !== null && !u?.sha512) {

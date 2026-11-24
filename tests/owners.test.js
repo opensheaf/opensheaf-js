@@ -468,9 +468,10 @@ test('passphrases piped in, and after a key read from the standard input', async
       "import process from 'node:process';",
       `import { passphrases, readAllStdin } from ${JSON.stringify(new URL('../cli/keystore.js', import.meta.url).href)};`,
       "const all = process.argv.includes('all');",
+      "const env = process.argv.includes('command') ? { OPENSHEAF_PASSPHRASE_COMMAND: 'head -n 1' } : {};",
       'try {',
       "  if (all) console.log('read', (await readAllStdin()).length);",
-      "  console.log('got', JSON.stringify(await passphrases({})({ confirm: !all })));",
+      "  console.log('got', JSON.stringify(await passphrases(env)({ confirm: !all })));",
       "} catch (e) { console.log('stop', e.message); }"].join('\n'));
     const run = (args, input) => new Promise((resolve, reject) => {
       const command = isDeno ? [process.execPath, 'run', '-A', script, ...args] : [process.execPath, script, ...args];
@@ -486,6 +487,7 @@ test('passphrases piped in, and after a key read from the standard input', async
     assert.match(await run([], 'a passphrase\na passphrase\n'), /got "a passphrase"/);
     const after = await run(['all'], 'the text of a key\n');
     assert.match(after, /read 18\nstop An empty passphrase/);
+    assert.match(await run(['command'], 'from the command\n'), /got "from the command"/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

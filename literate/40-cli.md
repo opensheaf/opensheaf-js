@@ -401,7 +401,9 @@ What the person types
 ---------------------
 
 The passphrase of exported keys comes from `OPENSHEAF_PASSPHRASE`, or from
-the output of the command `OPENSHEAF_PASSPHRASE_COMMAND`, or is asked,
+the output of the command `OPENSHEAF_PASSPHRASE_COMMAND` (which, as in
+opensheaf-py, has the standard input of `osheaf`, so that a command such
+as `pass` or `gpg` can ask its own questions), or is asked,
 twice, without echo; it is asked once per command (`known()` says
 whether it is given or asked already). Answers to questions
 are read from the standard input.
@@ -534,7 +536,7 @@ input, as `getpass` falls back to it.
         const command = (env.OPENSHEAF_PASSPHRASE_COMMAND || '').trim();
         if (command) {
           try {
-            const out = execSync(command, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+            const out = execSync(command, { encoding: 'utf-8', stdio: ['inherit', 'pipe', 'pipe'] });
             const given = out.endsWith('\n') ? out.slice(0, -1) : out;
             if (given) return (asked = given);
             warn('OPENSHEAF_PASSPHRASE_COMMAND gave no passphrase: ');

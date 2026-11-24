@@ -319,7 +319,7 @@ export function passphrases(env = process.env, warn = () => {}) {
     const command = (env.OPENSHEAF_PASSPHRASE_COMMAND || '').trim();
     if (command) {
       try {
-        const out = execSync(command, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+        const out = execSync(command, { encoding: 'utf-8', stdio: ['inherit', 'pipe', 'pipe'] });
         const given = out.endsWith('\n') ? out.slice(0, -1) : out;
         if (given) return (asked = given);
         warn('OPENSHEAF_PASSPHRASE_COMMAND gave no passphrase: ');

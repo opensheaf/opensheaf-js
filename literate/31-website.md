@@ -109,7 +109,9 @@ is shown as text, without a link.
 Dates are shown in words: a day (`3 June 2026`), a month (`June 2026`)
 or a year. A DataCite date may be a full date and time
 (`2026-06-03T10:00:00Z`) or a range (`2026-06-03/2026-07-01`); the
-date part of its start is shown.
+date part of its start is shown. A date in another form, or one that is
+not a day of the calendar, is shown as it is, as opensheaf-py's
+`fmt_date` shows it.
 
     // in small pieces:
     const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September',
@@ -117,10 +119,16 @@ date part of its start is shown.
 
     export function fmtDate(iso) {
       if (!iso) return '';
-      const parts = iso.split('/')[0].split('T')[0].split('-');
-      if (parts.length === 3) return `${Number(parts[2])} ${MONTHS[Number(parts[1]) - 1]} ${parts[0]}`;
-      if (parts.length === 2) return `${MONTHS[Number(parts[1]) - 1]} ${parts[0]}`;
-      return parts[0];
+      const text = String(iso);
+      const m = /^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:T[^]*)?)?)?$/.exec(text.split('/')[0].trim());
+      if (!m) return text;
+      const [, year, month, day] = m.map(Number);
+      if (m[2] && (month < 1 || month > 12)) return text;
+      if (m[3]) {
+        if (day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return text;
+        return `${day} ${MONTHS[month - 1]} ${m[1]}`;
+      }
+      return m[2] ? `${MONTHS[month - 1]} ${m[1]}` : m[1];
     }
 
     export function namesJoined(names) {

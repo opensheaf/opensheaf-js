@@ -596,6 +596,9 @@ test('the small pieces of the pages', () => {
   assert.equal(fmtDate('2019-03'), 'March 2019');
   assert.equal(fmtDate('2026-06-03T10:00:00Z'), '3 June 2026');
   assert.equal(fmtDate('2026-06-03T23:30:00-05:00/2026-07-01'), '3 June 2026');
+  assert.equal(fmtDate('2026-02-30'), '2026-02-30');
+  assert.equal(fmtDate('June 2026'), 'June 2026');
+  assert.equal(fmtDate('2026'), '2026');
   assert.equal(namesJoined(['A', 'B', 'C']), 'A, B and C');
   assert.equal(pyJson({ a: [1, 'x'], b: { c: null } }), '{"a": [1, "x"], "b": {"c": null}}');
 });

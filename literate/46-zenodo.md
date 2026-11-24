@@ -53,6 +53,8 @@ The module is `core/zenodo.js`.
 
     <<Zenodo: the record of the version before>>
 
+    <<Zenodo: settling an interrupted deposit>>
+
     <<Zenodo: committing the deposit>>
 
     <<Zenodo: the checks of a deposit record>>
@@ -96,7 +98,11 @@ The token goes only to the API's own host, as in opensheaf-py: a path
 (`/deposit/...`) is one of the API; any other address (a link in
 Zenodo's answer, the bucket of a draft or its latest version) must have
 the scheme and host of the API (HTTPS, unless a double's address is
-given), or the request is not made. Redirects are followed by the binding
+given), or the request is not made. A request that fails is a
+`ZenodoError`, whose `code` is the HTTP status of Zenodo's answer, or
+`null` when no answer could be read (the network failed, or the answer
+is not JSON): then the request may have been carried out all the same.
+Redirects are followed by the binding
 itself (`redirect: 'manual'`), and only to the scheme and host of the
 request, as opensheaf-py's `SameHostRedirects` follows them: the token
 goes with the request, and a redirect elsewhere would carry it there, so
@@ -106,7 +112,12 @@ a `POST` follows 301, 302 and 303 as a `GET` without a body, and other
 requests follow none (at most ten in a row).
 
     // in Zenodo: talking to the API:
-    export class ZenodoError extends Error {}
+    export class ZenodoError extends Error {
+      constructor(message, code = null) {
+        super(message);
+        this.code = code;
+      }
+    }
 
     export class Zenodo {
       constructor({ production, token, fetch = globalThis.fetch?.bind(globalThis), api = null }) {
@@ -131,12 +142,21 @@ requests follow none (at most ten in a row).
           throw new ZenodoError(`Zenodo gave the link '${url}', not one of ${api.protocol}//${api.host}/: the token is not sent there`);
         }
         const body = raw !== null ? raw : (data !== null ? JSON.stringify(data) : undefined);
-        const r = await this.sameHost(url, method, body, {
-          Authorization: `Bearer ${this.token}`, 'Content-Type': raw !== null ? 'application/octet-stream' : 'application/json',
-          Accept: 'application/json' });
-        const text = await r.text();
-        if (!r.ok) throw new ZenodoError(`Zenodo ${method} ${url}: ${r.status} ${text.slice(0, 1000)}`);
-        return text ? JSON.parse(text) : null;
+        let r, text;
+        try {
+          r = await this.sameHost(url, method, body, {
+            Authorization: `Bearer ${this.token}`, 'Content-Type': raw !== null ? 'application/octet-stream' : 'application/json',
+            Accept: 'application/json' });
+          text = await r.text();
+        } catch (error) {
+          throw new ZenodoError(`Zenodo ${method} ${url}: no answer (${error.message})`);
+        }
+        if (!r.ok) throw new ZenodoError(`Zenodo ${method} ${url}: ${r.status} ${text.slice(0, 1000)}`, r.status);
+        try {
+          return text ? JSON.parse(text) : null;
+        } catch (error) {
+          throw new ZenodoError(`Zenodo ${method} ${url}: no answer (${error.message})`);
+        }
       }
 
       async sameHost(url, method, body, headers) {
@@ -238,9 +258,16 @@ folder with that DOI and have its owner sign it, (4) upload the files
 and compare their MD5 checksums with the inventory's fixity, (5) publish,
 (6) add the object version with its signatures and write the discovery
 document again. The state of the deposit is `state.json` in
-`zenodo-staging/<path of the line>/`, its phase written after each step;
-while it is `published`, the line is locked (`zenodoPending`, chapter
-[23](23-folder.md)).
+`zenodo-staging/<path of the line>/`, written before the first request
+to Zenodo (phase `creating`, with the record of the version before), then
+with the number of the draft as soon as an answer gives it, and its phase
+after each step; `publishing` is written before the request to publish,
+whose answer may be lost after Zenodo has published. While it is
+`publishing` or `published`, the line is locked (`zenodoPending`, chapter
+[23](23-folder.md)). A deposit that fails before the publication is
+confirmed asks Zenodo what became of its draft (`settle`) before anything
+is discarded, as opensheaf-py's deposit does: a record lost after
+publication is not deleted, and its DOI not lost.
 
     // in Zenodo: depositing a document version:
     export async function deposit(f, label, z) {
@@ -256,12 +283,13 @@ while it is `published`, the line is locked (`zenodoPending`, chapter
 
       <<Zenodo: the document version to deposit>>
 
-      <<Zenodo: a draft and its DOI>>
-
-      const state = { phase: 'draft', record: recid, doi, documentVersion: docVersion };
+      const [prevRec, prevDoi] = previousRecord(inv, objs, docVersion, signed, z.s.records);
+      const state = { phase: 'creating', previous: prevRec, documentVersion: docVersion };
       await f.storage.write(statePath, jsonBytes(state));
-      let pub;
+      let pub, draft, recid, doi, conceptDoi;
       try {
+        <<Zenodo: a draft and its DOI>>
+
         <<Zenodo: stage the files of the version>>
         <<Zenodo: the DOI and the relations in datacite.json>>
         <<Zenodo: the deposit in object.json>>
@@ -269,16 +297,14 @@ while it is `published`, the line is locked (`zenodoPending`, chapter
 
         <<Zenodo: upload and compare the checksums>>
 
+        state.phase = 'publishing';
+        await f.storage.write(statePath, jsonBytes(state));
         pub = await z.call('POST', `/deposit/depositions/${recid}/actions/publish`);
       } catch (error) {
-        out(`${label}: failed before publication; discarding draft ${recid}`);
-        try {
-          await z.call('DELETE', `/deposit/depositions/${recid}`);
-        } catch (e) {
-          if (!(e instanceof ZenodoError)) throw e;
-          out(`  (could not discard: ${e.message})`);
+        out(`${label}: failed before the publication was confirmed`);
+        if ((await settle(f, z, label, stage, state)) === 'published') {
+          out(`${label}: Zenodo published ${state.doi} all the same: osheaf zenodo ${label} adds its object version`);
         }
-        await removeStage(f.storage, stage);
         f.changed();
         throw error;
       }
@@ -295,8 +321,13 @@ while it is `published`, the line is locked (`zenodoPending`, chapter
 ### Starting again
 
 A deposit that finds the staging folder of an earlier one completes it if
-it was published, and does nothing else; otherwise it discards its draft,
-as far as Zenodo allows, and starts again.
+it was published, and does nothing else. Otherwise it asks Zenodo what
+became of it (`settle`): a record Zenodo published, for the DOI of the
+version built in the staging folder, is completed as if the answer had
+come; a draft is discarded, and the deposit starts again; when Zenodo
+cannot tell, or refuses to discard the draft, the staging folder is
+kept, and nothing else is done until a later run settles it. A staging
+folder without `state.json` holds nothing recorded, and is removed.
 
     // in Zenodo: complete or discard an interrupted deposit:
     const pending = await readJson(f.storage, statePath);
@@ -305,14 +336,78 @@ as far as Zenodo allows, and starts again.
         out(`${label}: completing the object version of record ${pending.record}`);
         return commit(f, id, stage, pending);
       }
-      out(`${label}: discarding the unpublished draft ${pending.record}`);
+      out(`${label}: an interrupted deposit (phase ${pending.phase}): asking Zenodo what became of it`);
+      const outcome = await settle(f, z, label, stage, pending);
+      if (outcome === 'published') {
+        out(`${label}: Zenodo published ${pending.doi}: completing its object version`);
+        return commit(f, id, stage, pending);
+      }
+      if (outcome === 'kept') exit(`${label}: the interrupted deposit is not settled; nothing else is done`);
+    } else if (await f.storage.kind(stage)) {
+      await removeStage(f.storage, stage);
+    }
+
+Zenodo is asked about the draft of the state: its number, or, when the
+request for a new version got no answer, the latest draft of the record
+before. A draft that is gone is forgotten; a record Zenodo published is
+completed only if the staging folder holds the version built for its
+DOI, and kept otherwise, for a person to look at; any other draft is
+discarded. When Zenodo cannot be asked, the staging folder is kept, as
+in opensheaf-py's `settle`.
+
+    // in Zenodo: settling an interrupted deposit:
+    export function draftOf(link) {
+      const m = /\/deposit\/depositions\/([0-9]+)\/?$/.exec(typeof link === 'string' ? link : '');
+      return m ? Number(m[1]) : null;
+    }
+
+    export async function settle(f, z, label, stage, state) {
+      const out = (line) => f.env.out(line);
       try {
-        await z.call('DELETE', `/deposit/depositions/${pending.record}`);
-      } catch (e) {
-        if (!(e instanceof ZenodoError)) throw e;
-        out(`  (could not discard: ${e.message})`);
+        let recid = state.record ?? null;
+        if (recid === null && state.previous) {
+          const prev = (await z.call('GET', `/deposit/depositions/${state.previous}`)) || {};
+          recid = draftOf(prev.links?.latest_draft);
+        }
+        if (recid === null) {
+          if (state.phase === 'creating' && !state.previous) {
+            out('  a new Zenodo record may have been created without its number reaching us: ' +
+                "delete it on Zenodo's page of uploads if one is listed there");
+          }
+          await removeStage(f.storage, stage);
+          return 'discarded';
+        }
+        let dep;
+        try {
+          dep = (await z.call('GET', `/deposit/depositions/${recid}`)) || {};
+        } catch (error) {
+          if (error instanceof ZenodoError && [404, 410].includes(error.code)) {
+            await removeStage(f.storage, stage);
+            return 'discarded';
+          }
+          throw error;
+        }
+        if (dep.submitted === true) {
+          const built = state.version && (await f.storage.kind(joinPath(stage, 'version'))) === 'dir';
+          if (!built || dep.doi !== state.doi) {
+            out(`  Zenodo published record ${recid} (DOI ${dep.doi ?? 'None'}), and the staging folder ` +
+                `${stage} holds no version built for that DOI: it is kept, for a person to look at`);
+            return 'kept';
+          }
+          state.phase = 'published';
+          await f.storage.write(joinPath(stage, 'state.json'), jsonBytes(state));
+          return 'published';
+        }
+        out(`  discarding the unpublished draft ${recid}`);
+        await z.call('DELETE', `/deposit/depositions/${recid}`);
+      } catch (error) {
+        if (!(error instanceof ZenodoError)) throw error;
+        out(`  Zenodo could not tell or do what is needed (${error.message}); the staging folder ${stage} is kept, ` +
+            `and the next run of osheaf zenodo ${label} asks again`);
+        return 'kept';
       }
       await removeStage(f.storage, stage);
+      return 'discarded';
     }
 
 ### Steps 1 and 2: the draft and its DOI
@@ -344,19 +439,21 @@ version of its record, whose files, which Zenodo copies from the version
 before, are deleted; otherwise a new record is made.
 
     // in Zenodo: a draft and its DOI:
-    const [prevRec, prevDoi] = previousRecord(inv, objs, docVersion, signed, z.s.records);
-    let draft;
     if (prevRec) {
       const nv = await z.call('POST', `/deposit/depositions/${prevRec}/actions/newversion`);
+      Object.assign(state, { phase: 'draft', record: draftOf(nv.links.latest_draft) });
+      await f.storage.write(statePath, jsonBytes(state));
       draft = await z.call('GET', nv.links.latest_draft);
       for (const file of draft.files || []) await z.call('DELETE', `/deposit/depositions/${draft.id}/files/${file.id}`);
     } else {
       draft = await z.call('POST', '/deposit/depositions', {});
     }
-    const recid = draft.id;
+    recid = draft.id;
     const concept = draft.conceptrecid;
-    const doi = z.doi(recid);
-    const conceptDoi = concept ? z.doi(concept) : null;
+    doi = z.doi(recid);
+    conceptDoi = concept ? z.doi(concept) : null;
+    Object.assign(state, { phase: 'draft', record: recid, doi });
+    await f.storage.write(statePath, jsonBytes(state));
 
 The earlier version is the latest before the current one in the history
 that was deposited on the Zenodo in use; its deposit may be recorded in

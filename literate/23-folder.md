@@ -496,7 +496,7 @@ version is added until it is repaired.
       async zenodoPending(id) {
         try {
           const state = await readJson(this.storage, joinPath('zenodo-staging', ...(await pathOf(id, this.layout)), 'state.json'));
-          return state?.phase === 'published';
+          return ['publishing', 'published'].includes(state?.phase);
         } catch {
           return false;
         }

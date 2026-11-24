@@ -17,6 +17,7 @@ import { tarGz } from './fixtures.js';
 function fakeZenodo(production) {
   const s = SERVICES[production], api = 'https://zenodo.invalid/api';
   const records = new Map(), uploads = {}, calls = [];
+  const double = { records, uploads, calls, api, fail: [] };
   let next = 100;
   const record = (concept) => {
     next += 1;
@@ -31,18 +32,38 @@ function fakeZenodo(production) {
     const method = init.method || 'GET', u = new URL(url);
     assert.equal(u.hostname, 'zenodo.invalid', `a request left the double: ${url}`);
     assert.equal(init.headers.Authorization, 'Bearer fake-token');
+    const k = double.fail.findIndex(([m, part]) => m === method && u.pathname.includes(part));
+    if (k >= 0) {
+      const [[, , when]] = double.fail.splice(k, 1);
+      if (when === 'lost') await answer(method, u, init);
+      throw new TypeError(`fetch failed (${when})`);
+    }
+    return answer(method, u, init);
+  };
+  const answer = async (method, u, init) => {
     calls.push([method, u.pathname]);
     const parts = u.pathname.split('/');
     if (method === 'POST' && u.pathname === '/api/deposit/depositions') return json(record(null), 201);
     if (u.pathname.endsWith('/actions/newversion')) {
-      const rec = record(records.get(Number(parts.at(-3))).conceptrecid);
+      const parent = records.get(Number(parts.at(-3)));
+      const rec = record(parent.conceptrecid);
+      parent.links.latest_draft = rec.links.latest_draft;
       return json({ links: { latest_draft: rec.links.latest_draft } }, 201);
     }
     if (u.pathname.endsWith('/actions/publish')) {
       const rec = records.get(Number(parts.at(-3)));
+      Object.assign(rec, { submitted: true, doi: `${s.prefix}/zenodo.${rec.id}` });
       return json({ doi: `${s.prefix}/zenodo.${rec.id}`, conceptdoi: `${s.prefix}/zenodo.${rec.conceptrecid}` }, 202);
     }
-    if (method === 'GET') return json(records.get(Number(parts.at(-1))));
+    if (u.pathname.includes('/deposit/depositions/') && /^[0-9]+$/.test(parts.at(-1)) && ['GET', 'DELETE'].includes(method)) {
+      const n = Number(parts.at(-1));
+      if (!records.has(n)) return json({ status: 404, message: 'PID does not exist.' }, 404);
+      if (method === 'DELETE') {
+        records.delete(n);
+        return new Response(null, { status: 204 });
+      }
+      return json(records.get(n));
+    }
     if (method === 'PUT' && u.pathname.startsWith('/bucket/')) {
       const data = new Uint8Array(init.body);
       uploads[decodeURIComponent(parts.at(-1))] = data;
@@ -51,7 +72,7 @@ function fakeZenodo(production) {
     if (method === 'DELETE') return new Response(null, { status: 204 });
     return json({});
   };
-  return { fetch, records, uploads, calls, api };
+  return Object.assign(double, { fetch });
 }
 
 async function sandbox({ arxivFiles = {} } = {}) {
@@ -451,6 +472,64 @@ test('a deposit interrupted after publication, completed and signed again', asyn
     assert.ok(found.includes('result: p: latest signed version v2'), found.join('\n'));
   } finally {
     ArchiveFolder.prototype.installVersion = install;
+    await box.done();
+  }
+});
+
+test('answers of Zenodo lost: an interrupted deposit is settled by asking Zenodo', async () => {
+  const box = await sandbox();
+  try {
+    const a = await archive(box);
+    const z = box.zenodo.true;
+    const pdf = path.join(box.root, 'p.pdf');
+    await writeFile(pdf, '%PDF-1.4 p');
+    const paper = ['--pdf', pdf, '--no-source', 'lost', '--title', 'P', '--author', 'Doe, Jane'];
+    const zenodo = [...a.r, 'zenodo', 'p', '--production'];
+    await box.ok([...a.r, 'deposit', 'p', ...paper, '--new']);
+    const [, name, owner] = (await lineOf(a.dir, 'p')).id.split(':');
+    const stage = path.join(a.dir, 'zenodo-staging', owner, name);
+    const stateOf = async () => JSON.parse(await readFile(path.join(stage, 'state.json'), 'utf-8'));
+    const publishes = () => z.calls.filter(([, u]) => u.endsWith('/actions/publish')).length;
+    z.fail = [['POST', '/actions/publish', 'lost'], ['GET', '/deposit/depositions/', 'before']];
+    assert.equal((await box.run(zenodo)).status, 1);
+    assert.equal((await stateOf()).phase, 'publishing');
+    assert.match((await box.run([...a.r, 'deposit', 'p', ...paper, '--changes', 'x'])).err, /completes it first/);
+    await box.ok(zenodo);
+    let l = await lineOf(a.dir, 'p');
+    assert.equal(l.inv.head, 'v2');
+    assert.ok(!existsSync(stage));
+    assert.equal(publishes(), 1);
+    assert.equal(z.records.size, 1);
+    assert.equal((await l.json('datacite.json')).doi, `10.5281/zenodo.${[...z.records.keys()][0]}`);
+    await writeFile(pdf, '%PDF-1.4 p2');
+    await box.ok([...a.r, 'deposit', 'p', ...paper, '--changes', 'Typos.']);
+    z.fail = [['GET', '/deposit/depositions/', 'before'], ['DELETE', '/deposit/depositions/', 'before']];
+    assert.equal((await box.run(zenodo)).status, 1);
+    const state = await stateOf();
+    assert.equal(state.phase, 'draft');
+    assert.ok(z.records.has(state.record));
+    await box.ok(zenodo);
+    assert.equal(publishes(), 2);
+    assert.equal(z.records.size, 2);
+    assert.ok(!z.records.has(state.record));
+    l = await lineOf(a.dir, 'p');
+    assert.equal(l.inv.head, 'v4');
+    assert.deepEqual((await findings(box, a)).filter((x) => x.startsWith('error')), []);
+    await box.ok([...a.r, 'deposit', 'p', ...paper, '--changes', 'More.']);
+    z.fail = [['POST', '/actions/newversion', 'lost'], ['GET', '/deposit/depositions/', 'before']];
+    assert.equal((await box.run(zenodo)).status, 1);
+    assert.ok(!('record' in (await stateOf())));
+    const drafts = [...z.records].filter(([, rec]) => !rec.submitted).map(([k]) => k);
+    assert.equal(drafts.length, 1);
+    await box.ok(zenodo);
+    assert.ok(!z.records.has(drafts[0]));
+    assert.equal(publishes(), 3);
+    await mkdir(path.join(stage, 'version'), { recursive: true });
+    await box.ok([...a.r, 'deposit', 'p', ...paper, '--changes', 'Last.']);
+    await box.ok(zenodo);
+    assert.equal(publishes(), 4);
+    assert.ok(!existsSync(stage));
+  } finally {
     await box.done();
   }
 });

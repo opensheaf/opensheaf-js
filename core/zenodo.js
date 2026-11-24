@@ -21,7 +21,12 @@ export const SERVICE_NAME = 'Zenodo';
 export const MAX_FILES = 100;
 export const METADATA_FILES = ['datacite.json', 'object.json'];
 
-export class ZenodoError extends Error {}
+export class ZenodoError extends Error {
+  constructor(message, code = null) {
+    super(message);
+    this.code = code;
+  }
+}
 
 export class Zenodo {
   constructor({ production, token, fetch = globalThis.fetch?.bind(globalThis), api = null }) {
@@ -46,12 +51,21 @@ export class Zenodo {
       throw new ZenodoError(`Zenodo gave the link '${url}', not one of ${api.protocol}//${api.host}/: the token is not sent there`);
     }
     const body = raw !== null ? raw : (data !== null ? JSON.stringify(data) : undefined);
-    const r = await this.sameHost(url, method, body, {
-      Authorization: `Bearer ${this.token}`, 'Content-Type': raw !== null ? 'application/octet-stream' : 'application/json',
-      Accept: 'application/json' });
-    const text = await r.text();
-    if (!r.ok) throw new ZenodoError(`Zenodo ${method} ${url}: ${r.status} ${text.slice(0, 1000)}`);
-    return text ? JSON.parse(text) : null;
+    let r, text;
+    try {
+      r = await this.sameHost(url, method, body, {
+        Authorization: `Bearer ${this.token}`, 'Content-Type': raw !== null ? 'application/octet-stream' : 'application/json',
+        Accept: 'application/json' });
+      text = await r.text();
+    } catch (error) {
+      throw new ZenodoError(`Zenodo ${method} ${url}: no answer (${error.message})`);
+    }
+    if (!r.ok) throw new ZenodoError(`Zenodo ${method} ${url}: ${r.status} ${text.slice(0, 1000)}`, r.status);
+    try {
+      return text ? JSON.parse(text) : null;
+    } catch (error) {
+      throw new ZenodoError(`Zenodo ${method} ${url}: no answer (${error.message})`);
+    }
   }
 
   async sameHost(url, method, body, headers) {
@@ -258,6 +272,60 @@ export function previousRecord(inv, objs, docVersion, signed, records = SERVICES
   return [null, null];
 }
 
+export function draftOf(link) {
+  const m = /\/deposit\/depositions\/([0-9]+)\/?$/.exec(typeof link === 'string' ? link : '');
+  return m ? Number(m[1]) : null;
+}
+
+export async function settle(f, z, label, stage, state) {
+  const out = (line) => f.env.out(line);
+  try {
+    let recid = state.record ?? null;
+    if (recid === null && state.previous) {
+      const prev = (await z.call('GET', `/deposit/depositions/${state.previous}`)) || {};
+      recid = draftOf(prev.links?.latest_draft);
+    }
+    if (recid === null) {
+      if (state.phase === 'creating' && !state.previous) {
+        out('  a new Zenodo record may have been created without its number reaching us: ' +
+            "delete it on Zenodo's page of uploads if one is listed there");
+      }
+      await removeStage(f.storage, stage);
+      return 'discarded';
+    }
+    let dep;
+    try {
+      dep = (await z.call('GET', `/deposit/depositions/${recid}`)) || {};
+    } catch (error) {
+      if (error instanceof ZenodoError && [404, 410].includes(error.code)) {
+        await removeStage(f.storage, stage);
+        return 'discarded';
+      }
+      throw error;
+    }
+    if (dep.submitted === true) {
+      const built = state.version && (await f.storage.kind(joinPath(stage, 'version'))) === 'dir';
+      if (!built || dep.doi !== state.doi) {
+        out(`  Zenodo published record ${recid} (DOI ${dep.doi ?? 'None'}), and the staging folder ` +
+            `${stage} holds no version built for that DOI: it is kept, for a person to look at`);
+        return 'kept';
+      }
+      state.phase = 'published';
+      await f.storage.write(joinPath(stage, 'state.json'), jsonBytes(state));
+      return 'published';
+    }
+    out(`  discarding the unpublished draft ${recid}`);
+    await z.call('DELETE', `/deposit/depositions/${recid}`);
+  } catch (error) {
+    if (!(error instanceof ZenodoError)) throw error;
+    out(`  Zenodo could not tell or do what is needed (${error.message}); the staging folder ${stage} is kept, ` +
+        `and the next run of osheaf zenodo ${label} asks again`);
+    return 'kept';
+  }
+  await removeStage(f.storage, stage);
+  return 'discarded';
+}
+
 export async function commit(f, id, stage, state) {
   const label = f.labelOf(id) || id;
   let inv;
@@ -312,13 +380,14 @@ export async function deposit(f, label, z) {
       out(`${label}: completing the object version of record ${pending.record}`);
       return commit(f, id, stage, pending);
     }
-    out(`${label}: discarding the unpublished draft ${pending.record}`);
-    try {
-      await z.call('DELETE', `/deposit/depositions/${pending.record}`);
-    } catch (e) {
-      if (!(e instanceof ZenodoError)) throw e;
-      out(`  (could not discard: ${e.message})`);
+    out(`${label}: an interrupted deposit (phase ${pending.phase}): asking Zenodo what became of it`);
+    const outcome = await settle(f, z, label, stage, pending);
+    if (outcome === 'published') {
+      out(`${label}: Zenodo published ${pending.doi}: completing its object version`);
+      return commit(f, id, stage, pending);
     }
+    if (outcome === 'kept') exit(`${label}: the interrupted deposit is not settled; nothing else is done`);
+  } else if (await f.storage.kind(stage)) {
     await removeStage(f.storage, stage);
   }
 
@@ -340,23 +409,26 @@ export async function deposit(f, label, z) {
   }
 
   const [prevRec, prevDoi] = previousRecord(inv, objs, docVersion, signed, z.s.records);
-  let draft;
-  if (prevRec) {
-    const nv = await z.call('POST', `/deposit/depositions/${prevRec}/actions/newversion`);
-    draft = await z.call('GET', nv.links.latest_draft);
-    for (const file of draft.files || []) await z.call('DELETE', `/deposit/depositions/${draft.id}/files/${file.id}`);
-  } else {
-    draft = await z.call('POST', '/deposit/depositions', {});
-  }
-  const recid = draft.id;
-  const concept = draft.conceptrecid;
-  const doi = z.doi(recid);
-  const conceptDoi = concept ? z.doi(concept) : null;
-
-  const state = { phase: 'draft', record: recid, doi, documentVersion: docVersion };
+  const state = { phase: 'creating', previous: prevRec, documentVersion: docVersion };
   await f.storage.write(statePath, jsonBytes(state));
-  let pub;
+  let pub, draft, recid, doi, conceptDoi;
   try {
+    if (prevRec) {
+      const nv = await z.call('POST', `/deposit/depositions/${prevRec}/actions/newversion`);
+      Object.assign(state, { phase: 'draft', record: draftOf(nv.links.latest_draft) });
+      await f.storage.write(statePath, jsonBytes(state));
+      draft = await z.call('GET', nv.links.latest_draft);
+      for (const file of draft.files || []) await z.call('DELETE', `/deposit/depositions/${draft.id}/files/${file.id}`);
+    } else {
+      draft = await z.call('POST', '/deposit/depositions', {});
+    }
+    recid = draft.id;
+    const concept = draft.conceptrecid;
+    doi = z.doi(recid);
+    conceptDoi = concept ? z.doi(concept) : null;
+    Object.assign(state, { phase: 'draft', record: recid, doi });
+    await f.storage.write(statePath, jsonBytes(state));
+
     const files = new Map();
     for (const paths of Object.values(inv.versions[cur].state)) {
       for (const lp of paths) if (!METADATA_FILES.includes(lp)) files.set(lp, await f.readLogical(dir, inv, lp, cur));
@@ -418,16 +490,14 @@ export async function deposit(f, label, z) {
     state.phase = 'uploaded';
     await f.storage.write(statePath, jsonBytes(state));
 
+    state.phase = 'publishing';
+    await f.storage.write(statePath, jsonBytes(state));
     pub = await z.call('POST', `/deposit/depositions/${recid}/actions/publish`);
   } catch (error) {
-    out(`${label}: failed before publication; discarding draft ${recid}`);
-    try {
-      await z.call('DELETE', `/deposit/depositions/${recid}`);
-    } catch (e) {
-      if (!(e instanceof ZenodoError)) throw e;
-      out(`  (could not discard: ${e.message})`);
+    out(`${label}: failed before the publication was confirmed`);
+    if ((await settle(f, z, label, stage, state)) === 'published') {
+      out(`${label}: Zenodo published ${state.doi} all the same: osheaf zenodo ${label} adds its object version`);
     }
-    await removeStage(f.storage, stage);
     f.changed();
     throw error;
   }

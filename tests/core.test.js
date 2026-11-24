@@ -28,6 +28,7 @@ import { Resolver } from '../core/resolve.js';
 import { Http } from '../core/http.js';
 import { verify } from '../core/verify.js';
 import { Archive } from '../core/archive.js';
+import { verdict, level, levelOfVersion, INCONSISTENT } from '../core/branches.js';
 import { writeDiscovery, PAGING } from '../core/discovery.js';
 import { ownerRotate } from '../core/owner.js';
 import { loadKeyLog } from '../core/keylogs.js';
@@ -1031,6 +1032,29 @@ test('a mirror serving a root inventory or content of its own (section 12.3)', a
   r = fresh();
   res = await r.latest(name, owner, ['https://example.org/swapped/']);
   await assert.rejects(r.describe(res), (e) => e.kind === 'digest' && /does not have the digest/.test(e.message));
+});
+
+test('a branch point reading a parent/object.json that its parent inventory does not record', async () => {
+  const one = await newArchive();
+  await deposit(one.f, paper('first', { rights: 'cc-by-4.0' }));
+  const two = await newArchive({ baseUrl: 'https://example.org/two/' });
+  two.f.env.fetch = storageFetch(one.storage, 'https://example.org/papers/');
+  const [, name, owner] = one.f.labels.get('first').split(':');
+  await branch(two.f, { uri: `sheaf:${name}:${owner}/v1`, at: ['https://example.org/papers/'], label: 'kept' });
+  const kept = two.f.labels.get('kept');
+  const archive = await Archive.open(new Http({ fetch: storageFetch(two.storage, 'https://example.org/two/'), budget: null }),
+                                     'https://example.org/two/');
+  const inv = await archive.headInventory(kept);
+  const lv = levelOfVersion(archive, kept, inv, inv.head);
+  const obj = await archive.json(kept, inv, inv.head, 'object.json');
+  const genesis = await archive.bytes(kept, inv, 'v1', 'genesis.json');
+  assert.notEqual((await verdict(lv, obj, genesis, () => null))[0], INCONSISTENT);
+  const pobj = JSON.parse(new TextDecoder().decode(await lv.read('parent/object.json')));
+  const forged = utf8(JSON.stringify({ ...pobj, parent: { ...obj.parent } }));
+  const stated = level(lv.digests, async (p) => (p === 'parent/object.json' ? forged : lv.read(p)));
+  const [v, problems] = await verdict(stated, obj, genesis, () => null);
+  assert.equal(v, INCONSISTENT);
+  assert.ok(problems.includes('parent/object.json is not the object.json the parent inventory records'), problems.join('\n'));
 });
 
 test('an unsigned head cannot restate a signed version (section 14.2)', async () => {

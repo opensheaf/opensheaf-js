@@ -47,7 +47,8 @@ export async function verdict(lv, obj, genesis, logs, depth = 0) {
   }
   const pinvBytes = lv.digests.has('parent/inventory.json') ? await lv.read('parent/inventory.json') : null;
   const pinv = jsonOrNull(pinvBytes);
-  const pobj = await lv.json('parent/object.json');
+  const pobjBytes = lv.digests.has('parent/object.json') ? await lv.read('parent/object.json') : null;
+  const pobj = jsonOrNull(pobjBytes);
   if (!isObject(pinv) || !isObject(pobj)) {
     return [INCONSISTENT, [...problems, 'parent/inventory.json or parent/object.json is missing (section 9.2)']];
   }
@@ -59,7 +60,7 @@ export async function verdict(lv, obj, genesis, logs, depth = 0) {
   for (const [d, paths] of Object.entries(isObject(state) ? state : {})) {
     for (const path of Array.isArray(paths) ? paths : []) pstate.set(path, d);
   }
-  if (pstate.get('object.json') !== lv.digests.get('parent/object.json')) {
+  if (!pstate.has('object.json') || pstate.get('object.json') !== await sha512(pobjBytes)) {
     problems.push('parent/object.json is not the object.json the parent inventory records');
   }
   if (depth === 0) {

@@ -75,7 +75,11 @@ The checks of section 9.3, in their order, on the branch point that
 and `parent.name` are names of the genesis record, and a branch renamed
 after a clash has the greater algorithm number); the pin (the digest of
 `parent/inventory.json` is the one `parent` records, and its head the
-version, and `parent/object.json` is the one it records); at the first
+version, and `parent/object.json` is the one it records: the digest of
+its bytes as read, not the one the branch's own inventory states for
+them, as opensheaf-py's `verdict` hashes them, so that the owner, name
+and parent read from it are those the pin fixes, however the level is
+read); at the first
 level only, the files (every file of the parent version but its
 descriptions and evidence is held with its digest, and nothing else but
 the files of the branch's own notices, which its `object.json` names,
@@ -110,7 +114,8 @@ unchecked one with why.
       }
       const pinvBytes = lv.digests.has('parent/inventory.json') ? await lv.read('parent/inventory.json') : null;
       const pinv = jsonOrNull(pinvBytes);
-      const pobj = await lv.json('parent/object.json');
+      const pobjBytes = lv.digests.has('parent/object.json') ? await lv.read('parent/object.json') : null;
+      const pobj = jsonOrNull(pobjBytes);
       if (!isObject(pinv) || !isObject(pobj)) {
         return [INCONSISTENT, [...problems, 'parent/inventory.json or parent/object.json is missing (section 9.2)']];
       }
@@ -122,7 +127,7 @@ unchecked one with why.
       for (const [d, paths] of Object.entries(isObject(state) ? state : {})) {
         for (const path of Array.isArray(paths) ? paths : []) pstate.set(path, d);
       }
-      if (pstate.get('object.json') !== lv.digests.get('parent/object.json')) {
+      if (!pstate.has('object.json') || pstate.get('object.json') !== await sha512(pobjBytes)) {
         problems.push('parent/object.json is not the object.json the parent inventory records');
       }
       if (depth === 0) {

@@ -22,7 +22,7 @@ collection is read as `yaml.safe_load` reads it, with the schema of YAML
 1.1, so that `follow: yes` is true there as in opensheaf-py.
 
     // in core/inputs.js:
-    import { exit } from './folder.js';
+    import { exit, pyRepr } from './folder.js';
 
     <<reading a file of options>>
 
@@ -94,8 +94,6 @@ and its path in the deposit, tools mappings of a name and a version.
           v = v.map((x) => (typeof x === 'string' ? x : Object.entries(x)[0].join('=')));
         } else if (PATHS.includes(k) && typeof v === 'string') {
           v = under(base, v);
-        } else if (k === 'after') {
-          v = Number.parseInt(v, 10);
         }
         out[k] = v;
       }
@@ -109,14 +107,21 @@ An entry of the file gives the options the command line left at their
 defaults. Its names are opensheaf-py's (`abstract_file`, `id` for the
 label), which the command line maps to its own; a name that is not an
 option of the command is refused, and a file's `date` is `available`, as
-on the command line.
+on the command line. Each value is converted as the command line
+converts its option (`SPECS`, the options of the command, by their
+names here), as opensheaf-py's `value_of` converts it as `argparse`
+would: a switch takes `true`, `yes`, `false` or `no` exactly (or a
+boolean of JSON), so that `no-passphrase: false` is off; an integer is
+read as one, a licence checked, a choice one of the choices; a repeated
+option is a list; a list or a mapping where one value is expected is
+refused, and anything else is text.
 
     // in the options of a run:
     export function camel(name) {
       return name.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
     }
 
-    export function merge(args, entry, defaults, command, rename = {}) {
+    export function merge(args, entry, defaults, command, rename = {}, specs = {}) {
       const ns = { ...args };
       const known = new Set(Object.keys(defaults));
       const dest = (k) => rename[k] || camel(k);
@@ -127,9 +132,45 @@ on the command line.
       if (unknown.length) throw new UsageProblem(`${command}: unknown option(s) in the file: ${unknown.sort().join(', ')}`);
       for (const [k, v] of Object.entries(entry)) {
         const d = dest(k);
-        if (JSON.stringify(ns[d]) === JSON.stringify(defaults[d])) ns[d] = v;
+        if (JSON.stringify(ns[d]) === JSON.stringify(defaults[d])) ns[d] = specs[d] ? valueOf(specs[d], v, command, k.replace(/_/g, '-')) : v;
       }
       return ns;
+    }
+
+    const BOOLEAN = { true: true, yes: true, false: false, no: false };
+
+    export function valueOf(spec, v, command, name) {
+      const bad = (why) => {
+        throw new UsageProblem(`${command}: ${name} in the file: ${why}`);
+      };
+      if (spec.flag) {
+        const b = typeof v === 'boolean' ? v : typeof v === 'string' && Object.hasOwn(BOOLEAN, v) ? BOOLEAN[v] : null;
+        if (b === null) bad(`true or false, not ${pyRepr(v)}`);
+        return b;
+      }
+      const one = (x) => {
+        if ((x !== null && typeof x === 'object') || (typeof x === 'boolean' && !spec.type && !spec.check)) {
+          bad(`a value, not ${pyRepr(x)}`);
+        }
+        if (spec.type === 'int') {
+          const text = typeof x === 'number' ? String(x) : String(x);
+          if (!/^\s*[-+]?[0-9]+\s*$/.test(text)) bad(`not ${pyRepr(x)} (invalid literal for int() with base 10: ${pyRepr(String(x))})`);
+          x = Number(text);
+        } else if (spec.check) {
+          try {
+            spec.check(String(x));
+          } catch (error) {
+            bad(`not ${pyRepr(x)} (${error.message})`);
+          }
+          x = String(x);
+        } else if (typeof x !== 'string') {
+          x = typeof x === 'boolean' ? (x ? 'True' : 'False') : String(x);
+        }
+        if (spec.choices && !spec.choices.includes(x)) bad(`one of ${spec.choices.join(', ')}, not ${pyRepr(x)}`);
+        return x;
+      };
+      if (spec.repeat || spec.list) return (Array.isArray(v) ? v : [v]).map(one);
+      return one(v);
     }
 
     export class UsageProblem extends Error {}

@@ -38,7 +38,9 @@ export function pyRepr(value) {
   if (value === null || value === undefined) return 'None';
   if (typeof value === 'boolean') return value ? 'True' : 'False';
   if (typeof value === 'number') return String(value);
-  return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(pyRepr).join(', ')}]`;
+  if (typeof value === 'object') return `{${Object.entries(value).map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v)}`).join(', ')}}`;
+  return String(value);
 }
 
 export function short(name) {

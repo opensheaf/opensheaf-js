@@ -1,5 +1,5 @@
 // Generated from literate/33-inputs.md by opensheaf-literate: edit the document, not this file.
-import { exit } from './folder.js';
+import { exit, pyRepr } from './folder.js';
 
 export async function parseData(name, text, { yaml11 = false } = {}) {
   if (name.toLowerCase().endsWith('.json')) return JSON.parse(text);
@@ -55,8 +55,6 @@ export function normalise(entry, base) {
       v = v.map((x) => (typeof x === 'string' ? x : Object.entries(x)[0].join('=')));
     } else if (PATHS.includes(k) && typeof v === 'string') {
       v = under(base, v);
-    } else if (k === 'after') {
-      v = Number.parseInt(v, 10);
     }
     out[k] = v;
   }
@@ -67,7 +65,7 @@ export function camel(name) {
   return name.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 }
 
-export function merge(args, entry, defaults, command, rename = {}) {
+export function merge(args, entry, defaults, command, rename = {}, specs = {}) {
   const ns = { ...args };
   const known = new Set(Object.keys(defaults));
   const dest = (k) => rename[k] || camel(k);
@@ -78,9 +76,45 @@ export function merge(args, entry, defaults, command, rename = {}) {
   if (unknown.length) throw new UsageProblem(`${command}: unknown option(s) in the file: ${unknown.sort().join(', ')}`);
   for (const [k, v] of Object.entries(entry)) {
     const d = dest(k);
-    if (JSON.stringify(ns[d]) === JSON.stringify(defaults[d])) ns[d] = v;
+    if (JSON.stringify(ns[d]) === JSON.stringify(defaults[d])) ns[d] = specs[d] ? valueOf(specs[d], v, command, k.replace(/_/g, '-')) : v;
   }
   return ns;
+}
+
+const BOOLEAN = { true: true, yes: true, false: false, no: false };
+
+export function valueOf(spec, v, command, name) {
+  const bad = (why) => {
+    throw new UsageProblem(`${command}: ${name} in the file: ${why}`);
+  };
+  if (spec.flag) {
+    const b = typeof v === 'boolean' ? v : typeof v === 'string' && Object.hasOwn(BOOLEAN, v) ? BOOLEAN[v] : null;
+    if (b === null) bad(`true or false, not ${pyRepr(v)}`);
+    return b;
+  }
+  const one = (x) => {
+    if ((x !== null && typeof x === 'object') || (typeof x === 'boolean' && !spec.type && !spec.check)) {
+      bad(`a value, not ${pyRepr(x)}`);
+    }
+    if (spec.type === 'int') {
+      const text = typeof x === 'number' ? String(x) : String(x);
+      if (!/^\s*[-+]?[0-9]+\s*$/.test(text)) bad(`not ${pyRepr(x)} (invalid literal for int() with base 10: ${pyRepr(String(x))})`);
+      x = Number(text);
+    } else if (spec.check) {
+      try {
+        spec.check(String(x));
+      } catch (error) {
+        bad(`not ${pyRepr(x)} (${error.message})`);
+      }
+      x = String(x);
+    } else if (typeof x !== 'string') {
+      x = typeof x === 'boolean' ? (x ? 'True' : 'False') : String(x);
+    }
+    if (spec.choices && !spec.choices.includes(x)) bad(`one of ${spec.choices.join(', ')}, not ${pyRepr(x)}`);
+    return x;
+  };
+  if (spec.repeat || spec.list) return (Array.isArray(v) ? v : [v]).map(one);
+  return one(v);
 }
 
 export class UsageProblem extends Error {}

@@ -909,6 +909,50 @@ relative to the file, and give way to the command line.
       assert.deepEqual(normalise({ 'Date-Info': 'x', tools: { pdflatex: '2025' } }, ''), { date_info: 'x', toolchain: ['pdflatex=2025'] });
     });
 
+Each value of a file of options is converted as its option is on the
+command line, as in opensheaf-py's
+`test_values_of_a_file_of_options_are_converted`: switches take `true`,
+`yes`, `false` and `no` (so that `no-passphrase: false` is off), integers
+are read, choices checked, a list refused where one value is expected,
+and a repeated option is a list.
+
+    // in tests of keepers and of options read from files:
+    test('the values of a file of options are converted', async () => {
+      const { main } = await import('../cli/osheaf.js');
+      const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+      const os = await import('node:os');
+      const dir = await mkdtemp(`${os.tmpdir()}/osheaf-options-`);
+      const said = [];
+      const run = (argv) => main(argv, { out: (l) => said.push(l), err: (l) => said.push(l),
+                                         environ: { XDG_CONFIG_HOME: `${dir}/config`, OPENSHEAF_KEY_STORE: 'file' } });
+      try {
+        const e = (await loadEntries('init.yaml', 'name: Test\nbase-url: https://example.org/\ncurator: Doe, Jane\n' +
+          "new-owner: true\nno-passphrase: false\nplain-current: 'no'\nyes: false\nrotation: 3\n"))[0];
+        const specs = { newOwner: { flag: true }, noPassphrase: { flag: true }, plainCurrent: { flag: true },
+                        yes: { flag: true }, rotation: { type: 'int' }, name: {}, baseUrl: {}, curator: {} };
+        const defaults = { newOwner: undefined, noPassphrase: undefined, plainCurrent: undefined, yes: undefined,
+                           rotation: undefined, name: undefined, baseUrl: undefined, curator: undefined };
+        const ns = merge({}, e, defaults, 'init', {}, specs);
+        assert.deepEqual([ns.newOwner, ns.noPassphrase, ns.plainCurrent, ns.yes, ns.rotation], [true, false, false, false, 3]);
+        for (const [bad, what] of [['i-know: maybe\n', /i-know in the file: true or false, not 'maybe'/],
+                                   ['stage: BOGUS\n', /stage in the file: one of AO, SMUR/],
+                                   ['after: two\n', /after in the file: not 'two'/],
+                                   ['title: [a, b]\n', /title in the file: a value, not \['a', 'b'\]/]]) {
+          await writeFile(`${dir}/dep.yaml`, `id: x\nauthor: Doe, J\n${bad.startsWith('title') ? '' : 'title: T\n'}${bad}`);
+          said.length = 0;
+          assert.equal(await run(['--root', dir, 'deposit', '--from', `${dir}/dep.yaml`]), 2, said.join('\n'));
+          assert.match(said.join('\n'), what);
+        }
+        const ok = merge({ label: null, iKnow: undefined, new: undefined, stage: undefined, author: [] },
+          (await loadEntries('dep.yaml', 'id: x\ni-know: no\nnew: yes\nstage: AM\nauthor: Doe, J\n'))[0],
+          { label: null, iKnow: undefined, new: undefined, stage: undefined, author: [] }, 'deposit', { id: 'label' },
+          { iKnow: { flag: true }, new: { flag: true }, stage: { choices: ['AO', 'AM'] }, author: { repeat: true } });
+        assert.deepEqual([ok.iKnow, ok.new, ok.stage, ok.author], [false, true, 'AM', ['Doe, J']]);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
 Across archives, in memory
 --------------------------
 

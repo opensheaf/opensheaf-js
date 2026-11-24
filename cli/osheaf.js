@@ -593,6 +593,14 @@ function defaultsOf(cmd) {
   return out;
 }
 
+function specsOf(cmd) {
+  const spec = COMMANDS[cmd];
+  const out = {};
+  for (const p of spec.positionals) out[positional(p).name] = { list: ['+', '*'].includes(positional(p).kind) };
+  for (const o of Object.values(spec.options)) out[o.dest] = o;
+  return out;
+}
+
 async function runsOf(cmd, args) {
   let entries = [{}];
   if (args.fromFile) {
@@ -606,7 +614,7 @@ async function runsOf(cmd, args) {
   }
   const out = [];
   for (const entry of entries) {
-    const ns = merge(args, entry, defaultsOf(cmd), cmd, { id: 'label' });
+    const ns = merge(args, entry, defaultsOf(cmd), cmd, { id: 'label' }, specsOf(cmd));
     const missing = (REQUIRED[cmd] || []).filter((k) => ns[k] === undefined || ns[k] === null ||
                                                         (Array.isArray(ns[k]) && !ns[k].length));
     if (missing.length) throw new UsageProblem(`${cmd}: missing ` + missing.map((m) => PY_NAMES[m] || m).join(', '));
@@ -617,7 +625,6 @@ async function runsOf(cmd, args) {
         throw new UsageProblem(`${cmd}: ${error.message}`);
       }
     }
-    if (typeof ns.after === 'string') ns.after = Number.parseInt(ns.after, 10);
     out.push(ns);
   }
   return out;

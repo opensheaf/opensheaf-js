@@ -76,8 +76,8 @@ on the standard error and exits with the status 1, as Python's
 A value read from a file is quoted in a message as Python's `repr`
 quotes it, so that the two programs say the same: a string in single
 quotes (double quotes if it holds a single quote and no double quote),
-`None`, `True` and `False`, numbers as they are, and anything else as
-JSON.
+`None`, `True` and `False`, numbers as they are, lists and mappings as
+Python writes them.
 
     // in how the commands speak:
     export function pyRepr(value) {
@@ -89,7 +89,9 @@ JSON.
       if (value === null || value === undefined) return 'None';
       if (typeof value === 'boolean') return value ? 'True' : 'False';
       if (typeof value === 'number') return String(value);
-      return JSON.stringify(value);
+      if (Array.isArray(value)) return `[${value.map(pyRepr).join(', ')}]`;
+      if (typeof value === 'object') return `{${Object.entries(value).map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v)}`).join(', ')}}`;
+      return String(value);
     }
 
     export function short(name) {

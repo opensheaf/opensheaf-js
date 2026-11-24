@@ -304,6 +304,43 @@ The token of Zenodo is looked for in the environment, then in the
 keychain through `security`, on macOS only, as opensheaf-py looks for it
 (the package `keyring` aside).
 
+The token is not sent on a redirect to another host, as in opensheaf-py's
+`test_zenodo_token_not_sent_on_a_redirect`: two servers of the loopback,
+the first redirecting to the second, which receives nothing, the
+redirect becoming the error of the request; a redirect on the same host
+is followed, with the token.
+
+    // in services: the token:
+    test('the token of Zenodo is not sent on a redirect to another host', async () => {
+      const http = await import('node:http');
+      const seen = [];
+      const servers = await Promise.all([0, 1].map(() => new Promise((resolve) => {
+        const srv = http.createServer((req, res) => {
+          seen.push([srv.address().port, req.url, req.headers.authorization]);
+          if (req.url.startsWith('/to-')) {
+            res.writeHead(302, { Location: decodeURIComponent(req.url.slice(4)) });
+            res.end();
+            return;
+          }
+          res.writeHead(200);
+          res.end('{}');
+        });
+        srv.listen(0, '127.0.0.1', () => resolve(srv));
+      })));
+      try {
+        const [a, b] = servers.map((srv) => `http://127.0.0.1:${srv.address().port}`);
+        const z = new Zenodo({ production: true, token: 'SECRET', api: `${a}/api` });
+        await assert.rejects(z.call('GET', `${a}/to-${encodeURIComponent(`${b}/x`)}`), /: 302 /);
+        assert.ok(seen.every(([port]) => port !== servers[1].address().port));
+        assert.deepEqual(await z.call('GET', `${a}/to-${encodeURIComponent('/here')}`), {});
+        assert.deepEqual(seen.at(-1), [servers[0].address().port, '/here', 'Bearer SECRET']);
+      } finally {
+        for (const srv of servers) srv.close();
+      }
+    });
+
+The token itself:
+
     // in services: the token:
     test('the token of Zenodo: the environment, then the keychain on macOS', async () => {
       const asked = [];

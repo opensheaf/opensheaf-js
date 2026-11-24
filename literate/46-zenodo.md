@@ -96,7 +96,14 @@ The token goes only to the API's own host, as in opensheaf-py: a path
 (`/deposit/...`) is one of the API; any other address (a link in
 Zenodo's answer, the bucket of a draft or its latest version) must have
 the scheme and host of the API (HTTPS, unless a double's address is
-given), or the request is not made.
+given), or the request is not made. Redirects are followed by the binding
+itself (`redirect: 'manual'`), and only to the scheme and host of the
+request, as opensheaf-py's `SameHostRedirects` follows them: the token
+goes with the request, and a redirect elsewhere would carry it there, so
+any other redirect is the answer, and its status the error of the
+request. As in Python's `urllib`, a `GET` or `HEAD` follows any redirect,
+a `POST` follows 301, 302 and 303 as a `GET` without a body, and other
+requests follow none (at most ten in a row).
 
     // in Zenodo: talking to the API:
     export class ZenodoError extends Error {}
@@ -124,12 +131,37 @@ given), or the request is not made.
           throw new ZenodoError(`Zenodo gave the link '${url}', not one of ${api.protocol}//${api.host}/: the token is not sent there`);
         }
         const body = raw !== null ? raw : (data !== null ? JSON.stringify(data) : undefined);
-        const r = await this.fetch(url, { method, body, headers: {
+        const r = await this.sameHost(url, method, body, {
           Authorization: `Bearer ${this.token}`, 'Content-Type': raw !== null ? 'application/octet-stream' : 'application/json',
-          Accept: 'application/json' } });
+          Accept: 'application/json' });
         const text = await r.text();
         if (!r.ok) throw new ZenodoError(`Zenodo ${method} ${url}: ${r.status} ${text.slice(0, 1000)}`);
         return text ? JSON.parse(text) : null;
+      }
+
+      async sameHost(url, method, body, headers) {
+        const start = new URL(url);
+        for (let hops = 0; ; hops++) {
+          const r = await this.fetch(url, { method, body, headers, redirect: 'manual' });
+          const location = r.status >= 300 && r.status < 400 ? r.headers.get('location') : null;
+          if (!location || hops >= 10) return r;
+          let next;
+          try {
+            next = new URL(location, url);
+          } catch {
+            return r;
+          }
+          if (next.protocol !== start.protocol || next.host.toLowerCase() !== start.host.toLowerCase()) return r;
+          const read = ['GET', 'HEAD'].includes(method);
+          if (!read && !(method === 'POST' && [301, 302, 303].includes(r.status))) return r;
+          await r.body?.cancel();
+          if (!read) {
+            method = 'GET';
+            body = undefined;
+            headers = Object.fromEntries(Object.entries(headers).filter(([k]) => k !== 'Content-Type'));
+          }
+          url = next.href;
+        }
       }
 
       doi(recid) {

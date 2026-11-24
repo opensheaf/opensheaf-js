@@ -46,12 +46,37 @@ export class Zenodo {
       throw new ZenodoError(`Zenodo gave the link '${url}', not one of ${api.protocol}//${api.host}/: the token is not sent there`);
     }
     const body = raw !== null ? raw : (data !== null ? JSON.stringify(data) : undefined);
-    const r = await this.fetch(url, { method, body, headers: {
+    const r = await this.sameHost(url, method, body, {
       Authorization: `Bearer ${this.token}`, 'Content-Type': raw !== null ? 'application/octet-stream' : 'application/json',
-      Accept: 'application/json' } });
+      Accept: 'application/json' });
     const text = await r.text();
     if (!r.ok) throw new ZenodoError(`Zenodo ${method} ${url}: ${r.status} ${text.slice(0, 1000)}`);
     return text ? JSON.parse(text) : null;
+  }
+
+  async sameHost(url, method, body, headers) {
+    const start = new URL(url);
+    for (let hops = 0; ; hops++) {
+      const r = await this.fetch(url, { method, body, headers, redirect: 'manual' });
+      const location = r.status >= 300 && r.status < 400 ? r.headers.get('location') : null;
+      if (!location || hops >= 10) return r;
+      let next;
+      try {
+        next = new URL(location, url);
+      } catch {
+        return r;
+      }
+      if (next.protocol !== start.protocol || next.host.toLowerCase() !== start.host.toLowerCase()) return r;
+      const read = ['GET', 'HEAD'].includes(method);
+      if (!read && !(method === 'POST' && [301, 302, 303].includes(r.status))) return r;
+      await r.body?.cancel();
+      if (!read) {
+        method = 'GET';
+        body = undefined;
+        headers = Object.fromEntries(Object.entries(headers).filter(([k]) => k !== 'Content-Type'));
+      }
+      url = next.href;
+    }
   }
 
   doi(recid) {

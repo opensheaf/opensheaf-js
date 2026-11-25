@@ -64,11 +64,15 @@ limit is set by what a browser can reasonably hold, and a file larger
 than `large` is read alone (see below, reading a body). The answers kept
 for the session (see below, the client) are bounded too.
 
-Time is limited in two ways: a server must start answering (send the
+Time is limited in three ways: a server must start answering (send the
 headers) within `timeout`, and, once it has, must not stay silent for
-more than `stall` between two pieces of the body. A single limit on the
-whole request would fail the download of a large file from a slow but
-steady server, which is a valid archive.
+more than `stall` between two pieces of the body; and one request may not
+take more than `deadline` in all, as opensheaf-py's `DEADLINE`, so that a
+server sending a byte every few seconds cannot hold a reader for ever. The
+deadline is wide (five minutes, a file of 512 MB read at 2 MB/s), since
+it must not fail the download of a large file from a slow but steady
+server, which is a valid archive; the time a body waits for its turn
+among the large ones (below) is not counted.
 
 A hostile archive can make the work huge without making any file large:
 a collection with thousands of members, each with dozens of mirrors, an
@@ -76,6 +80,12 @@ object with thousands of versions, a discovery document listing a
 hundred thousand objects. Section 15 asks verifiers to limit what they
 follow, so each of these is bounded as well, and the pages and the
 verification say when a limit stopped them.
+
+What a resolver reads from other archives is bounded as a whole too, as
+opensheaf-py bounds what the copies of one resolver bring
+(`MAX_RUN_FILES`, `MAX_RUN_BYTES`): a client given a `run`, the counts of
+one resolver (chapter [15](15-resolve.md)), reads at most `runFiles`
+files and `runBytes` bytes for it.
 
 The same holds for what one page of the explorer may cost. Each limit
 above bounds one thing; together they still allow a hostile archive to
@@ -102,6 +112,7 @@ need fewer than ten.
       cache: 64 * 2 ** 20,     // bytes of answers kept by one client
       timeout: 60_000,         // milliseconds to wait for the headers of an answer
       stall: 30_000,           // milliseconds to wait for the next piece of a body
+      deadline: 300_000,       // milliseconds one request may take in all (opensheaf-py's DEADLINE)
       concurrency: 6,          // requests in flight at once
       depth: 3,                // levels of member collections followed
       pins: 2000,              // pins resolved in one walk through collections, or in one verification
@@ -113,6 +124,8 @@ need fewer than ten.
       retry: 30_000,           // milliseconds a busy server may ask to be left alone (Retry-After)
       pageRequests: 40_000,    // requests made for one page
       pageBytes: 256 * 2 ** 20, // bytes read for one page
+      runFiles: 200_000,       // files one resolver reads from other archives (opensheaf-py's MAX_RUN_FILES)
+      runBytes: 16 * 2 ** 30,  // bytes one resolver reads from other archives (opensheaf-py's MAX_RUN_BYTES)
     };
 
 Errors
@@ -137,7 +150,8 @@ explain the failure, and the address it concerns. The kinds are:
   block;
 - `network`: no answer at all, or an answer interrupted;
 - `budget`: the page has made all the requests, or read all the bytes,
-  it may (see the limits above);
+  it may, or a resolver all the files or bytes of its run (see the limits
+  above);
 - `timeout`, `too-large`, `json` (not UTF-8 JSON), `digest` (an inventory
   that does not match its checksum file), `crypto` (no WebCrypto) and
   `aborted` (cancelled by the reader).
@@ -317,12 +331,15 @@ Each try of a request is watched by a *watchdog*: a controller that
 aborts the request when its timer runs out. It is armed first for the
 headers (`timeout`), then for each piece of the body (`stall`), and
 remembers which limit ran out, so that the error can say so. It can be
-stopped, and re-armed with the same limit.
+stopped, and re-armed with the same limit. It also keeps the deadline of
+the whole try (`within`), whose clock stops while the watchdog is stopped
+and goes on, with the time left, when it is re-armed.
 
     // in the watchdog of a request:
     function watchdog() {
       const controller = new AbortController();
-      let timer = null, ms = 0;
+      let timer = null, ms = 0, end = null, left = Infinity, since = 0, late = '';
+      const fire = (dog, why) => { dog.fired = why; controller.abort(); };
       return {
         signal: controller.signal,
         fired: null,
@@ -332,12 +349,27 @@ stopped, and re-armed with the same limit.
           this.why = why;
           this.rearm();
         },
+        within(limit, why) {
+          left = limit;
+          late = why;
+          this.resume();
+        },
         rearm() {
           clearTimeout(timer);
-          timer = setTimeout(() => { this.fired = this.why; controller.abort(); }, ms);
+          timer = setTimeout(() => fire(this, this.why), ms);
+          this.resume();
+        },
+        resume() {
+          if (end !== null || left === Infinity) return;
+          since = Date.now();
+          end = setTimeout(() => fire(this, late), left);
         },
         stop() {
           clearTimeout(timer);
+          if (end === null) return;
+          clearTimeout(end);
+          end = null;
+          left = Math.max(0, left - (Date.now() - since));
         },
       };
     }
@@ -445,13 +477,19 @@ bytes read since `newPage()` was last called, which
 [the application](https://opensheaf.org/explorer/source/30-app.html) calls whenever the reader goes to another
 page. A budget of `null` sets no such limit.
 
+A client given `counts`, `{ files, bytes }`, counts in it the files and
+bytes it reads, against `LIMITS.runFiles` and `LIMITS.runBytes`: these are
+the counts of one resolver's run. A client given an `upstream` client
+adds its requests and bytes to that one's too, so that a verification
+reports what its resolver read.
+
     // in the HTTP client:
     export class Http {
       constructor({ fetch = globalThis.fetch?.bind(globalThis), concurrency = LIMITS.concurrency,
                     timeout = LIMITS.timeout, stall = LIMITS.stall, cacheLimit = LIMITS.cache,
                     run = pool(concurrency), large = pool(1),
                     budget = { requests: LIMITS.pageRequests, bytes: LIMITS.pageBytes },
-                    spent = { requests: 0, bytes: 0 } } = {}) {
+                    spent = { requests: 0, bytes: 0 }, counts = null, upstream = null } = {}) {
         this.fetchImpl = fetch;
         this.run = run;
         this.large = large;
@@ -464,6 +502,8 @@ page. A budget of `null` sets no such limit.
         this.bytesRead = 0;
         this.budget = budget;
         this.spent = spent;
+        this.counts = counts;
+        this.upstream = upstream;
       }
 
       newPage() {
@@ -492,10 +532,10 @@ so as to read the server again rather than the answers kept (see
 [resolving members](15-resolve.md)).
 
     // in another client like this one:
-    another({ budget = this.budget } = {}) {
+    another({ budget = this.budget, counts = null, upstream = null } = {}) {
       return new Http({ fetch: this.fetchImpl, timeout: this.timeout, stall: this.stall, run: this.run,
                         large: this.large, cacheLimit: this.cacheLimit, budget,
-                        spent: budget === this.budget ? this.spent : undefined });
+                        spent: budget === this.budget ? this.spent : undefined, counts, upstream });
     }
 
 Only `http:` and `https:` addresses are read; anything else (`file:`,
@@ -562,10 +602,12 @@ milliseconds.
       }
     }
 
-Before each try, the page budget is checked; the try then counts as a
-request of the page, and its body may not read more than the bytes left
-to the page. A body stopped by that, and not by the limit of its own
-kind, is reported as `budget`.
+Before each try, the page budget is checked, and the counts of the run;
+the try then counts as a request of the page, and its body may not read
+more than the bytes left to the page and to the run. A body stopped by
+that, and not by the limit of its own kind, is reported as `budget`, in
+the words of opensheaf-py for the run. A try that passes `deadline` is a
+`timeout`, "not read in 300 seconds", as opensheaf-py says it.
 
 A body that breaks off after the answer has arrived (the connection is
 cut, the server stops) is not diagnosed as a request that never got an
@@ -581,15 +623,22 @@ One try, in its place in the pool, under its watchdog:
 
     // in make one request:
     async attempt(url, method, limit, signal, canRetry, headers) {
-      const room = this.budget ? this.budget.bytes - this.spent.bytes : Infinity;
-      if (this.budget && (this.spent.requests >= this.budget.requests || room <= 0)) {
+      const pageRoom = this.budget ? this.budget.bytes - this.spent.bytes : Infinity;
+      const runRoom = this.counts ? LIMITS.runBytes - this.counts.bytes : Infinity;
+      const room = Math.min(pageRoom, runRoom);
+      if (this.budget && (this.spent.requests >= this.budget.requests || pageRoom <= 0)) {
         throw new FetchError('budget', url, `not read: this page has made ${this.spent.requests} requests ` +
           `and read ${this.spent.bytes} bytes, the most allowed for one page`);
       }
+      const runOut = () => new FetchError('budget', url, `not read: the copies of this run have brought ` +
+        `${LIMITS.runFiles} files or ${LIMITS.runBytes} bytes (section 15.2)`);
+      if (this.counts && (this.counts.files >= LIMITS.runFiles || runRoom <= 0)) throw runOut();
       const dog = watchdog();
       const both = signal ? AbortSignal.any([signal, dog.signal]) : dog.signal;
       this.requests++;
       this.spent.requests++;
+      if (this.upstream) this.upstream.requests++;
+      dog.within(LIMITS.deadline, `not read in ${LIMITS.deadline / 1000} seconds`);
       dog.arm(this.timeout, `no answer in ${this.timeout / 1000} s`);
       try {
         let response;
@@ -616,9 +665,15 @@ One try, in its place in the pool, under its watchdog:
           const bytes = await readLimited(response, url, Math.min(limit, room), { dog, large: this.large, signal });
           this.bytesRead += bytes.length;
           this.spent.bytes += bytes.length;
+          if (this.upstream) this.upstream.bytesRead += bytes.length;
+          if (this.counts) {
+            this.counts.files++;
+            this.counts.bytes += bytes.length;
+          }
           return bytes;
         } catch (error) {
           if (error?.kind === 'too-large' && room < limit) {
+            if (runRoom < pageRoom) throw runOut();
             throw new FetchError('budget', url, `not read whole: this page may read ${this.budget.bytes} bytes at most`);
           }
           if (error instanceof FetchError && error.kind !== 'aborted') throw error;

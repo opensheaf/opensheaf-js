@@ -90,7 +90,7 @@ export function localKind(hostname) {
 
 export class Resolver {
   constructor(http, home = null, { local = false, contents = true } = {}) {
-    this.http = http;
+    this.http = http.another({ budget: http.budget, counts: { files: 0, bytes: 0 }, upstream: http });
     this.home = home;
     this.local = local;
     this.readContents = contents;

@@ -198,6 +198,15 @@ are what `osheaf verify --remote` reports under the place `resolution`.
 The resolver checks the files of the version it resolves to (`contents`,
 below) unless it is made with `contents: false`.
 
+What a resolver reads from other archives is bounded as a whole, as
+opensheaf-py bounds what the copies of one resolver bring: it reads them
+through an [HTTP client](10-http.md) of its own, made from the one it is
+given, which counts the files and bytes of its run against
+`LIMITS.runFiles` (200 000) and `LIMITS.runBytes` (16 GiB), and adds its
+requests to those of the client given. Its home is read with the home's
+own client, and not counted, as opensheaf-py does not count the archive
+it runs in.
+
 A member resolved again must be resolved from the server, not from what
 the resolver and its HTTP client have kept: the curator who presses
 "Resolve again" has usually just fixed something. `again()` gives a
@@ -208,7 +217,7 @@ pool and the page budget of the first).
     // in core/resolve.js:
     export class Resolver {
       constructor(http, home = null, { local = false, contents = true } = {}) {
-        this.http = http;
+        this.http = http.another({ budget: http.budget, counts: { files: 0, bytes: 0 }, upstream: http });
         this.home = home;
         this.local = local;
         this.readContents = contents;

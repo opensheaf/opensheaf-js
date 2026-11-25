@@ -7,6 +7,7 @@ export const LIMITS = {
   cache: 64 * 2 ** 20,     // bytes of answers kept by one client
   timeout: 60_000,         // milliseconds to wait for the headers of an answer
   stall: 30_000,           // milliseconds to wait for the next piece of a body
+  deadline: 300_000,       // milliseconds one request may take in all (opensheaf-py's DEADLINE)
   concurrency: 6,          // requests in flight at once
   depth: 3,                // levels of member collections followed
   pins: 2000,              // pins resolved in one walk through collections, or in one verification
@@ -18,6 +19,8 @@ export const LIMITS = {
   retry: 30_000,           // milliseconds a busy server may ask to be left alone (Retry-After)
   pageRequests: 40_000,    // requests made for one page
   pageBytes: 256 * 2 ** 20, // bytes read for one page
+  runFiles: 200_000,       // files one resolver reads from other archives (opensheaf-py's MAX_RUN_FILES)
+  runBytes: 16 * 2 ** 30,  // bytes one resolver reads from other archives (opensheaf-py's MAX_RUN_BYTES)
 };
 
 export class FetchError extends Error {
@@ -147,7 +150,8 @@ function pause(ms, signal) {
 
 function watchdog() {
   const controller = new AbortController();
-  let timer = null, ms = 0;
+  let timer = null, ms = 0, end = null, left = Infinity, since = 0, late = '';
+  const fire = (dog, why) => { dog.fired = why; controller.abort(); };
   return {
     signal: controller.signal,
     fired: null,
@@ -157,12 +161,27 @@ function watchdog() {
       this.why = why;
       this.rearm();
     },
+    within(limit, why) {
+      left = limit;
+      late = why;
+      this.resume();
+    },
     rearm() {
       clearTimeout(timer);
-      timer = setTimeout(() => { this.fired = this.why; controller.abort(); }, ms);
+      timer = setTimeout(() => fire(this, this.why), ms);
+      this.resume();
+    },
+    resume() {
+      if (end !== null || left === Infinity) return;
+      since = Date.now();
+      end = setTimeout(() => fire(this, late), left);
     },
     stop() {
       clearTimeout(timer);
+      if (end === null) return;
+      clearTimeout(end);
+      end = null;
+      left = Math.max(0, left - (Date.now() - since));
     },
   };
 }
@@ -233,7 +252,7 @@ export class Http {
                 timeout = LIMITS.timeout, stall = LIMITS.stall, cacheLimit = LIMITS.cache,
                 run = pool(concurrency), large = pool(1),
                 budget = { requests: LIMITS.pageRequests, bytes: LIMITS.pageBytes },
-                spent = { requests: 0, bytes: 0 } } = {}) {
+                spent = { requests: 0, bytes: 0 }, counts = null, upstream = null } = {}) {
     this.fetchImpl = fetch;
     this.run = run;
     this.large = large;
@@ -246,6 +265,8 @@ export class Http {
     this.bytesRead = 0;
     this.budget = budget;
     this.spent = spent;
+    this.counts = counts;
+    this.upstream = upstream;
   }
 
   newPage() {
@@ -253,10 +274,10 @@ export class Http {
     this.spent.bytes = 0;
   }
 
-  another({ budget = this.budget } = {}) {
+  another({ budget = this.budget, counts = null, upstream = null } = {}) {
     return new Http({ fetch: this.fetchImpl, timeout: this.timeout, stall: this.stall, run: this.run,
                       large: this.large, cacheLimit: this.cacheLimit, budget,
-                      spent: budget === this.budget ? this.spent : undefined });
+                      spent: budget === this.budget ? this.spent : undefined, counts, upstream });
   }
 
   checkUrl(url) {
@@ -289,15 +310,22 @@ export class Http {
   }
 
   async attempt(url, method, limit, signal, canRetry, headers) {
-    const room = this.budget ? this.budget.bytes - this.spent.bytes : Infinity;
-    if (this.budget && (this.spent.requests >= this.budget.requests || room <= 0)) {
+    const pageRoom = this.budget ? this.budget.bytes - this.spent.bytes : Infinity;
+    const runRoom = this.counts ? LIMITS.runBytes - this.counts.bytes : Infinity;
+    const room = Math.min(pageRoom, runRoom);
+    if (this.budget && (this.spent.requests >= this.budget.requests || pageRoom <= 0)) {
       throw new FetchError('budget', url, `not read: this page has made ${this.spent.requests} requests ` +
         `and read ${this.spent.bytes} bytes, the most allowed for one page`);
     }
+    const runOut = () => new FetchError('budget', url, `not read: the copies of this run have brought ` +
+      `${LIMITS.runFiles} files or ${LIMITS.runBytes} bytes (section 15.2)`);
+    if (this.counts && (this.counts.files >= LIMITS.runFiles || runRoom <= 0)) throw runOut();
     const dog = watchdog();
     const both = signal ? AbortSignal.any([signal, dog.signal]) : dog.signal;
     this.requests++;
     this.spent.requests++;
+    if (this.upstream) this.upstream.requests++;
+    dog.within(LIMITS.deadline, `not read in ${LIMITS.deadline / 1000} seconds`);
     dog.arm(this.timeout, `no answer in ${this.timeout / 1000} s`);
     try {
       let response;
@@ -324,9 +352,15 @@ export class Http {
         const bytes = await readLimited(response, url, Math.min(limit, room), { dog, large: this.large, signal });
         this.bytesRead += bytes.length;
         this.spent.bytes += bytes.length;
+        if (this.upstream) this.upstream.bytesRead += bytes.length;
+        if (this.counts) {
+          this.counts.files++;
+          this.counts.bytes += bytes.length;
+        }
         return bytes;
       } catch (error) {
         if (error?.kind === 'too-large' && room < limit) {
+          if (runRoom < pageRoom) throw runOut();
           throw new FetchError('budget', url, `not read whole: this page may read ${this.budget.bytes} bytes at most`);
         }
         if (error instanceof FetchError && error.kind !== 'aborted') throw error;

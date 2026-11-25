@@ -51,7 +51,7 @@ The tests are written with `node:test` and `node:assert`, which both
     import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
     import { takedown } from '../core/takedown.js';
     import { Resolver } from '../core/resolve.js';
-    import { Http } from '../core/http.js';
+    import { Http, LIMITS } from '../core/http.js';
     import { verify } from '../core/verify.js';
     import { Archive } from '../core/archive.js';
     import { verdict, level, levelOfVersion, INCONSISTENT } from '../core/branches.js';
@@ -1469,6 +1469,53 @@ explorer's pages are, does not read it.
       r = fresh({ contents: false });
       assert.equal((await r.pin(name, owner, 'v1', d1, [tampered])).status, 'verified');
       assert.ok(!asked.some((u) => u.endsWith('.pdf')));
+    });
+
+One request may take `LIMITS.deadline` in all, as opensheaf-py's
+`DEADLINE`: a server sending a byte every few milliseconds, which never
+stalls, is stopped, "not read in ... seconds". A resolver reads at most
+`LIMITS.runFiles` files from other archives, as opensheaf-py's
+`MAX_RUN_FILES`: past them nothing is read, in opensheaf-py's words, and
+the line is unavailable.
+
+    // in tests of keepers and of options read from files:
+    test('the deadline of a request and the files of a run (section 15.2)', async () => {
+      const saved = { deadline: LIMITS.deadline, runFiles: LIMITS.runFiles };
+      try {
+        LIMITS.deadline = 300;
+        const slow = async (url, init = {}) => new Response(new ReadableStream({
+          start(c) { init.signal?.addEventListener('abort', () => c.error(new DOMException('aborted', 'AbortError'))); },
+          async pull(c) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            try { c.enqueue(new Uint8Array([32])); } catch { /* aborted */ }
+          },
+        }), { status: 200 });
+        await assert.rejects(new Http({ fetch: slow, budget: null }).request('https://example.org/slow'),
+                             (e) => e.kind === 'timeout' && e.message === 'https://example.org/slow: not read in 0.3 seconds');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        LIMITS.deadline = saved.deadline;
+        LIMITS.runFiles = 2;
+        const counted = new Http({ fetch: async () => new Response(utf8('{}'), { status: 200 }), budget: null })
+          .another({ counts: { files: 0, bytes: 0 } });
+        await counted.request('https://example.org/1');
+        await counted.request('https://example.org/2');
+        await assert.rejects(counted.request('https://example.org/3'), (e) => e.kind === 'budget' &&
+          e.detail === `not read: the copies of this run have brought 2 files or ${LIMITS.runBytes} bytes (section 15.2)`);
+        const one = await newArchive();
+        await deposit(one.f, paper('first'));
+        const id = one.f.labels.get('first'), [, name, owner] = id.split(':');
+        const fetch = storageFetch(one.storage, 'https://example.org/papers/');
+        const r = new Resolver(new Http({ fetch, budget: null }));
+        assert.equal((await r.latest(name, owner, ['https://example.org/papers/'])).status, 'unavailable');
+        assert.ok(r.notes.some((n) => n.message.includes('not read: the copies of this run have brought 2 files')),
+                  JSON.stringify(r.notes));
+        LIMITS.runFiles = saved.runFiles;
+        const fresh = new Resolver(new Http({ fetch, budget: null }));
+        assert.equal((await fresh.latest(name, owner, ['https://example.org/papers/'])).status, 'verified');
+        assert.ok(fresh.http.counts.files > 2 && fresh.http.upstream.requests === fresh.http.requests);
+      } finally {
+        Object.assign(LIMITS, saved);
+      }
     });
 
 What a mirror serves is believed only as far as the signed inventories

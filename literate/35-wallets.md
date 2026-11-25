@@ -249,7 +249,11 @@ The contents API (`/repos/OWNER/REPO/contents/PATH`) reads a file (its
 content in base64, and its `sha`), lists a folder, writes a file (`PUT`,
 with the `sha` of the file it replaces) and removes one (`DELETE`). A
 missing file answers 404. Before writing, the repository is checked once:
-it exists, it is private, and it is not one of the archive's.
+it exists, it is private, and it is not one of the archive's. The token is
+asked of `github.token()` at every request, never kept: the Manager's token
+is renewed while the page is open (it lasts eight hours), and a wallet kept
+by the page must use the renewed one. The command line keeps the token of
+its run itself (chapter [40](40-cli.md)), so that `gh auth token` runs once.
 
     // in a private GitHub repository:
     export const ENTRY_SUFFIX = '.key.enc';
@@ -267,18 +271,17 @@ it exists, it is private, and it is not one of the archive's.
         this.name = `github:${repo}`;
         this.github = github;
         this.forbidden = new Set([...forbidden].map((f) => f.toLowerCase()));
-        this.token = undefined;
         this.checked = false;
       }
 
       async api(method, path, body = null) {
-        if (this.token === undefined) this.token = await this.github.token();
-        if (!this.token) throw new WalletError('gh is not signed in to GitHub, and GITHUB_TOKEN is not set: run gh auth login');
+        const token = await this.github.token();
+        if (!token) throw new WalletError('gh is not signed in to GitHub, and GITHUB_TOKEN is not set: run gh auth login');
         let r;
         try {
           r = await this.github.fetch(`${this.github.api.replace(/\/$/, '')}/${path}`, {
             method,
-            headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${this.token}`,
+            headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`,
                        'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'opensheaf-js',
                        ...(body ? { 'Content-Type': 'application/json' } : {}) },
             body: body ? JSON.stringify(body) : undefined,

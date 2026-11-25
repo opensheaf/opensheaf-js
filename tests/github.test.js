@@ -648,7 +648,9 @@ test('an archive set up by the Manager with an owner made in the page is the one
     assert.deepEqual((await directRecordWallet({ repo: REPO, github: client(g2), env: env2, owner,
                                                  wallet: 'github:jane/keys' })).recorded, false);
     assert.deepEqual(walletCandidates(s2, owner, ['github:jane/other', 'github:jane/keys', 'command']),
-                     ['github:jane/keys', 'github:jane/other']);
+                     ['github:jane/other', 'github:jane/keys']);
+    assert.deepEqual(walletCandidates(s2, owner, ['github:jane/other']), ['github:jane/other', 'github:jane/keys']);
+    assert.deepEqual(walletCandidates(s2, owner), ['github:jane/keys']);
     assert.deepEqual(walletCandidates({ keys: { wallet: 'github:old/keys' } }, owner), []);   // a form of the draft
     const again = await directSetup({ repo: REPO, github: client(g2), fields, keyLog: await keyLogFolder(log),
                                       env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
@@ -774,6 +776,17 @@ test('keys of a wallet opened by the secret of a passkey, kept unexportable', as
   assert.equal(opened.signing.extractable, false);
   assert.deepEqual(await opened.sign(utf8('a message')), await key.sign(utf8('a message')));
   await assert.rejects(openLocks(locks, owner, cred, new Uint8Array(32).fill(6)));
+});
+
+test('a GitHub wallet asks for the token at every request, so that a renewed token is used', async () => {
+  let n = 0;
+  const seen = [];
+  const gh = { api: 'https://api.github.test', token: async () => `token-${++n}`,
+               fetch: async (url, init) => { seen.push(init.headers.Authorization); return new Response('{}'); } };
+  const w = new GitHubWallet('jane/opensheaf-keys', gh, []);
+  await w.api('GET', 'repos/jane/opensheaf-keys');
+  await w.api('GET', 'repos/jane/opensheaf-keys');
+  assert.deepEqual(seen, ['Bearer token-1', 'Bearer token-2']);
 });
 
 test('a key wallet set up from the page: checked, the current key pushed, a passkey enrolled', async () => {

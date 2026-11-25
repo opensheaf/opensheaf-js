@@ -95,6 +95,7 @@ export function githubToken(env = process.env) {
 
 export function outside(env, given = {}) {
   const vars = given.environ || process.env;
+  let token;
   return {
     clipboard: given.clipboard || clipboard(),
     wallets: given.wallets || {
@@ -109,7 +110,7 @@ export function outside(env, given = {}) {
       },
       remotes: async () => (env.archiveRoot ? runCommand('git', ['-C', env.archiveRoot, 'remote', '-v']).stdout : ''),
       github: { api: vars.OPENSHEAF_GITHUB_API || 'https://api.github.com', fetch: globalThis.fetch.bind(globalThis),
-                token: async () => githubToken(vars) },
+                token: async () => (token === undefined ? (token = githubToken(vars)) : token) },
     },
     readText: given.readText || ((p) => fs.readFile(p, 'utf-8')),
     readStdin: given.readStdin || readAllStdin,

@@ -267,7 +267,7 @@ export async function enrollPasskey(wallet, plan, passphrase, cred, prf, { cost 
 
 export function walletCandidates(settings, owner, given = []) {
   const out = [];
-  for (const w of [...hints(settings?.keys, owner), ...given]) {
+  for (const w of [...given, ...hints(settings?.keys, owner)]) {
     if (typeof w === 'string' && /^github:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(w) && !out.includes(w)) out.push(w);
   }
   return out;

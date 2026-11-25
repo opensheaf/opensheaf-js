@@ -216,10 +216,12 @@ may be in several wallets. A page chooses a wallet, then the owners in it.
 Three functions serve it:
 
 - `walletCandidates(settings, owner, given)`: the wallets in which the
-  keys of `owner` are looked for, in order: those the archive's
-  `osheaf.json` hints for it (`keys`, GitHub wallets only, the owner's
-  entry), then `given`, the person's own list
-  (kept by the page), each once, as `osheaf` orders them;
+  keys of `owner` are looked for, in order: `given`, the person's own list
+  (kept by the page), then those the archive's `osheaf.json` hints for it
+  (`keys`, GitHub wallets only, the owner's entry), each once, as `osheaf`
+  orders them (chapter [35](35-wallets.md)): `osheaf.json` is written by
+  whoever can change the archive, and a hint of it must not decide where
+  the owner's keys go;
 - `ownersHeld(wallet)` (chapter [35](35-wallets.md)): the owners whose
   keys a wallet holds, `[owner, number of keys, locks in words]`;
 - `holdingWallet(wallets, owner)`: the first of `wallets` (`GitHubWallet`
@@ -234,7 +236,7 @@ is committed (`recorded` false).
     // in the wallets of an owner:
     export function walletCandidates(settings, owner, given = []) {
       const out = [];
-      for (const w of [...hints(settings?.keys, owner), ...given]) {
+      for (const w of [...given, ...hints(settings?.keys, owner)]) {
         if (typeof w === 'string' && /^github:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(w) && !out.includes(w)) out.push(w);
       }
       return out;

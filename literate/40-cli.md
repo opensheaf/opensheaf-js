@@ -1671,7 +1671,10 @@ the archive:
       };
     }
 
-The wallets' side, and the rest:
+The wallets' side, and the rest. The GitHub token of the wallets is read
+once in a run (`GH_TOKEN`, `GITHUB_TOKEN`, else `gh auth token`) and kept
+for the run, since a wallet asks for it at every request (chapter
+[35](35-wallets.md)):
 
     // in cli/outside.js:
     export function userConfigPath(env = process.env) {
@@ -1728,6 +1731,7 @@ The wallets' side, and the rest:
 
     export function outside(env, given = {}) {
       const vars = given.environ || process.env;
+      let token;
       return {
         clipboard: given.clipboard || clipboard(),
         wallets: given.wallets || {
@@ -1742,7 +1746,7 @@ The wallets' side, and the rest:
           },
           remotes: async () => (env.archiveRoot ? runCommand('git', ['-C', env.archiveRoot, 'remote', '-v']).stdout : ''),
           github: { api: vars.OPENSHEAF_GITHUB_API || 'https://api.github.com', fetch: globalThis.fetch.bind(globalThis),
-                    token: async () => githubToken(vars) },
+                    token: async () => (token === undefined ? (token = githubToken(vars)) : token) },
         },
         readText: given.readText || ((p) => fs.readFile(p, 'utf-8')),
         readStdin: given.readStdin || readAllStdin,

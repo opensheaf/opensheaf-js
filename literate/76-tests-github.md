@@ -1007,7 +1007,7 @@ owner's current key (the script's `osheaf` takes it from
 form leaves it empty, is the page's (`defaultBase`), with its rule. A
 wallet set up later is recorded as a hint for the owner by
 `directRecordWallet`, in one commit, and only once; `walletCandidates`
-orders the hints before the person's own wallets.
+orders the person's own wallets before the hints.
 
     // in tests of the same requests by the script and by this program:
     const TEMPLATE = ISSUE ? path.resolve(path.dirname(ISSUE), '..', '..') : null;
@@ -1142,7 +1142,9 @@ orders the hints before the person's own wallets.
         assert.deepEqual((await directRecordWallet({ repo: REPO, github: client(g2), env: env2, owner,
                                                      wallet: 'github:jane/keys' })).recorded, false);
         assert.deepEqual(walletCandidates(s2, owner, ['github:jane/other', 'github:jane/keys', 'command']),
-                         ['github:jane/keys', 'github:jane/other']);
+                         ['github:jane/other', 'github:jane/keys']);
+        assert.deepEqual(walletCandidates(s2, owner, ['github:jane/other']), ['github:jane/other', 'github:jane/keys']);
+        assert.deepEqual(walletCandidates(s2, owner), ['github:jane/keys']);
         assert.deepEqual(walletCandidates({ keys: { wallet: 'github:old/keys' } }, owner), []);   // a form of the draft
         const again = await directSetup({ repo: REPO, github: client(g2), fields, keyLog: await keyLogFolder(log),
                                           env: browserEnvironment({ assets: { templates: {} }, keys: signing, fetch: noNetwork }),
@@ -1295,6 +1297,21 @@ owner; the key opened signs as the key it is, and its seed is gone.
       assert.equal(opened.signing.extractable, false);
       assert.deepEqual(await opened.sign(utf8('a message')), await key.sign(utf8('a message')));
       await assert.rejects(openLocks(locks, owner, cred, new Uint8Array(32).fill(6)));
+    });
+
+A GitHub wallet asks for the token at every request, so that the token
+the Manager renews (every eight hours) is the one used.
+
+    // in tests of the Manager's core:
+    test('a GitHub wallet asks for the token at every request, so that a renewed token is used', async () => {
+      let n = 0;
+      const seen = [];
+      const gh = { api: 'https://api.github.test', token: async () => `token-${++n}`,
+                   fetch: async (url, init) => { seen.push(init.headers.Authorization); return new Response('{}'); } };
+      const w = new GitHubWallet('jane/opensheaf-keys', gh, []);
+      await w.api('GET', 'repos/jane/opensheaf-keys');
+      await w.api('GET', 'repos/jane/opensheaf-keys');
+      assert.deepEqual(seen, ['Bearer token-1', 'Bearer token-2']);
     });
 
 A key wallet set up from the page, against a private repository of the

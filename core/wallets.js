@@ -150,18 +150,17 @@ export class GitHubWallet {
     this.name = `github:${repo}`;
     this.github = github;
     this.forbidden = new Set([...forbidden].map((f) => f.toLowerCase()));
-    this.token = undefined;
     this.checked = false;
   }
 
   async api(method, path, body = null) {
-    if (this.token === undefined) this.token = await this.github.token();
-    if (!this.token) throw new WalletError('gh is not signed in to GitHub, and GITHUB_TOKEN is not set: run gh auth login');
+    const token = await this.github.token();
+    if (!token) throw new WalletError('gh is not signed in to GitHub, and GITHUB_TOKEN is not set: run gh auth login');
     let r;
     try {
       r = await this.github.fetch(`${this.github.api.replace(/\/$/, '')}/${path}`, {
         method,
-        headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${this.token}`,
+        headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`,
                    'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'opensheaf-js',
                    ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: body ? JSON.stringify(body) : undefined,

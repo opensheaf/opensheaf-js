@@ -1114,6 +1114,48 @@ test('copies that disagree with a pin (section 12.3)', async () => {
   assert.equal((await r.pin(name, owner, 'v1', digest, [tampered])).status, 'mismatch');
 });
 
+test('a version is resolved to only when every file of it is found with its digest (section 12.3)', async () => {
+  const one = await newArchive();
+  await deposit(one.f, paper('first'));
+  await deposit(one.f, { ...paper('first', { new: false }), pdf: { name: 'v2.pdf', bytes: utf8('%PDF-1.4 two') } });
+  const id = one.f.labels.get('first'), [, name, owner] = id.split(':');
+  const dir = await one.f.dirOf(id);
+  const inv = await readJson(one.storage, `${dir}/inventory.json`);
+  const pdfOf = (ver) => Object.entries(inv.versions[ver].state).filter(([, ps]) => ps.some((p) => p.endsWith('.pdf')))
+    .map(([d]) => inv.manifest[d][0]).find((cp) => cp.startsWith(`${ver}/`));
+  const [pdf1, pdf2] = [pdfOf('v1'), pdfOf('v2')];
+  const d1 = await sha512hex(await one.storage.read(`${dir}/v1/inventory.json`));
+  const inner = storageFetch(one.storage, 'https://example.org/papers/');
+  const asked = [];
+  const fetch = async (url, init = {}) => {
+    const u = String(url);
+    asked.push(u);
+    if (u.startsWith('https://example.org/tampered/')) {
+      const real = u.replace('/tampered/', '/papers/');
+      if (real.endsWith(`${dir}/${pdf1}`)) return new Response(utf8('%PDF tampered'), { status: 200 });
+      return inner(real, init);
+    }
+    return inner(u, init);
+  };
+  const fresh = (options) => new Resolver(new Http({ fetch, budget: null }), null, options);
+  const messages = (r) => r.notes.map((n) => n.message);
+  const [tampered, papers] = ['tampered', 'papers'].map((x) => `https://example.org/${x}/`);
+  let r = fresh();
+  let res = await r.latest(name, owner, [tampered]);
+  assert.deepEqual([res.status, res.version], ['verified', 'v2']);
+  assert.ok(asked.some((u) => u.endsWith(`/${pdf2}`)) && !asked.some((u) => u.endsWith(`/${pdf1}`)), asked.join('\n'));
+  assert.equal((await r.pin(name, owner, 'v1', d1, [tampered])).status, 'unavailable');
+  assert.ok(messages(r).includes(`${tampered}: ${id} v1: ${pdf1} is missing, or does not have its digest: not read (section 12.3)`),
+            messages(r).join('\n'));
+  r = fresh();
+  res = await r.pin(name, owner, 'v1', d1, [tampered, papers]);
+  assert.deepEqual([res.status, res.copy.where], ['verified', papers]);
+  asked.length = 0;
+  r = fresh({ contents: false });
+  assert.equal((await r.pin(name, owner, 'v1', d1, [tampered])).status, 'verified');
+  assert.ok(!asked.some((u) => u.endsWith('.pdf')));
+});
+
 test('a mirror serving a root inventory or content of its own (section 12.3)', async () => {
   const one = await newArchive();
   await deposit(one.f, paper('first'));
@@ -1150,6 +1192,10 @@ test('a mirror serving a root inventory or content of its own (section 12.3)', a
   assert.equal(res.status, 'verified');
   assert.equal((await r.describe(res)).title, 'A paper');
   r = fresh();
+  res = await r.latest(name, owner, ['https://example.org/swapped/']);
+  assert.equal(res.status, 'unavailable');
+  assert.ok(r.notes.some((n) => n.message.includes(`${genuinePath} is missing, or does not have its digest`)));
+  r = new Resolver(new Http({ fetch, budget: null }), null, { contents: false });
   res = await r.latest(name, owner, ['https://example.org/swapped/']);
   await assert.rejects(r.describe(res), (e) => e.kind === 'digest' && /does not have the digest/.test(e.message));
 });

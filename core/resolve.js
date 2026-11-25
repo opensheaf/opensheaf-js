@@ -1,6 +1,6 @@
 // Generated from literate/15-resolve.md by opensheaf-literate: edit the document, not this file.
 import { Archive, baseOf } from './archive.js';
-import { LIMITS } from './http.js';
+import { LIMITS, sha512 } from './http.js';
 import { isVersion, versionNumber } from './paths.js';
 import { objectId, isNameOf, parseSheaf, readGenesis, isObject, NAME } from './names.js';
 import { titleOf, creatorsOf, historyOf } from './versions.js';
@@ -89,10 +89,12 @@ export function localKind(hostname) {
 }
 
 export class Resolver {
-  constructor(http, home = null, { local = false } = {}) {
+  constructor(http, home = null, { local = false, contents = true } = {}) {
     this.http = http;
     this.home = home;
     this.local = local;
+    this.readContents = contents;
+    this.checked = new Map();
     this.archives = new Map();
     this.logs = new Map();
     this.notes = [];
@@ -100,7 +102,7 @@ export class Resolver {
   }
 
   again() {
-    const fresh = new Resolver(this.http.another(), null, { local: this.local });
+    const fresh = new Resolver(this.http.another(), null, { local: this.local, contents: this.readContents });
     if (this.home) fresh.home = this.home;
     return fresh;
   }
@@ -346,31 +348,80 @@ export class Resolver {
       const d = n ? c.digest(n) : null;
       if (d && d !== digest) this.note('warning', `${c.where}: ${objectId(name, owner)} ${version} does not match the pin (section 12.3)`);
     }
-    for (const c of copies) {
-      if (n && c.digest(n) === digest) return found(MEMBER_STATUS[c.status(n)] || 'not a version', c, version, digest, copies);
+    for (const c of [...copies]) {
+      if (!n || c.digest(n) !== digest) continue;
+      const status = MEMBER_STATUS[c.status(n)] || 'not a version';
+      if ((status === 'verified' || status === 'contested') && await this.contents(c, n, options)) {
+        copies.splice(copies.indexOf(c), 1);
+        continue;
+      }
+      return found(status, c, version, digest, copies);
     }
     if (copies.length) return found('mismatch', null, version, digest, copies);
     return found(await this.tombstoned(objectId(name, owner), where, options) ? 'removed' : 'unavailable',
                  null, version, digest, copies);
   }
 
+  async contents(c, n, options = {}) {
+    if (!this.readContents || c.archive === this.home) return null;
+    const key = JSON.stringify([c.where, c.id, n]);
+    if (!this.checked.has(key)) {
+      const problem = await this.contentsProblem(c, n, options);
+      if (problem) this.note('warning', `${c.where}: ${c.id} v${n}: ${problem}: not read (section 12.3)`);
+      this.checked.set(key, problem);
+    }
+    return this.checked.get(key);
+  }
+
+  async contentsProblem(c, n, options) {
+    const inv = c.line.inv;
+    const state = inv.versions?.[`v${n}`]?.state;
+    if (!state || typeof state !== 'object') return `v${n} has no state in its inventory`;
+    for (const dig of Object.keys(state)) {
+      for (const cp of Array.isArray(inv.manifest?.[dig]) ? inv.manifest[dig] : []) {
+        const k = typeof cp === 'string' ? /^v([1-9][0-9]*)\//.exec(cp) : null;
+        let url = null;
+        try {
+          if (k && Number(k[1]) <= c.head) url = c.archive.contentUrl(c.id, inv, cp);
+        } catch {
+          url = null;
+        }
+        if (!url) return `a content path out of the object: '${cp}'`;
+        let bytes = null;
+        try {
+          bytes = await c.archive.http.request(url, { limit: LIMITS.file, signal: options.signal });
+        } catch (error) {
+          if (error?.kind === 'aborted') throw error;
+        }
+        if (!bytes || await sha512(bytes) !== dig) return `${cp} is missing, or does not have its digest`;
+      }
+    }
+    return null;
+  }
+
   async latest(name, owner, where = [], options = {}) {
-    const copies = await this.copies(name, owner, where, options);
-    const signed = copies.filter((c) => c.latestSigned).sort((a, b) => b.latestSigned - a.latestSigned);
-    if (!signed.length) {
-      const status = copies.length ? 'not a version'
-        : await this.tombstoned(objectId(name, owner), where, options) ? 'removed' : 'unavailable';
-      return found(status, null, null, null, copies);
+    let copies = await this.copies(name, owner, where, options);
+    for (;;) {
+      const signed = copies.filter((c) => c.latestSigned).sort((a, b) => b.latestSigned - a.latestSigned);
+      if (!signed.length) {
+        const status = copies.length ? 'not a version'
+          : await this.tombstoned(objectId(name, owner), where, options) ? 'removed' : 'unavailable';
+        return found(status, null, null, null, copies);
+      }
+      const top = signed[0];
+      const forks = signed.filter((c) => !top.agrees(c));
+      for (const c of forks) {
+        this.note('result', `a fork of the line ${top.id}: the copy at ${c.where} (latest signed ` +
+          `v${c.latestSigned}) does not agree with the copy at ${top.where} (latest signed ` +
+          `v${top.latestSigned}) (section 7.4)`);
+      }
+      if (forks.length) return found('fork', null, null, null, copies);
+      if (await this.contents(top, top.latestSigned, options)) {
+        copies = copies.filter((c) => c !== top);
+        continue;
+      }
+      return found('verified', top, `v${top.latestSigned}`, top.digest(top.latestSigned), copies);
     }
-    const top = signed[0];
-    const forks = signed.filter((c) => !top.agrees(c));
-    for (const c of forks) {
-      this.note('result', `a fork of the line ${top.id}: the copy at ${c.where} (latest signed ` +
-        `v${c.latestSigned}) does not agree with the copy at ${top.where} (latest signed ` +
-        `v${top.latestSigned}) (section 7.4)`);
-    }
-    if (forks.length) return found('fork', null, null, null, copies);
-    return found('verified', top, `v${top.latestSigned}`, top.digest(top.latestSigned), copies);
   }
 
   async documentVersion(name, owner, n, where = [], options = {}) {
@@ -381,7 +432,11 @@ export class Resolver {
     for (const h of historyOf(c.line.inv, objOf, latest.version)) {
       if (objOf(h)?.documentVersion === n) {
         const k = versionNumber(h);
-        return found(MEMBER_STATUS[c.status(k)] || 'not a version', c, h, c.digest(k), latest.copies);
+        const status = MEMBER_STATUS[c.status(k)] || 'not a version';
+        if ((status === 'verified' || status === 'contested') && await this.contents(c, k, options)) {
+          return found('unavailable', null, null, null, latest.copies);
+        }
+        return found(status, c, h, c.digest(k), latest.copies);
       }
     }
     this.note('warning', `${c.id}: no document version ${n} in the history of ${latest.version}`);
@@ -412,7 +467,7 @@ export class Resolver {
     if (u.version === null) return { id, found: await this.latest(name, owner, where, options) };
     if (u.sha512 === null) return { id, found: await this.documentVersion(name, owner, u.version, where, options) };
     const copies = await this.copies(name, owner, where, options);
-    for (const c of copies) {
+    for (const c of [...copies]) {
       const k = c.find(u.sha512);
       if (k === null) continue;
       const held = c.obj(k)?.documentVersion;
@@ -420,7 +475,12 @@ export class Resolver {
         this.note('warning', `${id}: the version pinned holds document version ${held}, not ${u.version}`);
         return { id, found: found('mismatch', c, `v${k}`, u.sha512) };
       }
-      return { id, found: found(MEMBER_STATUS[c.status(k)] || 'not a version', c, `v${k}`, u.sha512) };
+      const status = MEMBER_STATUS[c.status(k)] || 'not a version';
+      if ((status === 'verified' || status === 'contested') && await this.contents(c, k, options)) {
+        copies.splice(copies.indexOf(c), 1);
+        continue;
+      }
+      return { id, found: found(status, c, `v${k}`, u.sha512) };
     }
     const status = copies.length ? 'mismatch' : await this.tombstoned(id, where, options) ? 'removed' : 'unavailable';
     return { id, found: found(status, null, null, u.sha512, copies) };

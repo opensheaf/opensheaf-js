@@ -17,7 +17,7 @@ export const NOT_CHECKED = [
   { section: '14.2', text: 'The digests of the content files, unless "also check file digests" is chosen: without it, files are trusted to match their inventories (which are checked against their checksum files, signatures and pins). The files of key logs, genesis records and evidence of branches are always checked, the parent/object.json of a branch point by the digest of its bytes as read, at every level of the chain.' },
   { section: '4.4', text: 'datacite.json against the DataCite 4.7 XML Schema (neither does osheaf verify): only the properties section 4.4 requires are checked.' },
   { section: '14.5', text: 'The pins of members of other archives in earlier versions of a collection (optional; neither does osheaf verify). Members held in the archive are checked in every version.' },
-  { section: '12.3', text: 'The digests of the content files of copies found in other archives: their inventories, checksum files, descriptions, genesis records and signatures are checked, which is what pins rest on.' },
+  { section: '12.3', text: 'The digests of the content files of copies found in other archives, unless "also check file digests" is chosen: their inventories, checksum files, descriptions, genesis records and signatures are checked, which is what pins rest on; with it, every file of the version a member pins, as osheaf verify --remote does.' },
   { section: '6.6', text: 'Keepers: the check digit of an ORCID iD is checked, not the confirmation of the link by the keeper.' },
   { section: '15.4', text: 'Files that look like private keys in the archive, which osheaf verify looks for in the folder.' },
   { section: 'appendix A', text: 'The requirements of the profiles (zenodo, texmacs) and of extensions; of the profile website, the home page and the landing pages of the members of the owner catalogues.' },
@@ -97,7 +97,7 @@ class Verification {
     this.logs = new Map();
     this.statuses = new Map();
     this.tombstoned = new Set(archive.tombstones().map((t) => t.id));
-    this.resolver = context.remote ? new Resolver(context.http, archive) : null;
+    this.resolver = context.remote ? new Resolver(context.http, archive, { contents: context.digests }) : null;
   }
 
   where(id) {

@@ -1280,12 +1280,39 @@ test('the verifier reports what it cannot read', async () => {
     }],
     'discovery list': [/is a JSON object/, async (s) => s.write('opensheaf.json', utf8('[]'))],
     'deep inventory': [/without a readable inventory|inventory/, async (s, dir) => s.write(`${dir}/inventory.json`, utf8('['.repeat(100000)))],
-    'object.json latin-1': [/cannot be read|UTF-8/, async (s, dir) => rewriteFile(s, dir, 'object.json', new Uint8Array([0xff, 0xfe, 0x7b, 0x7d]))],
+    'object.json latin-1': [/object\.json: JSON is UTF-8, and this file is not \('utf-8' codec can't decode byte 0xff in position 0: invalid start byte\)/, async (s, dir) => rewriteFile(s, dir, 'object.json', new Uint8Array([0xff, 0xfe, 0x7b, 0x7d]))],
     'hashed config': [/config\.json is not a JSON object/, async (s) => {
       await s.write('ocfl/extensions/0003-hash-and-id-n-tuple-storage-layout/config.json', utf8('[1'));
     }, { layout: 'hashed' }],
     'versions list': [/without a readable inventory/, async (s, dir) => rewriteInventory(s, dir, (i) => { i.versions = ['v1']; })],
     'user text': [/a version has a user with a name/, async (s, dir) => rewriteInventory(s, dir, (i) => { i.versions.v1.user = 'me'; })],
+    'object.json bom': [/object\.json: JSON is UTF-8 without a byte order mark/, async (s, dir, f) => {
+      const obj = await f.readObjectJson(dir, await f.inventory(dir), 'object.json');
+      await rewriteFile(s, dir, 'object.json', utf8('\ufeff' + JSON.stringify(obj)));
+    }],
+    'number 2.0': [/object\.json: the number 1\.0 is not an integer written without a fraction or an exponent \(section 2\)/, async (s, dir, f) => {
+      const obj = await f.readObjectJson(dir, await f.inventory(dir), 'object.json');
+      await rewriteFile(s, dir, 'object.json', utf8(JSON.stringify(obj).replace('"documentVersion":1', '"documentVersion":1.0')));
+    }],
+    'number beyond': [/the number 9007199254740992 is beyond 2\^53 - 1/, async (s, dir, f) => {
+      const obj = await f.readObjectJson(dir, await f.inventory(dir), 'object.json');
+      await rewriteFile(s, dir, 'object.json', utf8(JSON.stringify(obj).replace('"documentVersion":1', '"documentVersion":9007199254740992')));
+    }],
+    'extension float': [/the number 0\.5 is not an integer/, async (s, dir, f) => {
+      const obj = await f.readObjectJson(dir, await f.inventory(dir), 'object.json');
+      await rewriteFile(s, dir, 'object.json', utf8(JSON.stringify({ ...obj, extensions: { 'https://example.org/ext': { x: 0.5 } } })));
+    }],
+    'discovery number': [/the number 1\.5 is not an integer/, async (s) => {
+      const disc = await readJson(s, 'opensheaf.json');
+      await s.write('opensheaf.json', utf8(JSON.stringify({ ...disc, 'x-number': 1.5 })));
+    }],
+    'storageRoot absolute': [/storageRoot '\/srv\/ocfl\/' is not a relative path of a folder below the archive, ending with \/ \(section 3\.1\)/, async (s) => {
+      const disc = await readJson(s, 'opensheaf.json');
+      await s.write('opensheaf.json', utf8(JSON.stringify({ ...disc, storageRoot: '/srv/ocfl/' })));
+    }],
+    'layout without description': [/ocfl_layout\.json has a description \(section 3\.2\)/, async (s) => {
+      await s.write('ocfl/ocfl_layout.json', utf8(JSON.stringify({ extension: '0003-hash-and-id-n-tuple-storage-layout' })));
+    }, { layout: 'hashed' }],
   };
   for (const [name, [expected, breakIt, options = {}]] of Object.entries(cases)) {
     const { storage, f } = await newArchive(options);
@@ -1297,6 +1324,23 @@ test('the verifier reports what it cannot read', async () => {
     assert.ok(errors.some((e) => expected.test(e)), `${name}:\n${errors.join('\n')}`);
     assert.ok(!errors.some((e) => /stopped on a file/.test(e)), `${name}:\n${errors.join('\n')}`);
   }
+});
+
+test('the checks of the final review', async () => {
+  const { hasPartErrors, formatFile } = await import('../core/verify.js');
+  const { storageRootOk } = await import('../core/paths.js');
+  const { parseSheaf } = await import('../core/names.js');
+  const dc = { relatedIdentifiers: [{ relationType: 'HasPart', relatedIdentifierType: 'DOI', relatedIdentifier: '10.1/A' },
+                                    { relationType: 'IsPartOf', relatedIdentifierType: 'DOI', relatedIdentifier: '10.2/b' }] };
+  assert.deepEqual(hasPartErrors(dc, { members: [{ doi: '10.1/a' }, { doi: '10.2/b' }, { revisions: [{ doi: '10.2/b' }, { doi: '' }] }] }),
+                   ['datacite.json has no HasPart relation to 10.2/b, the DOI of a member (section 8.6)']);
+  assert.deepEqual(['object.json', 'members.json', 'parent/object.json', 'parent/parent/signatures/signature-x.json',
+                    'parent/inventory.json', 'parent/members.json', 'a/object.json'].map(formatFile),
+                   ['object', 'collection', 'object', 'signature', null, null, null]);
+  assert.deepEqual(['ocfl/', 'a/b/', '/srv/ocfl/', 'https://x.org/ocfl/', 'ocfl', '../ocfl/', 'a//b/', 'a?b/', 'a#/', 'a\\b/', '/', null]
+    .map(storageRootOk), [true, true, false, false, false, false, false, false, false, false, false, false]);
+  const name = 'a'.repeat(52);
+  assert.throws(() => parseSheaf(`sheaf:${name}?at=https%3A%2F%2Fa.org%2F%FF%2F`), /the percent-escapes of at are not UTF-8/);
 });
 
 test('reserved names in a document', async () => {
@@ -1409,6 +1453,13 @@ test('a branch point reading a parent/object.json that its parent inventory does
   const [v, problems] = await verdict(stated, obj, genesis, () => null);
   assert.equal(v, INCONSISTENT);
   assert.ok(problems.includes('parent/object.json is not the object.json the parent inventory records'), problems.join('\n'));
+  const unchecked = await verdict(lv, obj, genesis, () => null);
+  assert.equal(unchecked[0], 'unchecked');
+  assert.deepEqual(await verdict(lv, obj, genesis, () => null, 0, async () => [true, 'signed']), ['confirmed', []]);
+  assert.deepEqual(await verdict(lv, obj, genesis, () => null, 0, async () => null), unchecked);
+  const [moved, why] = await verdict(lv, obj, genesis, () => null, 0, async () => [false, null]);
+  assert.equal(moved, INCONSISTENT);
+  assert.deepEqual(why, ['the parent version, resolved, does not match the pin (section 9.3)']);
 });
 
 test('an unsigned head cannot restate a signed version (section 14.2)', async () => {

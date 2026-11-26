@@ -1,6 +1,6 @@
 // Generated from literate/14-archive.md by opensheaf-literate: edit the document, not this file.
 import { FetchError, parseJson, sha512, LIMITS } from './http.js';
-import { isObjectId, isVersion, under, underPath, contentPathProblem, pathOf, OWNER_NAME_LAYOUT,
+import { isObjectId, isVersion, under, underPath, contentPathProblem, pathOf, storageRootOk, OWNER_NAME_LAYOUT,
          HASHED_LAYOUT } from './paths.js';
 import { contentPath, historyOf, currentVersion, versionsOf, filesOf } from './versions.js';
 import { objectId, parseId, isObject } from './names.js';
@@ -50,13 +50,9 @@ export class Archive {
       (disc.specification !== '0.2' && Object.hasOwn(disc, 'archiveId'));
     this.name = typeof disc.name === 'string' && disc.name ? disc.name : base;
     this.layout = disc.storageLayout === HASHED_LAYOUT ? HASHED_LAYOUT : OWNER_NAME_LAYOUT;
-    let root;
-    try {
-      root = new URL(typeof disc.storageRoot === 'string' ? disc.storageRoot : 'ocfl/', base).href;
-    } catch {
-      root = base + 'ocfl/';
-    }
-    this.root = root.endsWith('/') ? root : root + '/';
+    const given = disc.storageRoot ?? 'ocfl/';
+    this.rootRefused = !storageRootOk(given);
+    this.root = under(base, (this.rootRefused ? 'ocfl/' : given).slice(0, -1).split('/')) + '/';
     this.paths = new Map();
     this.keyLogs = new Map();
     this.lines = new Map();
@@ -104,6 +100,7 @@ export class Archive {
       !path.includes('\\') && !path.split('/')[0].includes(':') &&
       path.split('/').every((x) => x !== '' && x !== '.' && x !== '..');
     this.pages = [];
+    this.unparsed = [];
     this.pageProblems = [];
     const entries = [];
     for (const path of Array.isArray(this.disc.objectPages) ? this.disc.objectPages : []) {
@@ -111,16 +108,18 @@ export class Archive {
         this.pageProblems.push(`${JSON.stringify(path)} is not the path of a page below the discovery document (section 3.1)`);
         continue;
       }
-      let page;
+      let page, bytes = null;
       try {
-        page = parseJson(await this.http.cached(this.base + path, options), this.base + path);
+        bytes = await this.http.cached(this.base + path, options);
+        page = parseJson(bytes, this.base + path);
       } catch (error) {
         if (error?.kind === 'aborted') throw error;
+        if (bytes) this.unparsed.push({ path, bytes });
         this.pageProblems.push(error?.kind === 'not-found' ? `the page of objects ${path} is missing (section 3.1)`
           : `the page of objects ${path} is not JSON`);
         continue;
       }
-      this.pages.push({ path, page });
+      this.pages.push({ path, page, bytes, entries: isObject(page) && Array.isArray(page.objects) ? page.objects : [] });
       if (isObject(page) && Array.isArray(page.objects)) entries.push(...page.objects);
       else this.pageProblems.push(`${path} is not a page of objects (section 3.1)`);
     }
@@ -225,7 +224,7 @@ export class Archive {
     await this.locate(id);
     const url = this.fileUrl(id, inv, ver, logical);
     if (!url) return null;
-    const bytes = await this.http.cached(url, { ...options, limit: LIMITS.json });
+    const bytes = await this.http.cached(url, { ...options, limit: LIMITS.file });
     const digest = filesOf(inv, ver)[logical];
     if (typeof digest !== 'string' || (await sha512(bytes)) !== digest.toLowerCase()) {
       throw new FetchError('digest', url, `does not have the digest its inventory states for ${logical} (section 4.1)`);
@@ -330,9 +329,9 @@ export class Archive {
           problems.push(`${ver}: the content of ${paths[0]} is missing`);
         } else {
           try {
-            bytes = await this.http.cached(this.contentUrl(id, entry, cp), { ...options, limit: LIMITS.json });
+            bytes = await this.http.cached(this.contentUrl(id, entry, cp), { ...options, limit: LIMITS.file });
           } catch (error) {
-            if (error.kind === 'aborted') throw error;
+            if (['aborted', 'too-large', 'timeout', 'budget'].includes(error.kind)) throw error;
             problems.push(`${ver}: the content of ${paths[0]} is missing`);
           }
         }
@@ -341,9 +340,10 @@ export class Archive {
       }
       const witnesses = new Map();
       const prev = versions[versions.length - 1]?.keys;
-      for (const d of n > 1 && Array.isArray(prev?.next) ? prev.next : []) {
-        if (typeof d !== 'string') continue;
-        const name = `signature-${d.slice(0, 16)}.json`;
+      const listed = await this.listWitnesses(id, ver);
+      const named = listed ?? (n > 1 && Array.isArray(prev?.next) ? prev.next : [])
+        .filter((d) => typeof d === 'string').map((d) => `signature-${d.slice(0, 16)}.json`);
+      for (const name of named) {
         const bytes = await this.witness(id, ver, name, options);
         if (bytes) witnesses.set(name, bytes);
       }
@@ -364,13 +364,14 @@ export class Archive {
   }
 
   line(id, options = {}) {
-    const key = options.log === undefined ? id : null;
-    if (key && this.lines.has(key)) return this.lines.get(key);
+    const log = options.log;
+    this.linesBy ??= new WeakMap();
+    const lines = log === undefined ? this.lines : !options.keep ? new Map() : log === null ? (this.linesWithout ??= new Map())
+      : this.linesBy.get(log) ?? this.linesBy.set(log, new Map()).get(log);
+    if (lines.has(id)) return lines.get(id);
     const loading = this.readLine(id, options);
-    if (key) {
-      this.lines.set(key, loading);
-      loading.catch(() => this.lines.delete(key));
-    }
+    lines.set(id, loading);
+    loading.catch(() => lines.delete(id));
     return loading;
   }
 

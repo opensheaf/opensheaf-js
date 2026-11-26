@@ -16,10 +16,15 @@ export async function draftDir(f, draftId) {
   return { id, dir, inv };
 }
 
+async function removeDraft(f, dir) {
+  await removeFolder(f.storage, dir);
+  await removeEmptyAbove(f.storage, dir);
+}
+
 async function dropHead(f, dir, inv) {
   const n = Number(inv.head.slice(1));
   if (n === 1) {
-    await removeFolder(f.storage, dir);
+    await removeDraft(f, dir);
     return;
   }
   await removeFolder(f.storage, joinPath(dir, `v${n}`));
@@ -30,8 +35,7 @@ async function dropHead(f, dir, inv) {
 
 export async function draftDelete(f, args) {
   const { dir } = await draftDir(f, args.label);
-  await removeFolder(f.storage, dir);
-  await removeEmptyAbove(f.storage, dir);
+  await removeDraft(f, dir);
   f.changed();
   await writeDiscovery(f);
   f.env.out(`draft ${args.label}: deleted`);
@@ -79,7 +83,7 @@ export async function seal(f, args) {
   const done = await f.addVersion(line, files, obj, args.message || `Sealed from the draft ${args.label}`);
   f.labels.set(label, line);
   if (args.deleteDraft) {
-    await removeFolder(f.storage, dir);
+    await removeDraft(f, dir);
     f.changed();
   }
   await writeDiscovery(f);

@@ -2,7 +2,7 @@
 import { sha512 } from './http.js';
 import { readGenesis, isNameOf, algorithm, objectId, NAME, OWNER_NAME, isObject } from './names.js';
 import { jsonOrNull } from './owners.js';
-import { judgeFolder, lineStatuses, SIGNED, VOUCHED, UNSIGNED, INVALID } from './signatures.js';
+import { judgeFolder, lineStatuses, SIGNED, VOUCHED, CONTESTED, UNSIGNED, INVALID } from './signatures.js';
 import { isEvidence, filesOf } from './versions.js';
 
 export const INCONSISTENT = 'inconsistent', CONFIRMED = 'confirmed', UNCHECKED = 'unchecked';
@@ -28,9 +28,9 @@ export function levelOfVersion(archive, id, inv, ver, options = {}) {
   return level(digests, (p) => archive.bytes(id, inv, ver, p, options));
 }
 
-export async function verdict(lv, obj, genesis, logs, depth = 0) {
+export async function verdict(lv, obj, genesis, logs, depth = 0, resolve = null) {
   try {
-    return await levelVerdict(lv, obj, genesis, logs, depth);
+    return await levelVerdict(lv, obj, genesis, logs, depth, resolve);
   } catch (error) {
     if (error?.kind === 'aborted') throw error;
     return [INCONSISTENT, [`the evidence of the branch point cannot be read: ${error?.constructor?.name ?? 'Error'} ` +
@@ -38,7 +38,7 @@ export async function verdict(lv, obj, genesis, logs, depth = 0) {
   }
 }
 
-async function levelVerdict(lv, obj, genesis, logs, depth = 0) {
+async function levelVerdict(lv, obj, genesis, logs, depth = 0, resolve = null) {
   const p = obj?.parent;
   if (!isObject(p)) return [INCONSISTENT, ['object.json has no parent']];
   if (depth > MAX_DEPTH) return [UNCHECKED, [`the chain is not followed beyond ${MAX_DEPTH} levels`]];
@@ -105,7 +105,10 @@ async function levelVerdict(lv, obj, genesis, logs, depth = 0) {
   }
   const judgements = await judgeFolder(witnesses, { objectId: pid, version: p.objectVersion, inventory: p.inventorySha512,
                                                      owner: p.owner, lookup: log ? (n, d) => log.lookup(n, d) : () => null });
-  const status = lineStatuses([judgements], log ? { exposed: log.exposedKeys(), forkPoint: log.forkPoint } : {})[0];
+  let status = lineStatuses([judgements], log ? { exposed: log.exposedKeys(), forkPoint: log.forkPoint } : {})[0];
+  const resolved = resolve ? await resolve(p) : null;
+  if (resolved && !resolved[0]) problems.push('the parent version, resolved, does not match the pin (section 9.3)');
+  else if (resolved && (resolved[1] === SIGNED || resolved[1] === VOUCHED) && status !== CONTESTED) status = resolved[1];
   if (status === UNSIGNED || status === INVALID) problems.push(`the parent version is not a version: ${status} (sections 7.3 and 9.3)`);
   let result = status === SIGNED || status === VOUCHED ? CONFIRMED : UNCHECKED;
   const notes = result === CONFIRMED ? [] : [`the parent version is ${status} (section 9.3)`];
@@ -117,7 +120,7 @@ async function levelVerdict(lv, obj, genesis, logs, depth = 0) {
     if (chain.digests.size !== evidence.size || [...evidence].some(([path, d]) => chain.digests.get(path) !== d)) {
       return [INCONSISTENT, ['parent/parent/ is not the evidence of the parent version (section 9.3)']];
     }
-    const [sub, more] = await verdict(chain, pobj, genesis, logs, depth + 1);
+    const [sub, more] = await verdict(chain, pobj, genesis, logs, depth + 1, resolve);
     if (sub === INCONSISTENT) return [INCONSISTENT, more.map((m) => `parent/parent/: ${m}`)];
     notes.push(...more.map((m) => `parent/parent/: ${m}`));
     if (ORDER[sub] > ORDER[result]) result = sub;

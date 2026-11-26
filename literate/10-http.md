@@ -57,19 +57,23 @@ section 14.1 lets them bound the depth of the chains and collections they follow
 limits are gathered here, so that they are stated once. JSON files are
 small: the inventory of an object with many versions and files is a few
 hundred kilobytes, so sixteen megabytes leave a wide margin while still
-stopping a server that answers with something absurd. Content files are
-read only for the optional check of their digests; a browser holds a file
-in memory to hash it (WebCrypto has no incremental hashing), so their
-limit is set by what a browser can reasonably hold, and a file larger
-than `large` is read alone (see below, reading a body). The answers kept
-for the session (see below, the client) are bounded too.
+stopping a server that answers with something absurd. A content file of
+an object, whatever it holds, is bounded by `file`, one gibibyte, as
+opensheaf-py bounds it (`MAX_BYTES`): the files of a key log and the
+evidence of a branch point are content files, and the JSON limit does not
+apply to them; a browser holds a file in memory to hash it (WebCrypto has
+no incremental hashing), and a file larger than `large` is read alone
+(see below, reading a body). These limits are a reader's choice (section
+15.2): a file not read because of one is unavailable, never a file that
+is not there nor a version that is not one. The answers kept for the
+session (see below, the client) are bounded too.
 
 Time is limited in three ways: a server must start answering (send the
 headers) within `timeout`, and, once it has, must not stay silent for
 more than `stall` between two pieces of the body; and one request may not
 take more than `deadline` in all, as opensheaf-py's `DEADLINE`, so that a
 server sending a byte every few seconds cannot hold a reader for ever. The
-deadline is wide (five minutes, a file of 512 MB read at 2 MB/s), since
+deadline is wide (five minutes, a file of 600 MB read at 2 MB/s), since
 it must not fail the download of a large file from a slow but steady
 server, which is a valid archive; the time a body waits for its turn
 among the large ones (below) is not counted.
@@ -105,9 +109,9 @@ need fewer than ten.
 
     // in the limits of the explorer:
     export const LIMITS = {
-      json: 16 * 2 ** 20,      // a JSON file: discovery document, inventory, object.json, members.json
+      json: 16 * 2 ** 20,      // a JSON file: discovery document, page, inventory, checksum file, witness (opensheaf-py's MAX_JSON)
       page: 16 * 2 ** 20,      // the index page, read for the check of the presentation
-      file: 512 * 2 ** 20,     // a content file whose digest is checked
+      file: 2 ** 30,           // a content file of an object: key-log files, evidence, documents (opensheaf-py's MAX_BYTES)
       large: 32 * 2 ** 20,     // a body larger than this is read alone, one at a time
       cache: 64 * 2 ** 20,     // bytes of answers kept by one client
       timeout: 60_000,         // milliseconds to wait for the headers of an answer
@@ -385,13 +389,13 @@ smaller than what it decompresses to.
 
 Memory is spent with care, since a content file may be hundreds of
 megabytes. The declared size is a claim, not bytes: a server may declare
-512 MB and send ten bytes, and the buffer is therefore allocated as the
+a gibibyte and send ten bytes, and the buffer is therefore allocated as the
 bytes arrive. It starts at 64 KiB at most and grows by doubling, never
 beyond the declared size while that is right. A body that passes
 `LIMITS.large`, or whose buffer would, waits, before going further, until
 no other large body is being read by the client: the digests of large
 files are thus checked one at a time, whatever the number of requests in
-flight (six files of 512 MB at once would be three gigabytes). The hash
+flight (six files of a gibibyte at once would be six gigabytes). The hash
 of one large file may still overlap the download of the next. While a
 body waits for its turn, its watchdog is stopped. Once a body holds the
 place of the large ones, its buffer grows at once to the declared size
@@ -896,12 +900,12 @@ for the nesting above.
     const EXACT = 2n ** 53n - 1n;
 
     export function numberProblem(token) {
-      if (!INTEGER.test(token)) return `the number ${token} is not an integer`;
+      if (!INTEGER.test(token)) return `the number ${token} is not an integer written without a fraction or an exponent (section 2)`;
       const n = BigInt(token);
-      return n > EXACT || n < -EXACT ? `the integer ${token} has no exact form in JSON (section 2)` : null;
+      return n > EXACT || n < -EXACT ? `the number ${token} is beyond 2^53 - 1 (section 2)` : null;
     }
 
-    export function numberTokens(text) {
+    export function numberTokens(text, { constants = false } = {}) {
       const tokens = [];
       let inString = false;
       for (let k = 0; k < text.length; k++) {
@@ -910,7 +914,11 @@ for the nesting above.
           if (c === '\\') k++;
           else if (c === '"') inString = false;
         } else if (c === '"') inString = true;
-        else if (c === '-' || (c >= '0' && c <= '9')) {
+        else if (constants && /^-?(NaN|Infinity)/.test(text.slice(k, k + 9))) {
+          const word = /^-?(NaN|Infinity)/.exec(text.slice(k, k + 9))[0];
+          tokens.push(word);
+          k += word.length - 1;
+        } else if (c === '-' || (c >= '0' && c <= '9')) {
           let end = k;
           while (end < text.length && /[-+.eE0-9]/.test(text[end])) end++;
           tokens.push(text.slice(k, end));
@@ -942,6 +950,92 @@ for the nesting above.
         if (typeof value === 'number') check(context.source);
         return value;
       });
+    }
+
+The files of the specification other than genesis records and
+`keys.json` (the discovery document, its pages, the index files,
+`object.json`, `members.json`, and the evidence of branch points) are read
+leniently where they are used, but the verifier holds them to section 2
+as well, as opensheaf-py's `loads_format` does: UTF-8 without a byte
+order mark, and every number an integer written without a fraction or an
+exponent, of at most 2^53 - 1 in absolute value, extension data
+included. `parseFormat` gives the value, or throws an `Error` whose
+message is opensheaf-py's. The reason a text is not UTF-8 is given in
+the words of Python's decoder (`utf8Problem`), and among several numbers
+that break the rule the one named is the one opensheaf-py names, found
+by walking the value as it walks it (a stack, each value's members
+pushed in order, the last popped first); `NaN` and `Infinity`, which
+Python's parser takes for numbers, are named as numbers too.
+
+    // in decoding JSON:
+    const BOM_MESSAGE = 'JSON is UTF-8 without a byte order mark, and this file starts with one (section 2)';
+
+    export function parseFormat(bytes) {
+      if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) throw new Error(BOM_MESSAGE);
+      const bad = utf8Problem(bytes);
+      if (bad) throw new Error(`JSON is UTF-8, and this file is not (${bad}) (section 2)`);
+      const text = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes);
+      if (nesting(text) > LIMITS.nesting) throw new Error(`JSON nested more than ${LIMITS.nesting} levels deep`);
+      class Bad {
+        constructor(token) {
+          this.problem = numberProblem(token);
+        }
+      }
+      let value;
+      try {
+        value = HAS_SOURCE
+          ? JSON.parse(text, (key, v, context) => (typeof v === 'number' && numberProblem(context.source) ? new Bad(context.source) : v))
+          : JSON.parse(text);
+      } catch (error) {
+        const constant = numberTokens(text, { constants: true }).find((t) => /^-?(NaN|Infinity)$/.test(t));
+        if (constant) throw new Error(numberProblem(constant));
+        throw new Error(`not JSON (${error.message})`);
+      }
+      if (!HAS_SOURCE) {
+        const token = numberTokens(text).find((t) => numberProblem(t));
+        if (token) throw new Error(numberProblem(token));
+        return value;
+      }
+      const todo = [value];
+      while (todo.length) {
+        const v = todo.pop();
+        if (v instanceof Bad) throw new Error(v.problem);
+        if (v !== null && typeof v === 'object') todo.push(...(Array.isArray(v) ? v : Object.values(v)));
+      }
+      return value;
+    }
+
+Why bytes are not UTF-8, as Python's decoder says it: the first byte
+that cannot start a character (`invalid start byte`), or the bytes of a
+character cut short by one that cannot continue it (`invalid continuation
+byte`) or by the end of the data (`unexpected end of data`); `null` for
+UTF-8. The second byte of a character of three or four bytes is held to
+the ranges that leave out overlong forms, surrogates and code points
+beyond U+10FFFF, as Python holds it.
+
+    // in decoding JSON:
+    export function utf8Problem(bytes) {
+      const say = (start, end, why) => (end - start === 1
+        ? `'utf-8' codec can't decode byte 0x${bytes[start].toString(16).padStart(2, '0')} in position ${start}: ${why}`
+        : `'utf-8' codec can't decode bytes in position ${start}-${end - 1}: ${why}`);
+      for (let k = 0; k < bytes.length;) {
+        const b = bytes[k];
+        if (b < 0x80) {
+          k++;
+          continue;
+        }
+        const size = b >= 0xc2 && b <= 0xdf ? 2 : b >= 0xe0 && b <= 0xef ? 3 : b >= 0xf0 && b <= 0xf4 ? 4 : 0;
+        if (!size) return say(k, k + 1, 'invalid start byte');
+        const [low, high] = b === 0xe0 ? [0xa0, 0xbf] : b === 0xed ? [0x80, 0x9f] : b === 0xf0 ? [0x90, 0xbf]
+          : b === 0xf4 ? [0x80, 0x8f] : [0x80, 0xbf];
+        for (let j = 1; j < size; j++) {
+          if (k + j >= bytes.length) return say(k, bytes.length, 'unexpected end of data');
+          const c = bytes[k + j];
+          if (j === 1 ? c < low || c > high : c < 0x80 || c > 0xbf) return say(k, k + j, 'invalid continuation byte');
+        }
+        k += size;
+      }
+      return null;
     }
 
 Digests

@@ -33,7 +33,12 @@ that each copies, branches and checks what the other wrote:
 6. the owner catalogues of an archive with two owners (section 8.1):
    `collect --owner` and `collect`, the label of the second owner's
    catalogue, the home page together and by owner, and the checks of
-   `owners` (sections 3.1 and 14.6).
+   `owners` (sections 3.1 and 14.6);
+7. the checks of the final review of 0.2, on an archive of opensheaf-py
+   broken one way at a time: files of the specification that break
+   section 2, symbolic links, a private key, empty folders, a tombstone
+   sharing a genesis record, signature files where they do not belong
+   or with a byte order mark, a discovery document with a fraction.
 
 These tests are part of `tests/parity.test.js`, and use its helpers.
 
@@ -47,6 +52,8 @@ These tests are part of `tests/parity.test.js`, and use its helpers.
     <<across: drafts, seals and takedowns>>
 
     <<across: owner catalogues>>
+
+    <<across: the checks of the final review>>
 
 The archives
 ------------
@@ -243,6 +250,14 @@ Drafts, seals and takedowns
         ({ a, b } = await both(s, authors, ['seal', 'notes', '--label', 'lecture-notes']));
         await sameNewWork(a, b, 'lecture-notes');
         verified(s, a);
+        const sealed = path.join(s.root, 'sealed');
+        await cp(authors, sealed, { recursive: true });
+        ({ a, b } = await both(s, sealed, ['seal', 'notes', '--label', 'lecture-notes', '--delete-draft']));
+        for (const where of [a, b]) {
+          await assert.rejects(readdir(path.join(where, 'ocfl', 'draft')), { code: 'ENOENT' });
+          assert.deepEqual(verified(s, where).filter((f) => f.startsWith('error')), []);
+        }
+        await rm(sealed, { recursive: true });
         ({ a, b } = await both(s, authors, ['draft', 'delete', 'notes']));
         await sameArchives(a, b);
         ok(s.js(['mirror', `${id}?${at('authors')}`, '--label', 'copy'], { cwd: lib }), 'js mirror');
@@ -289,7 +304,10 @@ page, the documents together, each naming its owner, and, with
 `owners`. A discovery document naming an owner twice, or giving one owner
 the catalogue of another, is an error to both verifications, `owners` in
 another order is none, and a discovery document without `owners` is an
-error (section 3.1).
+error (section 3.1). Without the second owner's keys, `collect` by both
+collects the first owner's catalogue, skips the second's, writes the
+website and fails, naming it (opensheaf-py's issue #5); `collect --owner`
+of the second still stops.
 
     // in across: owner catalogues:
     test('owner catalogues, by both', { skip }, async () => {
@@ -370,6 +388,102 @@ error (section 3.1).
         for (const by of [s.py, s.js]) {   // the schema's message is worded by each validator
           const missing = findings(by(['verify', '--json'], { cwd: b, more: s.more })).filter((f) => f.startsWith('error'));
           assert.ok(missing.some((f) => f.includes('no owners')), missing.join('\n'));
+        }
+        const skipping = path.join(s.root, 'skipping');
+        await cp(collected, skipping, { recursive: true });
+        await paper(s, 'py', skipping, 'theirs', 'three', ['--owner', second]);
+        await paper(s, 'py', skipping, 'paper', 'four');
+        const [heads1, heads2] = [await head(skipping, cat1), await head(skipping, cat2)];
+        const dids = (await json(skipping, `ocfl/${second}/${second}/v1/content/genesis.json`)).keys;
+        ok(s.py(['key', 'forget', ...dids, '--owner', second, '--yes'], { cwd: skipping, more: s.more }), 'py key forget');
+        ({ a, b } = await both(s, skipping, ['collect'], { more: s.more, status: 1 }));
+        await sameArchives(a, b);
+        assert.equal(await head(b, cat2), heads2);
+        assert.equal(await head(b, cat1), `v${Number(heads1.slice(1)) + 1}`);
+        assert.deepEqual(verified(s, b, s.more).filter((f) => f.startsWith('error')), []);
+        await both(s, skipping, ['collect', '--owner', second], { more: s.more, status: 1 });
+      } finally {
+        await s.done();
+      }
+    });
+
+The checks of the final review
+------------------------------
+
+An archive of opensheaf-py, a paper in two versions, broken one way at a
+time; both verifications find the same, as opensheaf-py's tests of its
+final pass (`test_the_verifier_reports_what_it_cannot_read`,
+`test_symbolic_links_are_not_followed`,
+`test_keys_in_the_archive_are_reported`,
+`test_checks_of_the_final_review`) break it. Each case says what it must
+find, so that a case that breaks nothing does not pass unnoticed.
+
+    // in across: the checks of the final review:
+    test('the checks of the final review, by both', { skip }, async () => {
+      const s = await across();
+      try {
+        const arch = await archiveBy(s, 'py', 'final');
+        await paper(s, 'py', arch, 'paper', 'one', ['--new']);
+        await paper(s, 'py', arch, 'paper', 'two', ['--changes', 'Second.']);
+        ok(s.py(['collect'], { cwd: arch }), 'py collect');
+        const id = await idOf(arch, 'paper'), [, name, owner] = id.split(':');
+        const dir = (root) => path.join(root, 'ocfl', owner, name);
+        const contentOf = async (root, logical, ver = 'v1') => {
+          const inv = JSON.parse(await readFile(path.join(dir(root), 'inventory.json'), 'utf-8'));
+          const d = Object.entries(inv.versions[ver].state).find(([, ps]) => ps.includes(logical))[0];
+          return path.join(dir(root), inv.manifest[d][0]);
+        };
+        const witness = async (root) => {
+          const w = path.join(dir(root), 'extensions', 'opensheaf-witnesses', 'v1');
+          return path.join(w, (await readdir(w))[0]);
+        };
+        const edit = async (file, change) => writeFile(file, change(await readFile(file)));
+        const text = (change) => (bytes) => change(new TextDecoder().decode(bytes));
+        const cases = {
+          'object.json with a byte order mark': [/object\.json: JSON is UTF-8 without a byte order mark/, async (r) =>
+            edit(await contentOf(r, 'object.json'), (b) => Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), b]))],
+          'a documentVersion 1.0': [/the number 1\.0 is not an integer/, async (r) =>
+            edit(await contentOf(r, 'object.json'), text((t) => t.replace('"documentVersion": 1,', '"documentVersion": 1.0,')))],
+          'a number in extension data': [/the number 0\.5 is not an integer/, async (r) =>
+            edit(await contentOf(r, 'object.json'), text((t) => t.replace('{', '{"extensions": {"https://example.org/ext": {"x": 0.5}},')))],
+          'a discovery document with a fraction': [/opensheaf\.json: the number 1\.5 is not an integer/, async (r) =>
+            edit(path.join(r, 'opensheaf.json'), text((t) => t.replace('{', '{"x-number": 1.5,')))],
+          'a signature file through a link': [/a symbolic link in the archive: never followed/, async (r) => {
+            const w = await witness(r);
+            await rename(w, path.join(r, 'outside.json'));
+            await symlink(path.join(r, 'outside.json'), w);
+          }],
+          'a private key': [/looks like a private key/, async (r) =>
+            writeFile(path.join(r, 'rotation-abcdefghijklmnop-abcdefghijklmnop.txt'), 'x')],
+          'an empty draft folder': [/the OCFL validator rejects the storage root/, async (r) => mkdir(path.join(r, 'ocfl', 'draft'))],
+          'empty folders in the content': [/\[E024\]/, async (r) =>
+            mkdir(path.join(dir(r), 'v1', 'content', 'e', 'f'), { recursive: true })],
+          'a tombstone of the same genesis record': [/objects with the same genesis record/, async (r) => {
+            const genesis = await readFile(await contentOf(r, 'genesis.json'));
+            const other = await nameOf(genesis, 1), genesisName = await nameOf(genesis);
+            await edit(path.join(r, 'opensheaf.json'), text((t) => {
+              const d = JSON.parse(t);
+              d.tombstones = [{ id: `sheaf:${other}:${owner}`, kind: 'document', name: other, owner, lastVersion: 'v1',
+                                genesisName, inventorySha512: '0'.repeat(128), date: '2026-01-02', reason: 'x' }];
+              return JSON.stringify(d, null, 2);
+            }));
+          }],
+          'a signature file in the first version of the key log': [/a signature file of the computed first version/, async (r) => {
+            const w = path.join(r, 'ocfl', owner, owner, 'extensions', 'opensheaf-witnesses', 'v1');
+            await mkdir(w, { recursive: true });
+            const from = await witness(r);
+            await writeFile(path.join(w, path.basename(from)), await readFile(from));
+          }],
+          'a signature file with a byte order mark': [/Unexpected UTF-8 BOM/, async (r) =>
+            edit(await witness(r), (b) => Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), b]))],
+        };
+        for (const [what, [expected, breakIt]] of Object.entries(cases)) {
+          const copy = path.join(s.root, 'broken');
+          await rm(copy, { recursive: true, force: true });
+          await cp(arch, copy, { recursive: true });
+          await breakIt(copy);
+          const found = verified(s, copy);
+          assert.ok(found.some((f) => expected.test(f)), `${what}:\n${found.join('\n')}`);
         }
       } finally {
         await s.done();

@@ -37,7 +37,7 @@ export class Version {
 export function jsonOrNull(bytes, { integers = false } = {}) {
   if (!bytes) return null;
   try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
     if (nesting(text) > LIMITS.nesting) return null;
     return integers ? parseIntegers(text) : JSON.parse(text);
   } catch {

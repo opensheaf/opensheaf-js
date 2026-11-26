@@ -27,6 +27,13 @@ export function stop(text) {
   throw new Stop(sentence(text));
 }
 
+export class CannotSign extends Stop {
+  constructor(owner, reason) {
+    super(sentence(reason));
+    Object.assign(this, { owner, reason });
+  }
+}
+
 export function exit(text) {
   throw new Stop(text);
 }
@@ -52,6 +59,15 @@ export function short(name) {
 
 export function plural(n, noun) {
   return n === 1 ? `${n} ${noun}` : `${n} ${noun}s`;
+}
+
+export async function ask(env, prompt) {
+  const answer = await env.input(prompt);
+  if (answer === null || answer === undefined) {
+    env.err('');
+    stop('no answer: the standard input is closed (give --yes to confirm without being asked)');
+  }
+  return answer;
 }
 
 export function environment(given = {}) {
@@ -344,8 +360,8 @@ export class ArchiveFolder {
     if (found.length < need) {
       const hint = this.env.keyStore.keptOnDevice() ? 'osheaf key new makes one for this computer'
         : 'configure a key wallet, from which each command opens them';
-      stop(`this computer holds ${found.length} of the current keys of ${who}, and v${latest.number} ` +
-           `of its key log needs ${need} to sign (${hint})`);
+      throw new CannotSign(owner, `this computer holds ${found.length} of the current keys of ${who}, and ` +
+                           `v${latest.number} of its key log needs ${need} to sign (${hint})`);
     }
     return { log, latest, signers: found };
   }

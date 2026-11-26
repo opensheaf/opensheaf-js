@@ -2,14 +2,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, readdir, cp, rm, mkdir, rename } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, readdir, cp, rm, mkdir, rename, symlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { readRotationKey } from '../core/keys.js';
-import { keyDigest } from '../core/names.js';
+import { keyDigest, nameOf } from '../core/names.js';
 import zlib from 'node:zlib';
 import { tarGz } from './fixtures.js';
 import { DiskStorage } from '../cli/disk.js';
@@ -573,10 +573,10 @@ test('one owner kept by both: rotate, expose, sign again, end', { skip }, async 
     await both(s, arch, ['owner', 'show', '--offline']);
     await both(s, arch, ['sign', 'paper', '--version', 'v1', '--yes'], { status: 1 });
     const k4 = await keyFiles(k('k4'));
-    const { a, b } = await both(s, arch, ['owner', 'end', '--successor', 'a'.repeat(51) + 'q', '--rotation-key', k4[0]]);
+    const { a, b } = await both(s, arch, ['owner', 'end', '--yes', '--successor', 'a'.repeat(51) + 'q', '--rotation-key', k4[0]]);
     clean(s, a);
     clean(s, b);
-    ok(s.py(['owner', 'end', '--rotation-key', k4[0]], { cwd: arch }), 'py end');
+    ok(s.py(['owner', 'end', '--yes', '--rotation-key', k4[0]], { cwd: arch }), 'py end');
     await both(s, arch, ['deposit', 'paper', '../paper.tex', ...DEPOSIT], { status: 1 });
     await both(s, arch, ['owner', 'show', '--offline']);
     clean(s, arch);
@@ -1331,6 +1331,14 @@ test('drafts, seals and takedowns, by both', { skip }, async () => {
     ({ a, b } = await both(s, authors, ['seal', 'notes', '--label', 'lecture-notes']));
     await sameNewWork(a, b, 'lecture-notes');
     verified(s, a);
+    const sealed = path.join(s.root, 'sealed');
+    await cp(authors, sealed, { recursive: true });
+    ({ a, b } = await both(s, sealed, ['seal', 'notes', '--label', 'lecture-notes', '--delete-draft']));
+    for (const where of [a, b]) {
+      await assert.rejects(readdir(path.join(where, 'ocfl', 'draft')), { code: 'ENOENT' });
+      assert.deepEqual(verified(s, where).filter((f) => f.startsWith('error')), []);
+    }
+    await rm(sealed, { recursive: true });
     ({ a, b } = await both(s, authors, ['draft', 'delete', 'notes']));
     await sameArchives(a, b);
     ok(s.js(['mirror', `${id}?${at('authors')}`, '--label', 'copy'], { cwd: lib }), 'js mirror');
@@ -1439,6 +1447,90 @@ test('owner catalogues, by both', { skip }, async () => {
     for (const by of [s.py, s.js]) {   // the schema's message is worded by each validator
       const missing = findings(by(['verify', '--json'], { cwd: b, more: s.more })).filter((f) => f.startsWith('error'));
       assert.ok(missing.some((f) => f.includes('no owners')), missing.join('\n'));
+    }
+    const skipping = path.join(s.root, 'skipping');
+    await cp(collected, skipping, { recursive: true });
+    await paper(s, 'py', skipping, 'theirs', 'three', ['--owner', second]);
+    await paper(s, 'py', skipping, 'paper', 'four');
+    const [heads1, heads2] = [await head(skipping, cat1), await head(skipping, cat2)];
+    const dids = (await json(skipping, `ocfl/${second}/${second}/v1/content/genesis.json`)).keys;
+    ok(s.py(['key', 'forget', ...dids, '--owner', second, '--yes'], { cwd: skipping, more: s.more }), 'py key forget');
+    ({ a, b } = await both(s, skipping, ['collect'], { more: s.more, status: 1 }));
+    await sameArchives(a, b);
+    assert.equal(await head(b, cat2), heads2);
+    assert.equal(await head(b, cat1), `v${Number(heads1.slice(1)) + 1}`);
+    assert.deepEqual(verified(s, b, s.more).filter((f) => f.startsWith('error')), []);
+    await both(s, skipping, ['collect', '--owner', second], { more: s.more, status: 1 });
+  } finally {
+    await s.done();
+  }
+});
+
+test('the checks of the final review, by both', { skip }, async () => {
+  const s = await across();
+  try {
+    const arch = await archiveBy(s, 'py', 'final');
+    await paper(s, 'py', arch, 'paper', 'one', ['--new']);
+    await paper(s, 'py', arch, 'paper', 'two', ['--changes', 'Second.']);
+    ok(s.py(['collect'], { cwd: arch }), 'py collect');
+    const id = await idOf(arch, 'paper'), [, name, owner] = id.split(':');
+    const dir = (root) => path.join(root, 'ocfl', owner, name);
+    const contentOf = async (root, logical, ver = 'v1') => {
+      const inv = JSON.parse(await readFile(path.join(dir(root), 'inventory.json'), 'utf-8'));
+      const d = Object.entries(inv.versions[ver].state).find(([, ps]) => ps.includes(logical))[0];
+      return path.join(dir(root), inv.manifest[d][0]);
+    };
+    const witness = async (root) => {
+      const w = path.join(dir(root), 'extensions', 'opensheaf-witnesses', 'v1');
+      return path.join(w, (await readdir(w))[0]);
+    };
+    const edit = async (file, change) => writeFile(file, change(await readFile(file)));
+    const text = (change) => (bytes) => change(new TextDecoder().decode(bytes));
+    const cases = {
+      'object.json with a byte order mark': [/object\.json: JSON is UTF-8 without a byte order mark/, async (r) =>
+        edit(await contentOf(r, 'object.json'), (b) => Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), b]))],
+      'a documentVersion 1.0': [/the number 1\.0 is not an integer/, async (r) =>
+        edit(await contentOf(r, 'object.json'), text((t) => t.replace('"documentVersion": 1,', '"documentVersion": 1.0,')))],
+      'a number in extension data': [/the number 0\.5 is not an integer/, async (r) =>
+        edit(await contentOf(r, 'object.json'), text((t) => t.replace('{', '{"extensions": {"https://example.org/ext": {"x": 0.5}},')))],
+      'a discovery document with a fraction': [/opensheaf\.json: the number 1\.5 is not an integer/, async (r) =>
+        edit(path.join(r, 'opensheaf.json'), text((t) => t.replace('{', '{"x-number": 1.5,')))],
+      'a signature file through a link': [/a symbolic link in the archive: never followed/, async (r) => {
+        const w = await witness(r);
+        await rename(w, path.join(r, 'outside.json'));
+        await symlink(path.join(r, 'outside.json'), w);
+      }],
+      'a private key': [/looks like a private key/, async (r) =>
+        writeFile(path.join(r, 'rotation-abcdefghijklmnop-abcdefghijklmnop.txt'), 'x')],
+      'an empty draft folder': [/the OCFL validator rejects the storage root/, async (r) => mkdir(path.join(r, 'ocfl', 'draft'))],
+      'empty folders in the content': [/\[E024\]/, async (r) =>
+        mkdir(path.join(dir(r), 'v1', 'content', 'e', 'f'), { recursive: true })],
+      'a tombstone of the same genesis record': [/objects with the same genesis record/, async (r) => {
+        const genesis = await readFile(await contentOf(r, 'genesis.json'));
+        const other = await nameOf(genesis, 1), genesisName = await nameOf(genesis);
+        await edit(path.join(r, 'opensheaf.json'), text((t) => {
+          const d = JSON.parse(t);
+          d.tombstones = [{ id: `sheaf:${other}:${owner}`, kind: 'document', name: other, owner, lastVersion: 'v1',
+                            genesisName, inventorySha512: '0'.repeat(128), date: '2026-01-02', reason: 'x' }];
+          return JSON.stringify(d, null, 2);
+        }));
+      }],
+      'a signature file in the first version of the key log': [/a signature file of the computed first version/, async (r) => {
+        const w = path.join(r, 'ocfl', owner, owner, 'extensions', 'opensheaf-witnesses', 'v1');
+        await mkdir(w, { recursive: true });
+        const from = await witness(r);
+        await writeFile(path.join(w, path.basename(from)), await readFile(from));
+      }],
+      'a signature file with a byte order mark': [/Unexpected UTF-8 BOM/, async (r) =>
+        edit(await witness(r), (b) => Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), b]))],
+    };
+    for (const [what, [expected, breakIt]] of Object.entries(cases)) {
+      const copy = path.join(s.root, 'broken');
+      await rm(copy, { recursive: true, force: true });
+      await cp(arch, copy, { recursive: true });
+      await breakIt(copy);
+      const found = verified(s, copy);
+      assert.ok(found.some((f) => expected.test(f)), `${what}:\n${found.join('\n')}`);
     }
   } finally {
     await s.done();

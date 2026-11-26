@@ -112,8 +112,19 @@ export function strictlyAcceptable(publicKey, signature) {
   return a < P && r < P && !SMALL_ORDER_Y.has(a) && !SMALL_ORDER_Y.has(r);
 }
 
+const REMEMBERED = 4096;
+const remembered = new Map();
+
 export async function verifyEd25519(publicKey, message, signature, { engine = 'js' } = {}) {
   if (!strictlyAcceptable(publicKey, signature)) return false;
+  if (engine === 'js') {
+    const key = [publicKey, signature, message].map((b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')).join(' ');
+    if (remembered.has(key)) return remembered.get(key);
+    if (remembered.size >= REMEMBERED) remembered.clear();
+    const answer = await verifyInJs(publicKey, message, signature);
+    remembered.set(key, answer);
+    return answer;
+  }
   if (engine === 'webcrypto') {
     try {
       const key = await subtle().importKey('raw', publicKey, { name: 'Ed25519' }, false, ['verify']);

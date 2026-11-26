@@ -154,6 +154,10 @@ the archive's own base URL when its copy is held here.
         const [, name, owner] = f.labels.get(text).split(':');
         return { name, owner, u: null, places: [] };
       }
+      if (LABEL.test(text)) {
+        exit(`no line labelled ${text} in this archive (osheaf verify lists them); a line of another archive is ` +
+             'named by its sheaf: URI');
+      }
       let u, name, owner;
       const places = [];
       try {

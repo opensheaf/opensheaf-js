@@ -52,7 +52,9 @@ and the files of its witness folder that the reader found. Its digest,
 the SHA-512 of its inventory file, is computed when it is made, since
 WebCrypto is asynchronous; `keys` is its `keys.json` read as JSON whose
 numbers are all exact integers (chapter [10](10-http.md)), or `null`
-(opensheaf-py reads a threshold of `1.0` as a float, which breaks rule 1). A version holding no `keys.json` and files under `forked/` is a
+(opensheaf-py reads a threshold of `1.0` as a float, which breaks rule 1);
+`jsonOrNull` reads UTF-8 without a byte order mark, and a file that starts
+with one is not read, as opensheaf-py does not read it (section 2). A version holding no `keys.json` and files under `forked/` is a
 fork record (section 6.3), whose carried versions are read from those
 files.
 
@@ -81,7 +83,7 @@ files.
     export function jsonOrNull(bytes, { integers = false } = {}) {
       if (!bytes) return null;
       try {
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
         if (nesting(text) > LIMITS.nesting) return null;
         return integers ? parseIntegers(text) : JSON.parse(text);
       } catch {

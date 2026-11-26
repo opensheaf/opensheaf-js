@@ -109,13 +109,25 @@ test('thresholds that are not integers in their text', async () => {
   for (const t of ['1.0', '1e0', '1E0', '9007199254740992', '9007199254740993']) {
     const changed = text.replace('"threshold": 1,', `"threshold": ${t},`);
     assert.notEqual(changed, text);
-    await assert.rejects(readGenesis(utf8(changed)), /a genesis record is JSON in UTF-8 \(the (number|integer) /, t);
+    await assert.rejects(readGenesis(utf8(changed)), new RegExp(`the number ${t} is (not an integer written without a fraction or an exponent|beyond 2\\^53 - 1) \\(section 2\\)$`), t);
   }
   const keys = (t) => new Version(2, new Map([['keys.json', utf8(`{"format":"opensheaf-keys/0.2","keys":["${K1}"],"threshold":${t},` +
     `"next":["oxthfb6b4q3sqathmcpnciqggfxlr3aekgfg2tpm2lgrm2qnalha"],"nextThreshold":1}`)]]), new Uint8Array()).keys;
   assert.equal(keys('1').threshold, 1);
   assert.equal(keys('1.0'), null);
   assert.equal(keys('1e0'), null);
+  const { parseFormat } = await import('../core/http.js');
+  const said = (bytes) => { try { parseFormat(bytes); return 'ok'; } catch (error) { return error.message; } };
+  const decoder = (b) => `JSON is UTF-8, and this file is not ('utf-8' codec can't decode ${b}) (section 2)`;
+  assert.equal(said(new Uint8Array([0xef, 0xbb, 0xbf, 0x7b, 0x7d])), 'JSON is UTF-8 without a byte order mark, and this file starts with one (section 2)');
+  assert.equal(said(new Uint8Array([0xff, 0x7b, 0x7d])), decoder('byte 0xff in position 0: invalid start byte'));
+  assert.equal(said(new Uint8Array([0xe2, 0x82])), decoder('bytes in position 0-1: unexpected end of data'));
+  assert.equal(said(new Uint8Array([0xe2, 0x82, 0x61])), decoder('bytes in position 0-1: invalid continuation byte'));
+  assert.equal(said(new Uint8Array([0xed, 0xa0, 0x80])), decoder('byte 0xed in position 0: invalid continuation byte'));
+  assert.equal(said(utf8('{"a": 1.5, "b": [2.5]}')), 'the number 2.5 is not an integer written without a fraction or an exponent (section 2)');
+  assert.equal(said(utf8('[NaN]')), 'the number NaN is not an integer written without a fraction or an exponent (section 2)');
+  assert.equal(said(utf8('[1, [2e3], 9007199254740993]')), 'the number 9007199254740993 is beyond 2^53 - 1 (section 2)');
+  assert.equal(said(utf8('{"x": {"https://example.org/ext": {"n": -9007199254740991}}}')), 'ok');
 });
 
 test('did:key URIs and the digests of keys (sections 6.1 and 7.2)', async () => {

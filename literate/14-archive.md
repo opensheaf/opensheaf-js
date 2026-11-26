@@ -12,7 +12,7 @@ An archive read over HTTP
 
 An archive is found by its *base URL*, the folder holding its discovery
 document `opensheaf.json` (section 3). The discovery document names the
-storage root (`storageRoot`, relative to the base URL or absolute) and
+storage root (`storageRoot`, a relative path below the base URL) and
 its layout (`storageLayout`, section 3.2), from which the path of every
 object is computed (chapter [11](11-paths.md)): the object
 `sheaf:<name>:<owner>` is at `<storageRoot><owner>/<name>/` in the
@@ -39,7 +39,7 @@ The module is `core/archive.js`.
 
     // in core/archive.js:
     import { FetchError, parseJson, sha512, LIMITS } from './http.js';
-    import { isObjectId, isVersion, under, underPath, contentPathProblem, pathOf, OWNER_NAME_LAYOUT,
+    import { isObjectId, isVersion, under, underPath, contentPathProblem, pathOf, storageRootOk, OWNER_NAME_LAYOUT,
              HASHED_LAYOUT } from './paths.js';
     import { contentPath, historyOf, currentVersion, versionsOf, filesOf } from './versions.js';
     import { objectId, parseId, isObject } from './names.js';
@@ -105,8 +105,10 @@ An archive of version 0.1 of the specification (`specification` `0.1`,
 or an `archiveId`, which 0.1 had and 0.2 dropped) is not read: version
 0.2 is incompatible with it, and its archives are rebuilt (section 16.1).
 The explorer opens it only to say so (`old`). An unknown
-`storageLayout` is read as the owner-name layout, and reported by the
-verification.
+`storageLayout` is read as the owner-name layout, and a `storageRoot`
+that is not a relative path below the archive (chapter
+[11](11-paths.md)) as `ocfl/`, `rootRefused` being set: both are reported
+by the verification, and a resolver takes such an archive for none.
 
     // in core/archive.js:
     export class Archive {
@@ -133,13 +135,9 @@ verification.
           (disc.specification !== '0.2' && Object.hasOwn(disc, 'archiveId'));
         this.name = typeof disc.name === 'string' && disc.name ? disc.name : base;
         this.layout = disc.storageLayout === HASHED_LAYOUT ? HASHED_LAYOUT : OWNER_NAME_LAYOUT;
-        let root;
-        try {
-          root = new URL(typeof disc.storageRoot === 'string' ? disc.storageRoot : 'ocfl/', base).href;
-        } catch {
-          root = base + 'ocfl/';
-        }
-        this.root = root.endsWith('/') ? root : root + '/';
+        const given = disc.storageRoot ?? 'ocfl/';
+        this.rootRefused = !storageRootOk(given);
+        this.root = under(base, (this.rootRefused ? 'ocfl/' : given).slice(0, -1).split('/')) + '/';
         this.paths = new Map();
         this.keyLogs = new Map();
         this.lines = new Map();
@@ -201,8 +199,10 @@ take the place of `objects`. A path must be relative, without `.`, `..`
 or empty segments, a scheme or a backslash, and name a JSON file. A path
 refused, a page missing or not a page is kept in `pageProblems`, which
 verification reports as errors and which makes the archive unavailable to
-a resolver, as `osheaf` does; the pages read are kept in `pages`, for
-verification against their schema.
+a resolver, as `osheaf` does; the pages read are kept in `pages`, with
+their bytes and entries, for the verification, which holds them to their
+schema and to section 2 (chapter [17](17-verify.md)), and those that are
+not JSON in `unparsed`, with their bytes.
 
     // in core/archive.js:
       async loadPages(options = {}) {
@@ -210,6 +210,7 @@ verification against their schema.
           !path.includes('\\') && !path.split('/')[0].includes(':') &&
           path.split('/').every((x) => x !== '' && x !== '.' && x !== '..');
         this.pages = [];
+        this.unparsed = [];
         this.pageProblems = [];
         const entries = [];
         for (const path of Array.isArray(this.disc.objectPages) ? this.disc.objectPages : []) {
@@ -217,16 +218,18 @@ verification against their schema.
             this.pageProblems.push(`${JSON.stringify(path)} is not the path of a page below the discovery document (section 3.1)`);
             continue;
           }
-          let page;
+          let page, bytes = null;
           try {
-            page = parseJson(await this.http.cached(this.base + path, options), this.base + path);
+            bytes = await this.http.cached(this.base + path, options);
+            page = parseJson(bytes, this.base + path);
           } catch (error) {
             if (error?.kind === 'aborted') throw error;
+            if (bytes) this.unparsed.push({ path, bytes });
             this.pageProblems.push(error?.kind === 'not-found' ? `the page of objects ${path} is missing (section 3.1)`
               : `the page of objects ${path} is not JSON`);
             continue;
           }
-          this.pages.push({ path, page });
+          this.pages.push({ path, page, bytes, entries: isObject(page) && Array.isArray(page.objects) ? page.objects : [] });
           if (isObject(page) && Array.isArray(page.objects)) entries.push(...page.objects);
           else this.pageProblems.push(`${path} is not a page of objects (section 3.1)`);
         }
@@ -354,7 +357,10 @@ Files
 A file of an object version is found by its logical path, through the
 state of the version and the manifest (chapter [13](13-versions.md)). JSON
 files are read with the limit on JSON; other small files (a genesis
-record, a key log's `keys.json`, the evidence of a branch) as bytes.
+record, a key log's `keys.json`, the evidence of a branch) as bytes. A
+file of an object version is a content file, and is read within the limit
+of content files, `LIMITS.file`, not that of JSON files (chapter
+[10](10-http.md)), as opensheaf-py reads it.
 
 Every file read has the digest the inventory states for it, or is not
 read: a server, a mirror above all, may serve other bytes at the content
@@ -378,7 +384,7 @@ opensheaf-py refuses a copy with such a file.
         await this.locate(id);
         const url = this.fileUrl(id, inv, ver, logical);
         if (!url) return null;
-        const bytes = await this.http.cached(url, { ...options, limit: LIMITS.json });
+        const bytes = await this.http.cached(url, { ...options, limit: LIMITS.file });
         const digest = filesOf(inv, ver)[logical];
         if (typeof digest !== 'string' || (await sha512(bytes)) !== digest.toLowerCase()) {
           throw new FetchError('digest', url, `does not have the digest its inventory states for ${logical} (section 4.1)`);
@@ -461,7 +467,15 @@ the signature files of its rotation keys, whose names the version before
 gives (`signature-<k>.json`, `<k>` the first 16 characters of a digest of
 `next`). A content path must be one of the object (`contentUrl`) and of
 this version or an earlier one, as `content_path(cp, inv, n)` requires
-in opensheaf-py: a version cannot take its content from a later one. A
+in opensheaf-py: a version cannot take its content from a later one. Its
+files are content files, read within `LIMITS.file` as opensheaf-py reads
+them; a file not read because of a limit of the reader (too large, too
+slow) makes the key log unavailable, an exception, never a key log with a
+file missing (section 15.2). The witness folder of each version is read
+whole when the archive can be listed (`lister`, below), as opensheaf-py
+reads it, the first version's included (a signature file there is
+reported, and every file judged); otherwise only the signature files of
+the rotation keys the version before names. A
 fork record carries the signatures of the other side in its content
 (section 6.3). The key log is then checked (chapter
 [07](07-owners.md)), and kept: `null` when the archive holds no such
@@ -519,9 +533,9 @@ object, an exception when it cannot be read as a key log.
               problems.push(`${ver}: the content of ${paths[0]} is missing`);
             } else {
               try {
-                bytes = await this.http.cached(this.contentUrl(id, entry, cp), { ...options, limit: LIMITS.json });
+                bytes = await this.http.cached(this.contentUrl(id, entry, cp), { ...options, limit: LIMITS.file });
               } catch (error) {
-                if (error.kind === 'aborted') throw error;
+                if (['aborted', 'too-large', 'timeout', 'budget'].includes(error.kind)) throw error;
                 problems.push(`${ver}: the content of ${paths[0]} is missing`);
               }
             }
@@ -530,9 +544,10 @@ object, an exception when it cannot be read as a key log.
           }
           const witnesses = new Map();
           const prev = versions[versions.length - 1]?.keys;
-          for (const d of n > 1 && Array.isArray(prev?.next) ? prev.next : []) {
-            if (typeof d !== 'string') continue;
-            const name = `signature-${d.slice(0, 16)}.json`;
+          const listed = await this.listWitnesses(id, ver);
+          const named = listed ?? (n > 1 && Array.isArray(prev?.next) ? prev.next : [])
+            .filter((d) => typeof d === 'string').map((d) => `signature-${d.slice(0, 16)}.json`);
+          for (const name of named) {
             const bytes = await this.witness(id, ver, name, options);
             if (bytes) witnesses.set(name, bytes);
           }
@@ -572,7 +587,12 @@ versions they name are not reached; a version without signature files,
 which it finds unsigned, the explorer cannot tell from one whose files
 it could not name, and also calls unchecked).
 
-The answer is kept for the session: `inv`, the inventory of the head
+The answer is kept for the session, for each key log it was read
+against: that of the archive, by default, and, when the caller asks it
+(`keep`, as the verification does, whose key logs do not change while it
+runs), the very key log it gives, or none, as opensheaf-py keeps the
+statuses of a line during one verification (its issue #6). A resolver,
+whose key logs grow as it meets copies, does not ask it. The answer: `inv`, the inventory of the head
 version (the copy in its folder, not the root inventory); `versions`,
 for each object version, its digest and `object.json`; `log`, `statuses`,
 `judgements`; `latest`, the latest signed version (`vN` or `null`);
@@ -582,13 +602,14 @@ those of the head as of each version, or `null` (below).
 
     // in core/archive.js:
       line(id, options = {}) {
-        const key = options.log === undefined ? id : null;
-        if (key && this.lines.has(key)) return this.lines.get(key);
+        const log = options.log;
+        this.linesBy ??= new WeakMap();
+        const lines = log === undefined ? this.lines : !options.keep ? new Map() : log === null ? (this.linesWithout ??= new Map())
+          : this.linesBy.get(log) ?? this.linesBy.set(log, new Map()).get(log);
+        if (lines.has(id)) return lines.get(id);
         const loading = this.readLine(id, options);
-        if (key) {
-          this.lines.set(key, loading);
-          loading.catch(() => this.lines.delete(key));
-        }
+        lines.set(id, loading);
+        loading.catch(() => lines.delete(id));
         return loading;
       }
 

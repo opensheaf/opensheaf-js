@@ -443,7 +443,8 @@ opensheaf-py, has the standard input of `osheaf`, so that a command such
 as `pass` or `gpg` can ask its own questions), or is asked,
 twice, without echo; it is asked once per command and place of keys
 (`known(where)` says whether it is given or asked already). Answers to questions
-are read from the standard input.
+are read from the standard input; once it is closed and used up, a
+question gets `null`, no answer, as Python's `input` raises `EOFError`.
 
 The standard input is read through one buffer, line by line: what a read
 takes beyond its line is kept for the next, so that answers piped in
@@ -504,8 +505,11 @@ input, as `getpass` falls back to it.
 
     export async function readLine(prompt) {
       process.stdout.write(prompt);
-      return fromStdin(taken);
+      const line = await fromStdin(() => (stdin.ended && !stdin.text ? END : taken()));
+      return line === END ? null : line;
     }
+
+    const END = Symbol('the end of the standard input');
 
     export function readAllStdin() {
       return fromStdin(() => {
@@ -642,7 +646,7 @@ arguments ends with the status 2, as argparse does.
     import { branch, accept } from '../core/branch.js';
     import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
     import { takedown } from '../core/takedown.js';
-    import { fetchPapers, authorPapers, politeGetter, importCommand } from '../core/arxiv.js';
+    import { fetchPapers, authorPapers, politeGetter, importCommand, IDENTIFIERS_HELP } from '../core/arxiv.js';
     import { Zenodo, SERVICES, zenodoCommand } from '../core/zenodo.js';
     import { securityCommand } from './keystore.js';
     import os from 'node:os';
@@ -1251,7 +1255,7 @@ the archive writes the website again, when the archive has one.
 
       async collect(root, args, env) {
         const f = await openArchive(root, env);
-        await collect(f, { owner: args.owner || null, iKnow: args.iKnow });
+        await collect(f, { owner: args.owner || null, iKnow: args.iKnow, present });
         await present(f);
         return 0;
       },
@@ -1434,6 +1438,7 @@ The options of `owner`, `key`, `sign` and `help-config` are opensheaf-py's
                   options: { '--add': value('add', { repeat: true }), ...CHANGE, ...ROTATION_OPTIONS, ...EXPORT, ...level(true) } },
         end: { help: 'the last version of the key log (section 6.3)', positionals: [],
                options: { '--successor': value('successor'), '--expose': value('expose', { repeat: true }),
+                          '--yes': flag('yes'),
                           ...ROTATION_OPTIONS, ...level(false) } },
         complete: { help: 'settle a version of the key log left by an interrupted write', positionals: [],
                     options: { '--owner': value('owner') } },
@@ -1906,10 +1911,17 @@ path (`str(Path(...))`), so that the two programs say the same.
       const f = await openArchive(root, env);
       const a = { ...args };
       if (args.identifiers) {
+        let text;
         try {
-          a.identifiers = JSON.parse(await fs.readFile(args.identifiers, 'utf-8'));
-        } catch {
-          throw new Stop(`no file ${args.identifiers}`);
+          text = await fs.readFile(args.identifiers, 'utf-8');
+        } catch (error) {
+          if (error.code === 'ENOENT') throw new Stop(`${pythonPath(args.identifiers)}: not found: ${IDENTIFIERS_HELP}`);
+          throw new Stop(`${pythonPath(args.identifiers)}: not read: ${error.message}`);
+        }
+        try {
+          a.identifiers = JSON.parse(text);
+        } catch (error) {
+          throw new Stop(`${pythonPath(args.identifiers)}: not read: ${error.message}`);
         }
       }
       await importCommand(f, dl, pythonPath(args.downloads), a);

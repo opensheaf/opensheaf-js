@@ -31,12 +31,12 @@ when asked, since that downloads every file.
 The module is `core/verify.js`.
 
     // in core/verify.js:
-    import { sha512, pool, LIMITS, parseJson } from './http.js';
+    import { sha512, pool, LIMITS, parseJson, parseFormat } from './http.js';
     import { Archive } from './archive.js';
     import { versionsOf, filesOf, documentVersionErrors, noticeWarnings, historyOf, withdrawnVersions } from './versions.js';
-    import { versionNumber, logicalPathProblem, OWNER_NAME_LAYOUT, HASHED_LAYOUT, LAYOUT_FILE } from './paths.js';
+    import { versionNumber, logicalPathProblem, storageRootOk, OWNER_NAME_LAYOUT, HASHED_LAYOUT, LAYOUT_FILE } from './paths.js';
     import { finding, schemaFindings, descriptionErrors, memberErrors, memberPins, indexEntries, INDEX_KEY } from './rules.js';
-    import { readGenesis, nameOf, isNameOf, algorithm, objectId, parseId, isObject, OWNER_NAME } from './names.js';
+    import { readGenesis, nameOf, isNameOf, algorithm, objectId, parseId, isObject, NAME, OWNER_NAME } from './names.js';
     import { sidecarDigest, jsonOrNull } from './owners.js';
     import { latestSigned, GOOD, SIGNED, VOUCHED, CONTESTED, UNCHECKED, UNSIGNED, INVALID, WITNESSES } from './signatures.js';
     import { verdict, levelOfVersion, INCONSISTENT, UNCHECKED as BRANCH_UNCHECKED, ORDER } from './branches.js';
@@ -134,7 +134,9 @@ An archive of version 0.1 is not verified: it must be rebuilt (section
         report.add(...schemaFindings(place, data, schemas[`opensheaf-${format}/0.2`], level, context));
       let archive;
       try {
-        archive = await Archive.open(http, given.base, options);
+        archive = given.unreadDiscovery ? new Archive(http, given.base, given.disc) : await Archive.open(http, given.base, options);
+        archive.unreadDiscovery = Boolean(given.unreadDiscovery);
+        if (Object.hasOwn(given, 'labelOf')) archive.labelOf = given.labelOf;
         archive.lister = given.lister ?? null;
         archive.unlisted = given.unlisted ?? [];
         report.archive = archive;
@@ -166,6 +168,7 @@ of lines.
         Object.assign(this, context);
         this.archive = archive;
         this.found = new Map();
+        this.dropped = new Map();
         this.logs = new Map();
         this.statuses = new Map();
         this.tombstoned = new Set(archive.tombstones().map((t) => t.id));
@@ -178,9 +181,10 @@ of lines.
 
       async run() {
         const a = this.archive;
-        this.schema('opensheaf.json', a.disc, 'archive');
-        for (const problem of a.pageProblems || []) this.add('error', 'opensheaf.json', problem);
-        for (const { path, page } of a.pages || []) this.schema(path, page, 'objects');
+        if (!a.unreadDiscovery) {
+          await this.formatOfDiscovery();
+          this.schema('opensheaf.json', a.disc, 'archive');
+        }
         await this.storageRoot();
         const ids = [...a.objects().map((o) => o.id), ...a.drafts().map((d) => d.id), ...(a.unlisted || [])];
         const entries = [...new Set(ids)].slice(0, LIMITS.objects);
@@ -208,6 +212,47 @@ of lines.
         if (this.options.signal?.aborted) throw this.options.signal.reason;
       }
 
+The discovery document and its pages are JSON as section 2 defines it,
+as `osheaf verify` reads them (`parseFormat`, chapter
+[10](10-http.md)): a breach is an error, at `opensheaf.json` or at the
+page, in opensheaf-py's words. A page that breaks it, or is not JSON, is
+not read: its entries are left out of the objects listed, as
+opensheaf-py leaves them out; the other pages are checked against their
+schema.
+
+    // in core/verify.js:
+      async formatOfDiscovery() {
+        const a = this.archive;
+        try {
+          parseFormat(await this.http.cached(a.base + 'opensheaf.json', this.options));
+        } catch (error) {
+          if (this.aborted(error)) throw error;
+          this.add('error', 'opensheaf.json', error.message);
+        }
+        const unparsed = new Set((a.unparsed || []).map((u) => `the page of objects ${u.path} is not JSON`));
+        for (const problem of a.pageProblems || []) if (!unparsed.has(problem)) this.add('error', 'opensheaf.json', problem);
+        for (const { path, bytes } of a.unparsed || []) {
+          try {
+            parseFormat(bytes);
+          } catch (error) {
+            this.add('error', path, error.message);
+          }
+        }
+        if (!a.pages) return;
+        const kept = [];
+        for (const page of a.pages) {
+          try {
+            parseFormat(page.bytes);
+          } catch (error) {
+            this.add('error', page.path, error.message);
+            continue;
+          }
+          kept.push(page);
+          this.schema(page.path, page.page, 'objects');
+        }
+        if (kept.length < a.pages.length) a.paged = kept.flatMap((page) => page.entries);
+      }
+
       async fetchOrNull(url, limit = LIMITS.json) {
         try {
           return await this.http.request(url, { limit, signal: this.options.signal });
@@ -221,12 +266,14 @@ of lines.
 Files and storage (14.2)
 ------------------------
 
-The storage root and its layout: OCFL's declaration `0=ocfl_1.1`; for
+The storage root and its layout: OCFL's declaration `0=ocfl_1.1`; the
+storage root a relative path of a folder below the archive (section 3.1,
+chapter [11](11-paths.md)); for
 the owner-name layout, no `ocfl_layout.json` (it would name a layout that
 is not a registered extension) and, a breach being a warning, the text
 file describing the layout; for the hashed layout, `ocfl_layout.json`
-naming it, and its configuration, if any, with the default parameters
-(section 3.2).
+naming it, with a description, and its configuration, if any, with the
+default parameters (section 3.2).
 
     // in core/verify.js:
       async storageRoot() {
@@ -242,8 +289,14 @@ naming it, and its configuration, if any, with the default parameters
         };
         if (await read('0=ocfl_1.1') === null) this.add('error', 'ocfl', 'no OCFL 1.1 storage root (0=ocfl_1.1)');
         const declared = a.disc.storageLayout;
-        if (declared !== OWNER_NAME_LAYOUT && declared !== HASHED_LAYOUT) {
+        if (a.unreadDiscovery) {
+          // the discovery document was not read: nothing it declares is checked
+        } else if (declared !== OWNER_NAME_LAYOUT && declared !== HASHED_LAYOUT) {
           this.add('error', 'opensheaf.json', `storageLayout is ${declared}, not a layout of section 3.2`);
+        }
+        if (!a.unreadDiscovery && !storageRootOk(a.disc.storageRoot)) {
+          this.add('error', 'opensheaf.json', `storageRoot ${repr(a.disc.storageRoot)} is not a relative path of a ` +
+                   'folder below the archive, ending with / (section 3.1)');
         }
         if (a.layout === OWNER_NAME_LAYOUT) {
           if (await read('ocfl_layout.json') !== null) {
@@ -253,6 +306,9 @@ naming it, and its configuration, if any, with the default parameters
         } else {
           const layout = jsonOrNull(await read('ocfl_layout.json'));
           if (layout?.extension !== HASHED_LAYOUT) this.add('error', 'ocfl', `ocfl_layout.json must name the extension ${HASHED_LAYOUT} (section 3.2)`);
+          if (!(typeof layout?.description === 'string' && layout.description.trim())) {
+            this.add('error', 'ocfl', 'ocfl_layout.json has a description (section 3.2)');
+          }
           const raw = await read(`extensions/${HASHED_LAYOUT}/config.json`);
           const config = raw === null ? {} : jsonOrNull(raw);
           if (!isObject(config)) {
@@ -276,8 +332,14 @@ whose head is that version and whose versions are those of the inventory
 up to it, equal as JSON values; a user and a message (but in the computed
 first version of a key log); logical paths; the files every version holds
 (`object.json`; `datacite.json` but in an owner object; `genesis.json`
-but in a draft); and, for every object but a key log, `object.json`
-against its schema and the inventory chain (section 4.3): `previous` in
+but in a draft); the files of the specification among them (`object.json`,
+`members.json`, and the `object.json` and signature files of the evidence
+of a branch point, at every level) JSON as section 2 defines it
+(`parseFormat`), an object with one that breaks it being checked no
+further, as opensheaf-py's `lexical_errors` decides; `object.json` against
+its schema, and the evidence's `object.json` and signature files against
+theirs (section 14.2); and, for every object but a key log, the inventory
+chain (section 4.3): `previous` in
 every version after the first, the digest of the inventory file of the
 version before as its checksum file states it, and none in a first
 version or a draft. Digests in the inventory and in the checksum files are
@@ -322,6 +384,7 @@ with the key logs, below.
         const kind = kindOfHead?.kind;
         const draft = Boolean(parseId(id).draft);
         const o = { id, inv, rootBytes, head: kindOfHead, objs: new Map(), digests: [], sidecars: [], kind, draft };
+        let malformed = false;
         this.found.set(id, o);
         const at = (ver) => ({ object: id, ver });
         if (inv.digestAlgorithm !== 'sha512') this.add('error', place, 'the digest algorithm is not sha512 (section 4.1)', at());
@@ -379,7 +442,10 @@ with the key logs, below.
           }
           const needed = ['object.json', ...(kind !== 'owner' ? ['datacite.json'] : []), ...(draft ? [] : ['genesis.json'])];
           for (const name of needed) if (!logical.includes(name)) this.add('error', where, `has no ${name} (section 4.1)`, at(ver));
-          if (!logical.includes('object.json')) continue;
+          const bad = await this.lexicalErrors(id, inv, ver, logical);
+          for (const message of bad) this.add('error', where, message, at(ver));
+          malformed ||= bad.length > 0;
+          if (!logical.includes('object.json') || bad.length) continue;
           let obj = null;
           try {
             obj = await a.json(id, inv, ver, 'object.json', this.options);
@@ -388,8 +454,13 @@ with the key logs, below.
             this.add('error', where, `object.json cannot be read: ${error.detail || error.message}`, at(ver));
           }
           o.objs.set(ver, obj);
-          if (!obj || kind === 'owner') continue;
+          if (!obj) continue;
           this.schema(`${where}/object.json`, obj, 'object', 'error', at(ver));
+          for (const p of logical.filter((x) => x.startsWith('parent/') && formatFile(x)).sort()) {
+            const value = jsonOrNull(await a.bytes(id, inv, ver, p, this.options).catch((e) => { if (this.aborted(e)) throw e; return null; }));
+            if (value !== null) this.schema(`${where}/${p}`, value, formatFile(p), 'error', at(ver));
+          }
+          if (kind === 'owner') continue;
           for (const message of reservedNameErrors(obj, logical)) this.add('error', where, message, at(ver));
           if (n === 1 || draft) {
             if (isObject(obj) && 'previous' in obj) this.add('error', where, 'a first version, or a draft, has no previous (section 4.3)', at(ver));
@@ -399,6 +470,39 @@ with the key logs, below.
             this.add('error', where, `previous is not the digest of the inventory of v${n - 1} (section 4.3)`, at(ver));
           }
         }
+        if (malformed) {
+          this.add('error', place, 'a file of the specification in it breaks the rules of section 2: not checked further', at());
+          if (!draft) listed(`lists ${id}, which is not an object of the storage root (section 3.1)`);
+          this.found.delete(id);
+          this.dropped.set(id, o);
+        }
+      }
+
+The files of the specification in a version are read as they are held
+(not through the digest the inventory states, which the check of the
+digests judges), and each that breaks section 2 is named with the
+reason.
+
+    // in core/verify.js:
+      async lexicalErrors(id, inv, ver, logical) {
+        const out = [];
+        for (const p of [...logical].sort()) {
+          if (!formatFile(p)) continue;
+          let bytes = null;
+          try {
+            const url = this.archive.fileUrl(id, inv, ver, p);
+            bytes = url ? await this.fetchOrNull(url, LIMITS.file) : null;
+          } catch (error) {
+            if (this.aborted(error)) throw error;
+          }
+          if (bytes === null) continue;
+          try {
+            parseFormat(bytes);
+          } catch (error) {
+            out.push(`${p}: ${error.message}`);
+          }
+        }
+        return out;
       }
 
 Key logs (14.3)
@@ -407,7 +511,9 @@ Key logs (14.3)
 The owner objects first, each read and checked from its first version
 (chapters [07](07-owners.md) and [14](14-archive.md)): its errors and
 warnings, its genesis record and every `keys.json` against their
-schemas, a keeper's check digit (with the genesis record), and the
+schemas, the signature files of its witness folders against theirs (a
+breach is a warning, as a malformed witness is, section 7.2), a keeper's
+check digit (with the genesis record), and the
 results: the latest version, the keys exposed, and an end, by a fork with
 its fork point or by an ending version with its successor.
 
@@ -433,6 +539,7 @@ its fork point or by an ending version with its successor.
           if (genesis) this.schema(`${place} v1/genesis.json`, genesis, 'genesis', 'error', { object: id, ver: 'v1' });
           for (const v of log.versions) {
             if (v.keys !== null) this.schema(`${place} v${v.number}/keys.json`, v.keys, 'keys', 'error', { object: id, ver: `v${v.number}` });
+            this.witnessSchemas(`${place} v${v.number}`, v.witnesses, { object: id, ver: `v${v.number}` });
           }
           this.logs.set(log.owner, log);
           const held = log.versions.filter((v) => v.isVersion);
@@ -442,6 +549,19 @@ its fork point or by an ending version with its successor.
           else if (log.ended) {
             this.add('result', place, 'ended (section 6.3)' + (log.successor ? `, successor ${log.successor} (named by the ending version)` : ''), { object: id });
           }
+        }
+      }
+
+The signature files among the witnesses of one version, against their
+schema, as opensheaf-py's `check_witness_schemas`: a breach is a warning
+at the file; a file that is not JSON is judged as a witness, not here.
+
+    // in core/verify.js:
+      witnessSchemas(at, witnesses, context) {
+        for (const name of [...witnesses.keys()].sort()) {
+          if (!(name.startsWith('signature-') && name.endsWith('.json'))) continue;
+          const value = jsonOrNull(witnesses.get(name));
+          if (value !== null) this.schema(`${at} ${WITNESSES}/${name}`, value, 'signature', 'warning', context);
         }
       }
 
@@ -458,13 +578,17 @@ points are checked (below); the descriptions of every version and the
 rules of document versions hold; the owner's key log is held (an error,
 or a warning when it was taken down, section 6.5); and the statuses of
 the signature files and of the versions (section 7.3), with the latest
-signed version and a withdrawal as results. Lines that share a genesis
-record must be the originator's and branches of it (section 5.4). The
+signed version and a withdrawal as results, the signature files against
+their schema. Lines that share a genesis
+record must be the originator's and branches of it (section 5.4), and so
+must the lines of the tombstones of the archive (section 14.4), compared
+by `genesisName`: a tombstone of the originator counts as a line, one of
+another owner as a branch. The
 collections are then checked (14.5).
 
     // in core/verify.js:
       async lines() {
-        const genesisNames = new Map();
+        const genesisNames = new Map(), originators = new Map();
         for (const [id, o] of this.found) {
           this.cancelled();
           const head = o.objs.get(o.inv.head) || {};
@@ -505,6 +629,7 @@ collections are then checked (14.5).
             const g0 = await nameOf(genesis);
             if (!genesisNames.has(g0)) genesisNames.set(g0, []);
             genesisNames.get(g0).push([id, isObject(head) && 'parent' in head]);
+            originators.set(g0, rec.originator);
             if (rec.kind !== head.kind) {
               this.add('error', place, `its genesis record is of kind ${rec.kind}, its object.json of kind ${head.kind}`, { object: id });
             }
@@ -536,12 +661,14 @@ collections are then checked (14.5).
             this.add(this.tombstoned.has(ownerId) ? 'warning' : 'error', place,
               `the key log of its owner ${owner} is not in the storage root (section 6.5)`, { object: id });
           }
-          const line = await a.line(id, { log, signal: this.options.signal });
+          const line = await a.line(id, { log, keep: true, signal: this.options.signal });
+          const witnessed = [];
           o.line = line;
           this.statuses.set(id, line.statuses);
           line.statuses.forEach((s, k) => {
             const ver = `v${k + 1}`, where = `${place} ${ver}`;
             for (const j of line.judgements[k]) if (j.status !== GOOD) this.add('warning', where, `${j.file}: ${j.status}: ${j.reason}`, { object: id, ver });
+            witnessed.push([where, ver, line.listed?.[k] ?? line.judgements[k].map((j) => j.file)]);
             for (const n of line.listed?.[k] || []) {
               if (!(n.startsWith('signature-') && n.endsWith('.json'))) this.add('warning', where, `${n}: not a witness these tools know (section 7.2)`, { object: id, ver });
             }
@@ -549,6 +676,14 @@ collections are then checked (14.5).
             else if (s === UNCHECKED) this.add('warning', where, 'unchecked: the version of the key log its signatures name is not reached (section 7.3)', { object: id, ver });
             else if (s === CONTESTED) this.add('result', where, 'contested (section 7.3)', { object: id, ver });
           });
+          for (const [where, ver, names] of witnessed) {
+            const witnesses = new Map();
+            for (const n of names) {
+              const bytes = await a.witness(id, ver, n, this.options);
+              if (bytes) witnesses.set(n, bytes);
+            }
+            this.witnessSchemas(where, witnesses, { object: id, ver });
+          }
           for (const x of (await a.listFolder(id, ...WITNESSES.split('/'))) || []) {
             if (!(x.kind === 'dir' && Object.hasOwn(o.inv.versions, x.name))) {
               this.add('warning', place, `${WITNESSES}/${x.name}: not the folder of a version (section 7.2)`, { object: id });
@@ -565,15 +700,22 @@ collections are then checked (14.5).
             }
           }
         }
+        for (const t of this.archive.tombstones()) {
+          if (genesisNames.has(t.genesisName)) genesisNames.get(t.genesisName).push([t.id, t.owner !== originators.get(t.genesisName)]);
+        }
         for (const ids of genesisNames.values()) {
-          const lines = ids.filter(([, branch]) => !branch).map(([id]) => id);
+          const lines = [...new Set(ids.filter(([, branch]) => !branch).map(([id]) => id))];
           if (lines.length > 1) {
             this.add('error', lines.map((id) => this.where(id)).join(', '), 'objects with the same genesis record: only the ' +
               "originator's line and its branches may share one (section 5.4)");
           }
         }
+        const kept = new Map();
         for (const [id, o] of this.found) {
-          if (o.kind === 'collection' && this.statuses.has(id)) await this.members(id, o);
+          if (o.kind === 'collection' && this.statuses.has(id)) {
+            await this.members(id, o);
+            await this.acceptedCopies(id, o, kept);
+          }
         }
       }
 
@@ -614,7 +756,7 @@ warning (section 5.3), and an originator owning a branch an error.
             if (!same(evidence, prevEvidence)) this.add('error', where, 'the identity files change without a new branch point (section 9.4)', { object: id, ver });
           } else {
             const [v, problems] = await verdict(levelOfVersion(a, id, o.inv, ver, this.options), obj, genesis,
-                                                async (who) => this.logs.get(who) ?? null);
+                                                async (who) => this.logs.get(who) ?? null, 0, (p) => this.parentFound(p));
             verdicts.push(v);
             if (v === INCONSISTENT) this.add('error', where, 'inconsistent branch point: ' + problems.join('; '), { object: id, ver });
             else if (v === BRANCH_UNCHECKED) this.add('warning', where, 'unchecked branch point: ' + problems.join('; '), { object: id, ver });
@@ -629,7 +771,7 @@ warning (section 5.3), and an originator owning a branch an error.
         const pid = objectId(p.name, p.owner);
         this.add('result', place, `a branch of ${this.where(pid)}: ${worst} (section 9.3)`, { object: id });
         if (this.found.has(pid)) {
-          const line = await a.line(pid, { log: this.logs.get(p.owner) ?? null, signal: this.options.signal });
+          const line = await a.line(pid, { log: this.logs.get(p.owner) ?? null, keep: true, signal: this.options.signal });
           const status = line.latest ? line.objs.get(line.latest)?.status : null;
           this.add('result', place, "the parent's line is held here" + (status === 'withdrawn' ? ', withdrawn' : ''), { object: id });
         } else if (this.tombstoned.has(pid)) {
@@ -673,11 +815,43 @@ warning (section 5.3), and an originator owning a branch an error.
         }
       }
 
+The parent version as the verifier finds it in the parent's line, for the
+verdict (section 9.3), as opensheaf-py's `parent_resolution`: in the line
+held here, `null` when it lacks that version, else whether the inventory
+of that version has the digest of the pin and, when it has, the status of
+the version there; when resolving, the version the resolver finds for the
+pin, signed when verified and contested when contested, of another digest
+when a copy holds another one there, and `null` otherwise.
+
+    // in core/verify.js:
+      async parentFound(p) {
+        if (!isObject(p) || typeof p.name !== 'string' || typeof p.owner !== 'string' || !NAME.test(p.name) ||
+            !OWNER_NAME.test(p.owner) || typeof p.objectVersion !== 'string' || !/^v[0-9]+$/.test(p.objectVersion)) return null;
+        const pid = objectId(p.name, p.owner), version = p.objectVersion, digest = p.inventorySha512;
+        const n = Number(version.slice(1));
+        if (this.found.has(pid)) {
+          const held = this.found.get(pid);
+          if (!Object.hasOwn(held.inv.versions, version) || !held.digests[n - 1]) return null;
+          if (held.digests[n - 1] !== digest) return [false, null];
+          const line = await this.archive.line(pid, { log: this.logs.get(p.owner) ?? null, keep: true, signal: this.options.signal });
+          return [true, line.statuses[n - 1] ?? null];
+        }
+        if (!this.resolver) return null;
+        const at = typeof p.url === 'string' ? await this.resolver.archiveOf(p.url, this.options) : [];
+        const res = await this.resolver.pin(p.name, p.owner, version, digest, at, this.options);
+        if (res.status === 'verified' || res.status === 'contested') return [true, res.status === 'verified' ? SIGNED : CONTESTED];
+        if ((res.copies || []).some((c) => ![null, undefined, digest].includes(c.digest(n)))) return [false, null];
+        return null;
+      }
+
 Collections (14.5)
 ------------------
 
 Every version of a collection: its member list against its schema, its
-type, and the rules of each member (chapter [16](16-rules.md)). A member
+type, a relation `HasPart` in its `datacite.json` to the DOI of each
+member that has one (a catalogue member's `doi`, a selection revision's
+`doi`, compared without regard to case; section 8.6), and the rules of
+each member (chapter [16](16-rules.md)). A member
 held in the archive is checked in every version: the copy held has the
 version pinned, which holds the pin, the member's kind, name and owner,
 and the document version a revision states, and its status (section 8.5):
@@ -699,6 +873,8 @@ holds its tombstone.
           this.schema(`${at}/members.json`, mem, 'collection', 'error', { object: id, ver });
           const type = mem.type;
           if (type !== 'catalogue' && type !== 'selection') this.add('error', at, 'members.json has no valid type (catalogue or selection)', { object: id, ver });
+          const dc = await a.json(id, o.inv, ver, 'datacite.json', this.options).catch((e) => { if (this.aborted(e)) throw e; return null; });
+          for (const message of hasPartErrors(dc, mem)) this.add('error', at, message, { object: id, ver });
           for (const m of Array.isArray(mem.members) ? mem.members : []) {
             const mid = objectId(m?.name, m?.owner);
             const who = `${at} member ${this.where(mid)}`;
@@ -790,11 +966,37 @@ pinned, as opensheaf-py's `check_members` checks it.
       }
 
 Selections of one owner (the issues of a journal) share its accepted copy
-of a document, which each of them may list (section 9.6): an owner has
-one line of a name, so the accepted copies of one document kept by
-selections of one owner are one line, and those kept by selections of
-different owners are different lines. Nothing is checked: the rule of
-section 9.6 holds by the identifiers themselves.
+of a document, which each of them may list (section 9.6): selections
+keeping different accepted copies of one document have different owners.
+As opensheaf-py's `check_accepted_copies` checks it, each member of a
+selection that is a branch held here and of the selection's owner is an
+accepted copy, the document it copies being named by its genesis record;
+a second copy of the same document kept by a selection of the same owner
+is an error at the selection.
+
+    // in core/verify.js:
+      async acceptedCopies(id, o, kept) {
+        const a = this.archive;
+        const mem = await a.json(id, o.inv, o.inv.head, 'members.json', this.options).catch((e) => { if (this.aborted(e)) throw e; return null; });
+        if (!isObject(mem) || mem.type !== 'selection') return;
+        const owner = parseId(id).owner;
+        for (const m of Array.isArray(mem.members) ? mem.members : []) {
+          if (!isObject(m)) continue;
+          const mid = objectId(m.name, m.owner);
+          if (m.owner !== owner || !this.found.has(mid)) continue;
+          const held = this.found.get(mid);
+          if (!(isObject(held.head) && 'parent' in held.head)) continue;
+          const g = await a.bytes(mid, held.inv, 'v1', 'genesis.json', this.options).catch((e) => { if (this.aborted(e)) throw e; return null; });
+          const key = `${owner} ${g ? await nameOf(g) : mid}`;
+          if (!kept.has(key)) kept.set(key, [id, mid]);
+          const [other, copy] = kept.get(key);
+          if (copy !== mid) {
+            this.add('error', this.where(id), `keeps an accepted copy of a document of which ${this.where(other)}, a ` +
+              'selection of the same owner, keeps another: selections keeping different accepted copies of one ' +
+              'document have different owners (section 9.6)', { object: id });
+          }
+        }
+      }
 
 The archive as a whole (14.6)
 -----------------------------
@@ -831,6 +1033,7 @@ unlisted, as `osheaf verify` reports them.
 
       async archiveAsAWhole() {
         const a = this.archive;
+        if (a.unreadDiscovery) return;
         const disc = a.disc;
         const listed = new Map();
         for (const e of a.listed()) {
@@ -950,12 +1153,15 @@ in the file of its prefix, with the values of its object; each tombstone
 has its entries in `names/` and `sha512/`, with the status `removed`,
 and none in `owners/`; an entry the objects held do not justify is an
 error. A server lists no folders: the files read are those of the
-prefixes of the entries expected and of the tombstones, and, in `names/`,
-of the names `owners/` lists; an entry in another file is not seen.
+prefixes of the entries expected, of the tombstones and of the objects
+not checked further (whose entries `osheaf verify`, which lists the
+folders, finds unjustified), and, in `names/`, of the names `owners/`
+lists; an entry in another file is not seen.
 `owners/` is read first, for that. An index file is JSON as section 2 defines it,
-read as every other file is (chapter [10](10-http.md)): bytes that are
-not UTF-8, or start with a byte order mark, are an error, as they are for
-`osheaf verify`.
+read as the discovery document is (`parseFormat`, chapter
+[10](10-http.md)): bytes that are not UTF-8, or start with a byte order
+mark, and numbers that are not exact integers, are an error, in the
+words of `osheaf verify`.
 
     // in core/verify.js:
       async indexes() {
@@ -987,6 +1193,12 @@ not UTF-8, or start with a byte order mark, are an error, as they are for
           const want = expected[index];
           const prefixes = new Set(want.map((e) => String(e[key]).slice(0, length)));
           if (index === 'names') for (const n of listedNames) prefixes.add(n.slice(0, length));
+          for (const [id, o] of this.dropped) {
+            const parts = parseId(id);
+            if (parts.draft) continue;
+            const keys = index === 'names' ? [parts.name] : index === 'owners' ? [parts.owner] : o.digests.filter(Boolean);
+            for (const k of keys) prefixes.add(k.slice(0, length));
+          }
           for (const t of gone.values()) {
             const k = index === 'names' ? t.name : index === 'owners' ? t.owner : t.inventorySha512;
             if (typeof k === 'string') prefixes.add(k.slice(0, length));
@@ -998,10 +1210,10 @@ not UTF-8, or start with a byte order mark, are an error, as they are for
             try {
               const bytes = await this.fetchOrNull(a.base + place);
               if (bytes === null) continue;
-              data = parseJson(bytes);
+              data = parseFormat(bytes);
             } catch (error) {
               if (this.aborted(error)) throw error;
-              this.add('error', place, `not JSON: ${error.message}`);
+              this.add('error', place, error.kind ? `not read: ${error.detail}` : error.message);
               continue;
             }
             this.schema(place, data, 'index');
@@ -1102,7 +1314,7 @@ the browser is a warning, a check not made.
       async contentDigests() {
         const a = this.archive;
         const files = [];
-        for (const [id, o] of this.found) {
+        for (const [id, o] of [...this.found, ...this.dropped]) {
           for (const [digest, paths] of Object.entries(o.inv.manifest)) {
             for (const cp of Array.isArray(paths) ? paths : []) {
               try {
@@ -1176,6 +1388,40 @@ messages of `osheaf verify` (`None` for nothing).
 
     function py(value) {
       return value === null || value === undefined ? 'None' : String(value);
+    }
+
+    function repr(value) {
+      if (typeof value === 'string') return value.includes("'") && !value.includes('"') ? `"${value}"` : `'${value.replace(/'/g, "\\'")}'`;
+      if (typeof value === 'boolean') return value ? 'True' : 'False';
+      return value === null || value === undefined ? 'None' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+    }
+
+The files of the specification among the logical paths of a version, with
+the schema each is held to: `object.json` and `members.json`, and, in the
+evidence of a branch point at every level, `object.json` and the
+signature files (opensheaf-py's `format_file`).
+
+    // in core/verify.js:
+    export function formatFile(p) {
+      if (p === 'object.json') return 'object';
+      if (p === 'members.json') return 'collection';
+      if (/^(?:parent\/)+(?:object\.json|signatures\/signature-[^/]+\.json)$/.test(p)) return p.endsWith('/object.json') ? 'object' : 'signature';
+      return null;
+    }
+
+The relations `HasPart` a collection version lacks (section 8.6), as
+opensheaf-py's `has_part_errors`: one per distinct DOI of a member.
+
+    // in core/verify.js:
+    export function hasPartErrors(dc, mem) {
+      const rels = isObject(dc) && Array.isArray(dc.relatedIdentifiers) ? dc.relatedIdentifiers : [];
+      const parts = new Set(rels.filter((r) => isObject(r) && r.relationType === 'HasPart' && r.relatedIdentifierType === 'DOI')
+        .map((r) => py(r.relatedIdentifier).toLowerCase()));
+      const members = isObject(mem) && Array.isArray(mem.members) ? mem.members.filter(isObject) : [];
+      const dois = [...members.map((m) => m.doi),
+        ...members.flatMap((m) => (Array.isArray(m.revisions) ? m.revisions : []).filter(isObject).map((r) => r.doi))];
+      return [...new Set(dois.filter((x) => typeof x === 'string' && x))].filter((doi) => !parts.has(doi.toLowerCase()))
+        .map((doi) => `datacite.json has no HasPart relation to ${doi}, the DOI of a member (section 8.6)`);
     }
 
 Before a verification that downloads every file, the page tells the

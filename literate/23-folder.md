@@ -72,6 +72,13 @@ that is not read (below).
       throw new Stop(sentence(text));
     }
 
+    export class CannotSign extends Stop {
+      constructor(owner, reason) {
+        super(sentence(reason));
+        Object.assign(this, { owner, reason });
+      }
+    }
+
     export function exit(text) {
       throw new Stop(text);
     }
@@ -149,6 +156,22 @@ credential stores:
         template: null,
         ...given,
       };
+    }
+
+A question is asked through `input`, which answers `null` when no one
+can type the answer (the standard input closed, as under a script or in
+CI): the command then stops, saying that `--yes` confirms without asking,
+as opensheaf-py's `ask` does on `EOFError` (an empty line first ends the
+line of the question).
+
+    // in how the commands speak:
+    export async function ask(env, prompt) {
+      const answer = await env.input(prompt);
+      if (answer === null || answer === undefined) {
+        env.err('');
+        stop('no answer: the standard input is closed (give --yes to confirm without being asked)');
+      }
+      return answer;
     }
 
 The configuration
@@ -528,8 +551,8 @@ configured (`env.pullFromWallet`, chapter
         if (found.length < need) {
           const hint = this.env.keyStore.keptOnDevice() ? 'osheaf key new makes one for this computer'
             : 'configure a key wallet, from which each command opens them';
-          stop(`this computer holds ${found.length} of the current keys of ${who}, and v${latest.number} ` +
-               `of its key log needs ${need} to sign (${hint})`);
+          throw new CannotSign(owner, `this computer holds ${found.length} of the current keys of ${who}, and ` +
+                               `v${latest.number} of its key log needs ${need} to sign (${hint})`);
         }
         return { log, latest, signers: found };
       }

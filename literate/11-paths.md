@@ -143,6 +143,25 @@ not fetched.
       return null;
     }
 
+The storage root
+----------------
+
+The storage root a discovery document names, `storageRoot`, is a
+relative path of a folder below the archive, ending with `/` (section
+3.1): no scheme, no leading `/`, no `\`, no empty, `.` or `..` segment,
+and none of `:`, `?` and `#`, the rule of the archive schema and of
+opensheaf-py's `storage_root_ok`. A storage root that breaks it is
+reported by the verification, and an archive that names one is
+unavailable to a resolver; the explorer reads such an archive at `ocfl/`.
+
+    // in core/paths.js:
+    export function storageRootOk(root) {
+      if (typeof root !== 'string' || !root.endsWith('/') || /[:?#]/.test(root)) return false;
+      const rel = root.slice(0, -1);
+      return rel !== '' && !rel.startsWith('/') && !rel.includes('\\') &&
+        rel.split('/').every((x) => x !== '' && x !== '.' && x !== '..');
+    }
+
 An address under a root
 -----------------------
 

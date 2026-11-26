@@ -66,7 +66,10 @@ characters, the last of them `A`, `Q`, `g` or `w`, whose four bits that
 encode nothing are zero, then `==`. Another encoding of the same bytes is
 malformed too, so that the bytes of a signature file, which timestamps
 cover, are fixed by what it says. As every JSON file read, it is nested
-no deeper than `LIMITS.nesting` (chapter [10](10-http.md)).
+no deeper than `LIMITS.nesting` (chapter [10](10-http.md)), and it is
+UTF-8 without a byte order mark (section 2): a file that starts with one
+is malformed, as opensheaf-py finds it, not read with the mark dropped,
+and said so in the words of Python's parser.
 
     // in core/signatures.js:
     const FIELDS = {
@@ -83,7 +86,8 @@ no deeper than `LIMITS.nesting` (chapter [10](10-http.md)).
     export function readSignatureFile(bytes) {
       let d;
       try {
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+        if (text.charCodeAt(0) === 0xfeff) throw new Error('Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)');
         if (nesting(text) > LIMITS.nesting) throw new Error(`nested deeper than ${LIMITS.nesting} levels`);
         d = JSON.parse(text);
       } catch (error) {

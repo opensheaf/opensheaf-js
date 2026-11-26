@@ -26,7 +26,7 @@ import { resolveCommand, mirror } from '../core/mirror.js';
 import { branch, accept } from '../core/branch.js';
 import { draftDeposit, draftDelete, seal } from '../core/drafts.js';
 import { takedown } from '../core/takedown.js';
-import { fetchPapers, authorPapers, politeGetter, importCommand } from '../core/arxiv.js';
+import { fetchPapers, authorPapers, politeGetter, importCommand, IDENTIFIERS_HELP } from '../core/arxiv.js';
 import { Zenodo, SERVICES, zenodoCommand } from '../core/zenodo.js';
 import { securityCommand } from './keystore.js';
 import os from 'node:os';
@@ -192,6 +192,7 @@ export const COMMANDS = {
                 options: { '--add': value('add', { repeat: true }), ...CHANGE, ...ROTATION_OPTIONS, ...EXPORT, ...level(true) } },
       end: { help: 'the last version of the key log (section 6.3)', positionals: [],
              options: { '--successor': value('successor'), '--expose': value('expose', { repeat: true }),
+                        '--yes': flag('yes'),
                         ...ROTATION_OPTIONS, ...level(false) } },
       complete: { help: 'settle a version of the key log left by an interrupted write', positionals: [],
                   options: { '--owner': value('owner') } },
@@ -704,7 +705,7 @@ const RUN = {
 
   async collect(root, args, env) {
     const f = await openArchive(root, env);
-    await collect(f, { owner: args.owner || null, iKnow: args.iKnow });
+    await collect(f, { owner: args.owner || null, iKnow: args.iKnow, present });
     await present(f);
     return 0;
   },
@@ -889,10 +890,17 @@ const RUN = {
     const f = await openArchive(root, env);
     const a = { ...args };
     if (args.identifiers) {
+      let text;
       try {
-        a.identifiers = JSON.parse(await fs.readFile(args.identifiers, 'utf-8'));
-      } catch {
-        throw new Stop(`no file ${args.identifiers}`);
+        text = await fs.readFile(args.identifiers, 'utf-8');
+      } catch (error) {
+        if (error.code === 'ENOENT') throw new Stop(`${pythonPath(args.identifiers)}: not found: ${IDENTIFIERS_HELP}`);
+        throw new Stop(`${pythonPath(args.identifiers)}: not read: ${error.message}`);
+      }
+      try {
+        a.identifiers = JSON.parse(text);
+      } catch (error) {
+        throw new Stop(`${pythonPath(args.identifiers)}: not read: ${error.message}`);
       }
     }
     await importCommand(f, dl, pythonPath(args.downloads), a);

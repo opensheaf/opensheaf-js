@@ -61,6 +61,13 @@ export function contentPathProblem(cp, contentDirectory = 'content') {
   return null;
 }
 
+export function storageRootOk(root) {
+  if (typeof root !== 'string' || !root.endsWith('/') || /[:?#]/.test(root)) return false;
+  const rel = root.slice(0, -1);
+  return rel !== '' && !rel.startsWith('/') && !rel.includes('\\') &&
+    rel.split('/').every((x) => x !== '' && x !== '.' && x !== '..');
+}
+
 function encodeSegment(segment) {
   return encodeURIComponent(segment).replace(/%(3D|2C|3A|40|2B|24|26|3B)/g, (m) => decodeURIComponent(m));
 }

@@ -652,7 +652,11 @@ stops. `--rebuild` first deletes the lines of the named papers, their
 labels and their HTML, without a tombstone: only for an archive not yet
 published (opensheaf-py's chapter explains why). The report,
 `import-report.json` (with `-dry` and `-partial` for dry runs and runs on
-some papers), is written into the downloads folder.
+some papers), is written into the downloads folder. The files the
+import reads (the downloads folder, its `version-licences.json`, the
+identifiers) are checked before the archive is touched, as opensheaf-py
+checks them: a file missing says what it should be, one that is not JSON
+says so.
 
     // in arXiv: the import command:
     export async function importCommand(f, dl, where, a) {
@@ -662,9 +666,12 @@ some papers), is written into the downloads folder.
       }
       if (a.agreedBy?.length && !a.agreement) exit('--agreed-by needs --agreement');
       const agreement = a.agreement ? { method: a.agreement, by: a.agreedBy?.length ? a.agreedBy : null } : null;
+      if ((await dl.list('')) === null) exit(`${where}: not a folder (the folder of osheaf arxiv fetch)`);
+      const licences = await jsonOf(dl, 'version-licences.json', `${where}/version-licences.json`,
+                                    'DOWNLOADS is the folder written by osheaf arxiv fetch');
+      const ids = a.identifiers ? a.identifiers : await jsonOf(dl, 'identifiers.json', `${where}/identifiers.json`,
+                                                              IDENTIFIERS_HELP);
       await f.initStorageRoot();
-      const licences = await jsonOf(dl, 'version-licences.json', `${where}/version-licences.json`);
-      const ids = a.identifiers ? a.identifiers : await jsonOf(dl, 'identifiers.json', `${where}/identifiers.json`);
       const done = await alreadyArchived(f);
       const asked = a.ids || [];
       if (a.rebuild) {
@@ -720,8 +727,14 @@ some papers), is written into the downloads folder.
       await dl.write(file, jsonBytes(report));
     }
 
-    async function jsonOf(storage, name, shown) {
+    export const IDENTIFIERS_HELP = 'write it, arXiv identifier -> label of the line, or give --identifiers';
+
+    async function jsonOf(storage, name, shown, what) {
       const bytes = await storage.read(name);
-      if (bytes === null) exit(`no file ${shown}`);
-      return JSON.parse(new TextDecoder().decode(bytes));
+      if (bytes === null) exit(`${shown}: not found: ${what}`);
+      try {
+        return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      } catch (error) {
+        exit(`${shown}: not read: ${error.message}`);
+      }
     }

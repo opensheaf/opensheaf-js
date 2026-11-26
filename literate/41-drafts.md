@@ -61,7 +61,12 @@ The folder of a draft
 A draft is named by its `<id>` alone, local to the archive. `dropHead`
 rewrites it, removing its head version, and puts back the root inventory
 and checksum file of the version before, each by a rename (chapter
-[20](20-storage.md)); a draft of one version goes whole.
+[20](20-storage.md)); a draft of one version goes whole. A draft that
+goes whole (`draft delete`, `seal --delete-draft`, a `--replace` of the
+only version) takes with it the folders above it that it leaves empty,
+`draft/` among them: an empty folder in the storage root is not an
+object, and OCFL validators refuse it (E073), as opensheaf-py's
+`drafts.remove` removes it.
 
     // in drafts: the folder of a draft:
     export async function draftDir(f, draftId) {
@@ -73,10 +78,15 @@ and checksum file of the version before, each by a rename (chapter
       return { id, dir, inv };
     }
 
+    async function removeDraft(f, dir) {
+      await removeFolder(f.storage, dir);
+      await removeEmptyAbove(f.storage, dir);
+    }
+
     async function dropHead(f, dir, inv) {
       const n = Number(inv.head.slice(1));
       if (n === 1) {
-        await removeFolder(f.storage, dir);
+        await removeDraft(f, dir);
         return;
       }
       await removeFolder(f.storage, joinPath(dir, `v${n}`));
@@ -87,8 +97,7 @@ and checksum file of the version before, each by a rename (chapter
 
     export async function draftDelete(f, args) {
       const { dir } = await draftDir(f, args.label);
-      await removeFolder(f.storage, dir);
-      await removeEmptyAbove(f.storage, dir);
+      await removeDraft(f, dir);
       f.changed();
       await writeDiscovery(f);
       f.env.out(`draft ${args.label}: deleted`);
@@ -155,7 +164,7 @@ date `Updated`, with the address of the new line's landing page.
       const done = await f.addVersion(line, files, obj, args.message || `Sealed from the draft ${args.label}`);
       f.labels.set(label, line);
       if (args.deleteDraft) {
-        await removeFolder(f.storage, dir);
+        await removeDraft(f, dir);
         f.changed();
       }
       await writeDiscovery(f);

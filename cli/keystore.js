@@ -262,8 +262,11 @@ function fromStdin(until) {
 
 export async function readLine(prompt) {
   process.stdout.write(prompt);
-  return fromStdin(taken);
+  const line = await fromStdin(() => (stdin.ended && !stdin.text ? END : taken()));
+  return line === END ? null : line;
 }
+
+const END = Symbol('the end of the standard input');
 
 export function readAllStdin() {
   return fromStdin(() => {

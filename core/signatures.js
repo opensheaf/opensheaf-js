@@ -28,7 +28,8 @@ const FIELDS = {
 export function readSignatureFile(bytes) {
   let d;
   try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    if (text.charCodeAt(0) === 0xfeff) throw new Error('Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)');
     if (nesting(text) > LIMITS.nesting) throw new Error(`nested deeper than ${LIMITS.nesting} levels`);
     d = JSON.parse(text);
   } catch (error) {

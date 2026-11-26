@@ -174,7 +174,7 @@ with all of them and gives back its status and what it said.
         ask.known = () => true;
         const status = await main(argv, {
           out: (l) => out.push(l), err: (l) => err.push(l), write: (t) => out.push(t.replace(/\n$/, '')),
-          input: async () => box.inputs.shift() ?? '',
+          input: async () => (box.inputs.length ? box.inputs.shift() : ''),
           keyStore: keyStore({ env: environ, warn: (t) => err.push('Warning: ' + t), err: (t) => err.push(t), security }),
           passphrase: ask, cost: COST, environ,
           clipboard: { clearAfter: 60, copy: async (t) => { box.clip = t; }, paste: async () => box.clip,
@@ -279,7 +279,22 @@ Every step leaves an archive without a finding.
         await box.ok([...a.r, 'sign', 'main', '--version', 'v1', '--yes']);
         assert.deepEqual(await errorsOf(box, a), []);
         const k3 = await exported(box, 'k3');
-        const ended = await box.ok([...a.r, 'owner', 'end', '--rotation-key', k3[0], '--rotation-key', k3[1]]);
+        box.inputs.push(null);
+        const closed = await box.run([...a.r, 'owner', 'end', '--rotation-key', k3[0], '--rotation-key', k3[1]]);
+        assert.match(closed.err, /No answer: the standard input is closed \(give --yes to confirm without being asked\)\./);
+        assert.match((await box.run([...a.r, 'collection', 'add', 'main', 'no-such-paper'])).err,
+                     /no line labelled no-such-paper in this archive \(osheaf verify lists them\); a line of another archive is named by its sheaf: URI/);
+        await mkdir(path.join(box.root, 'downloads'));
+        assert.match((await box.run([...a.r, 'arxiv', 'import', path.join(box.root, 'downloads')])).err,
+                     /version-licences\.json: not found: DOWNLOADS is the folder written by osheaf arxiv fetch/);
+        assert.match((await box.run([...a.r, 'arxiv', 'import', path.join(box.root, 'nowhere')])).err,
+                     /nowhere: not a folder \(the folder of osheaf arxiv fetch\)/);
+        await box.ok([...a.r, 'collect', '--i-know']);
+        box.inputs.push('wrong');
+        const unconfirmed = await box.run([...a.r, 'owner', 'end', '--rotation-key', k3[0], '--rotation-key', k3[1]]);
+        assert.match(unconfirmed.out, /This cannot be undone\./);
+        assert.match(unconfirmed.err, /Not confirmed: the owner has not ended\./);
+        const ended = await box.ok([...a.r, 'owner', 'end', '--yes', '--rotation-key', k3[0], '--rotation-key', k3[1]]);
         assert.match(ended.out, /has ended, at v4 of its key log\./);
         const after = await box.run([...a.r, 'deposit', 'paper', '--pdf', path.join(box.root, 'paper.pdf'), '--no-source', 'x',
                                      '--title', 'T', '--author', 'Doe, J', '--changes', 'A version after the end.']);

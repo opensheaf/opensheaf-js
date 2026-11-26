@@ -1,12 +1,12 @@
 // Generated from literate/28-verify-folder.md by opensheaf-literate: edit the document, not this file.
-import { Http, FetchError, nesting, LIMITS } from './http.js';
+import { Http, FetchError, nesting, parseFormat, LIMITS } from './http.js';
 import { Archive } from './archive.js';
 import { verify, Report } from './verify.js';
-import { finding } from './rules.js';
+import { finding, schemaFindings } from './rules.js';
 import { storageFetch, storageLister, readJson, joinPath, ORIGIN } from './storage.js';
 import { ROTATION_FORMAT, SHEET_TITLE } from './keys.js';
 import { unbase64 } from './crypto.js';
-import { objectId, parseId } from './names.js';
+import { objectId, parseId, isObject } from './names.js';
 import { memberPins } from './versions.js';
 import { ArchiveFolder, environment } from './folder.js';
 import { nameAddress } from './deposit.js';
@@ -22,31 +22,53 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
     // a configuration that cannot be read gives no base URL
   }
   const http = new Http({ fetch: storageFetch(storage, base, { fallback: remote ? fetch : null }), budget: null });
-  let report;
+  let archive, unread = null;
   try {
-    const archive = await Archive.open(http, base);
-    archive.lister = storageLister(storage, base);
-    const f = archive.old ? null : await folderOf(storage);
-    if (f) archive.unlisted = await unlistedObjects(f, archive);
-    report = await verify(archive, { schemas, remote, digests, pages: false });
-    if (!archive.old) {
-      if (f) {
-        report.add(...await guarded('the keepers', () => keeperFindings(f, remote, fetchJson)));
-        report.add(...await guarded('the presentation files', () => presentationFindings(f, archive.disc)));
-      }
-    }
+    archive = await Archive.open(http, base);
   } catch (error) {
-    if (!(error instanceof FetchError)) throw error;
-    report = new Report(base, { remote, digests });
-    report.add(finding('error', 'opensheaf.json', error.kind === 'not-found'
+    if (!(error instanceof FetchError) || error.kind === 'aborted') throw error;
+    unread = finding('error', 'opensheaf.json', error.kind === 'not-found'
       ? 'the discovery document is missing (section 3.1)'
       : error.detail === 'is not a JSON object' ? 'the discovery document is a JSON object (section 3.1)'
-        : `not JSON: ${error.detail}`));
+        : await formatProblem(storage, error));
+  }
+  if (archive && !archive.old) {
+    try {
+      parseFormat(await storage.read('opensheaf.json'));
+    } catch (error) {
+      unread = finding('error', 'opensheaf.json', error.message);
+    }
+  }
+  const f = archive?.old ? null : await folderOf(storage);
+  if (unread) {
+    const lenient = archive;
+    archive = new Archive(http, base, { specification: '0.2', storageRoot: 'ocfl/', storageLayout: f?.layout });
+    archive.unreadDiscovery = true;
+    if (lenient) archive.labelOf = (id) => lenient.labelOf(id);
+  }
+  archive.lister = storageLister(storage, base);
+  if (f) archive.unlisted = await unlistedObjects(f, archive);
+  const report = await verify(archive, { schemas, remote, digests, pages: false });
+  if (unread) report.add(unread);
+  if (!archive.old && f) {
+    report.add(...await guarded('the keepers', () => keeperFindings(f, remote, fetchJson, schemas)));
+    report.add(...await guarded('the presentation files', () => presentationFindings(f, unread ? {} : archive.disc)));
+    report.add(...await guarded('the storage root', () => emptyFolders(f, report)));
   }
   if (!report.findings.some((f) => f.message === 'specification 0.1: rebuild (section 16.1)')) {
     report.add(...await lookForKeys(storage));
+    report.add(...await lookForLinks(storage));
   }
   return report;
+}
+
+async function formatProblem(storage, error) {
+  try {
+    parseFormat(await storage.read('opensheaf.json'));
+  } catch (problem) {
+    return problem.message;
+  }
+  return `not JSON: ${error.detail}`;
 }
 
 async function guarded(what, step) {
@@ -81,7 +103,7 @@ export function findingsJson(report) {
   return report.findings.map((f) => ({ severity: f.level, place: f.place, message: f.message }));
 }
 
-export async function keeperFindings(f, remote, fetchJson = null) {
+export async function keeperFindings(f, remote, fetchJson = null, schemas = {}) {
   const out = [];
   for (const { id, dir, inv } of await f.objects()) {
     if (!inv || typeof id !== 'string') continue;
@@ -111,6 +133,7 @@ export async function keeperFindings(f, remote, fetchJson = null) {
       out.push(finding('warning', place, `keeper ${keeper}: not checked (${link.reason})`));
       continue;
     }
+    if (link.document) out.push(...schemaFindings(`${place} keeper ${keeper}`, link.document, schemas['opensheaf-keeper/0.2']));
     out.push(finding('result', place, `keeper ${keeper}: ${link.status} (${link.reason}; section 6.6)`));
     const claim = successorClaim(log, link);
     if (claim) out.push(finding('result', place, `successor ${link.successor} ${claim}`));
@@ -234,10 +257,76 @@ export async function lookForKeys(storage) {
         }
       }
       if (looks) {
-        found.push(finding('warning', path, 'looks like a private key: keys are never kept in an archive (section 15.4)'));
+        found.push(finding('error', path, 'looks like a private key: keys are never kept in an archive (section 15.4)'));
       }
     }
   };
   await walk('');
   return found;
+}
+
+const LINKS_SEARCHED = ['ocfl', 'opensheaf.json', 'objects', 'indexes.json', 'names', 'owners', 'sha512'];
+
+export async function lookForLinks(storage) {
+  const found = [];
+  const say = (path) => found.push(finding('error', path, 'a symbolic link in the archive: never followed (section 15.2)'));
+  const walk = async (dir) => {
+    for (const entry of (await storage.list(dir)) || []) {
+      const path = joinPath(dir, entry.name);
+      if (entry.kind === 'link') say(path);
+      else if (entry.kind === 'dir') await walk(path);
+    }
+  };
+  for (const top of LINKS_SEARCHED) {
+    const kind = await storage.kind(top);
+    if (kind === 'link') say(top);
+    else if (kind === 'dir') await walk(top);
+  }
+  return found;
+}
+
+async function emptyFolders(f, report) {
+  const out = [];
+  const s = f.storage;
+  const leaves = async (dir) => {
+    const entries = ((await s.list(dir)) || []).filter((e) => e.kind !== 'link');
+    if (!entries.length) return [dir];
+    const below = [];
+    for (const e of entries) if (e.kind === 'dir') below.push(...await leaves(joinPath(dir, e.name)));
+    return below;
+  };
+  let rootEmpty = false;
+  const walk = async (dir) => {
+    for (const e of (await s.list(dir)) || []) {
+      if (e.kind !== 'dir') continue;
+      const child = joinPath(dir, e.name);
+      if ((await s.kind(joinPath(child, '0=ocfl_object_1.1'))) === 'file') continue;
+      if (!((await s.list(child)) || []).length) rootEmpty = true;
+      else await walk(child);
+    }
+  };
+  if ((await s.kind('ocfl')) === 'dir') await walk('ocfl');
+  const unread = report.findings.some((x) => x.level === 'error' &&
+    (x.message === 'an object without a readable inventory' || x.message.endsWith('not checked further')));
+  if (unread) {
+    out.push(finding('warning', 'ocfl', 'the storage root as a whole is not given to the OCFL validator: it would read ' +
+                     'the files of the objects that cannot be read'));
+  } else if (rootEmpty) {
+    out.push(finding('error', 'ocfl', 'the OCFL validator rejects the storage root'));
+  }
+  for (const { id, dir, inv } of await f.objects()) {
+    if (!inv || typeof id !== 'string' || !isObject(inv.versions)) continue;
+    const cd = typeof inv.contentDirectory === 'string' ? inv.contentDirectory : 'content';
+    const empty = [];
+    for (const ver of Object.keys(inv.versions).sort((x, y) => (Number(x.slice(1)) || 0) - (Number(y.slice(1)) || 0))) {
+      const content = joinPath(dir, ver, cd);
+      if ((await s.kind(content)) !== 'dir') continue;
+      for (const leaf of await leaves(content)) {
+        empty.push(`[E024] OCFL Object version ${ver} content directory includes empty path /${leaf.slice(dir.length + 1)} ` +
+                   '(see https://ocfl.io/1.1/spec/#E024)');
+      }
+    }
+    if (empty.length) out.push(finding('error', where(f, id), `OCFL validator: ${empty.join('\n')}`));
+  }
+  return out;
 }

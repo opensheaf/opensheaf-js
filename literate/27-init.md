@@ -39,7 +39,7 @@ The module is `core/init.js`.
     import { readRotationKey, rotationKeyText, rotationFileName, rotationKeySheet, sheetCheck, KeyError } from './keys.js';
     import { newOwner, writeKeyLog, jsonText } from './write.js';
     import { writeText } from './storage.js';
-    import { ArchiveFolder, CONFIG_NAME, CONFIG_NAMES, LAYOUTS, exit, stop, short, plural } from './folder.js';
+    import { ArchiveFolder, CONFIG_NAME, CONFIG_NAMES, LAYOUTS, exit, stop, short, plural, ask } from './folder.js';
     import { collect } from './collect.js';
     import { writeDiscovery } from './discovery.js';
     import { readableIndex, TEMPLATES } from './website.js';
@@ -113,7 +113,7 @@ not, nothing is written to the key log, and the owner is not made.
       if (args.yes) return paths;
       env.out('Put the files (or the printed sheets) away, apart from this computer and from each other.');
       for (const key of rotation) {
-        const typed = (await env.input(`Type the check of ${rotationFileName(owner, key)} to confirm: `)).trim().toUpperCase();
+        const typed = (await ask(env, `Type the check of ${rotationFileName(owner, key)} to confirm: `)).trim().toUpperCase();
         if (typed !== await sheetCheck(key.seed)) {
           stop('not confirmed: nothing was written to the key log (the exported files may be deleted)');
         }
@@ -217,6 +217,7 @@ owner-name layout of section 3.2 unless `--layout hashed`.
     # attribute is named, so that no attribute of the user's own settings (a
     # user-wide \`*.pdf filter=lfs\`, for instance) applies to them.
     opensheaf.json -text -filter -ident -working-tree-encoding -export-subst -merge
+    objects/**     -text -filter -ident -working-tree-encoding -export-subst -merge
     ocfl/**        -text -filter -ident -working-tree-encoding -export-subst -merge
     indexes.json   -text -filter -ident -working-tree-encoding -export-subst -merge
     names/**       -text -filter -ident -working-tree-encoding -export-subst -merge

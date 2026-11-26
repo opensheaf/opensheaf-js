@@ -139,7 +139,8 @@ thresholds and the rules of section 6.1, and possibly a keeper and the
 data of extensions; a document's or a collection's originator, an owner
 name. Its numbers are integers as their text writes them, of at most
 2^53 - 1 in absolute value (chapter [10](10-http.md)): a threshold of `1.0`
-is no threshold, as in opensheaf-py. Like every JSON file read, it is
+is no threshold, as in opensheaf-py, which names the number itself
+rather than a record that is not JSON. Like every JSON file read, it is
 nested no deeper than `LIMITS.nesting` (chapter [10](10-http.md)). The
 answer is the record, or an exception saying what is wrong, with the
 words of opensheaf-py.
@@ -147,14 +148,15 @@ words of opensheaf-py.
     // in core/names.js:
     export async function readGenesis(bytes) {
       if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) throw new Error('a genesis record has no byte order mark');
-      let rec;
+      let text;
       try {
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
         if (nesting(text) > LIMITS.nesting) throw new Error(`nested deeper than ${LIMITS.nesting} levels`);
-        rec = parseIntegers(text);
+        JSON.parse(text);
       } catch (error) {
         throw new Error(`a genesis record is JSON in UTF-8 (${error.message})`);
       }
+      const rec = parseIntegers(text);
       if (!isObject(rec) || rec.format !== GENESIS_FORMAT) throw new Error(`not a genesis record of format ${GENESIS_FORMAT}`);
       if (!KINDS.includes(rec.kind)) throw new Error(`unknown kind ${JSON.stringify(rec.kind)}`);
       if (typeof rec.created !== 'string' || !CREATED.test(rec.created)) throw new Error('created must be a date and time in UTC');
@@ -258,8 +260,8 @@ A `sheaf:` URI has, in this order: the scheme and a name; possibly an
 owner part, `:` and an owner name, or `:*` for the work; possibly `/v`
 and a positive number; possibly parameters, of which `sha512` (one, after
 a version, an inventory digest) and `at` (one, after `sha512`, a
-percent-encoded `https` base URL); others are kept and ignored (section
-12.1). Short forms, prefixes of at least 8 characters, are accepted when
+percent-encoded `https` base URL, whose escapes decode to UTF-8); others
+are kept and ignored (section 12.1). Short forms, prefixes of at least 8 characters, are accepted when
 asked (section 12.2), and so are uppercase letters where case is folded.
 The parts are kept as an object; `toString` writes them back, `canonical`
 writes the canonical form (complete parts, no owner part for the
@@ -336,7 +338,12 @@ originator, no `at`).
             uri.sha512 = value;
           } else if (key === 'at') {
             if (seen.includes('at') || !ESCAPED.test(value)) fail('one at, percent-encoded');
-            const at = decodeURIComponent(value);
+            let at;
+            try {
+              at = decodeURIComponent(value);
+            } catch {
+              fail('the percent-escapes of at are not UTF-8');
+            }
             if (!at.startsWith('https://') || !at.endsWith('/')) fail('at is an https URL ending with /');
             uri.at = at;
           } else {

@@ -3,7 +3,7 @@ import { nameOf, LABEL } from './names.js';
 import { sidecarDigest } from './owners.js';
 import { joinPath, readJson } from './storage.js';
 import { writeIndexes, writeDiscovery } from './discovery.js';
-import { OBJ, GENESIS, CONFIG_NAME, exit } from './folder.js';
+import { OBJ, GENESIS, CONFIG_NAME, exit, ask } from './folder.js';
 import { lineOf } from './describe.js';
 import { nameAddress } from './deposit.js';
 
@@ -85,7 +85,7 @@ export async function takedown(f, args) {
   }
   if (!args.reason || !args.reason.trim()) exit('a takedown needs --reason, a plain text (section 13.3)');
   if (!args.yes) {
-    const typed = (await env.input(`take down ${id} for good? type ${name.slice(0, 8)} to confirm: `)).trim();
+    const typed = (await ask(env, `take down ${id} for good? type ${name.slice(0, 8)} to confirm: `)).trim();
     if (typed !== name.slice(0, 8)) exit('not confirmed: nothing was taken down');
   }
   const genesis = await f.readLogical(dir, inv, GENESIS, 'v1');

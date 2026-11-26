@@ -1,8 +1,8 @@
 // Generated from literate/10-http.md by opensheaf-literate: edit the document, not this file.
 export const LIMITS = {
-  json: 16 * 2 ** 20,      // a JSON file: discovery document, inventory, object.json, members.json
+  json: 16 * 2 ** 20,      // a JSON file: discovery document, page, inventory, checksum file, witness (opensheaf-py's MAX_JSON)
   page: 16 * 2 ** 20,      // the index page, read for the check of the presentation
-  file: 512 * 2 ** 20,     // a content file whose digest is checked
+  file: 2 ** 30,           // a content file of an object: key-log files, evidence, documents (opensheaf-py's MAX_BYTES)
   large: 32 * 2 ** 20,     // a body larger than this is read alone, one at a time
   cache: 64 * 2 ** 20,     // bytes of answers kept by one client
   timeout: 60_000,         // milliseconds to wait for the headers of an answer
@@ -513,12 +513,12 @@ const INTEGER = /^-?(?:0|[1-9][0-9]*)$/;
 const EXACT = 2n ** 53n - 1n;
 
 export function numberProblem(token) {
-  if (!INTEGER.test(token)) return `the number ${token} is not an integer`;
+  if (!INTEGER.test(token)) return `the number ${token} is not an integer written without a fraction or an exponent (section 2)`;
   const n = BigInt(token);
-  return n > EXACT || n < -EXACT ? `the integer ${token} has no exact form in JSON (section 2)` : null;
+  return n > EXACT || n < -EXACT ? `the number ${token} is beyond 2^53 - 1 (section 2)` : null;
 }
 
-export function numberTokens(text) {
+export function numberTokens(text, { constants = false } = {}) {
   const tokens = [];
   let inString = false;
   for (let k = 0; k < text.length; k++) {
@@ -527,7 +527,11 @@ export function numberTokens(text) {
       if (c === '\\') k++;
       else if (c === '"') inString = false;
     } else if (c === '"') inString = true;
-    else if (c === '-' || (c >= '0' && c <= '9')) {
+    else if (constants && /^-?(NaN|Infinity)/.test(text.slice(k, k + 9))) {
+      const word = /^-?(NaN|Infinity)/.exec(text.slice(k, k + 9))[0];
+      tokens.push(word);
+      k += word.length - 1;
+    } else if (c === '-' || (c >= '0' && c <= '9')) {
       let end = k;
       while (end < text.length && /[-+.eE0-9]/.test(text[end])) end++;
       tokens.push(text.slice(k, end));
@@ -559,6 +563,67 @@ export function parseIntegers(text, { source = HAS_SOURCE } = {}) {
     if (typeof value === 'number') check(context.source);
     return value;
   });
+}
+
+const BOM_MESSAGE = 'JSON is UTF-8 without a byte order mark, and this file starts with one (section 2)';
+
+export function parseFormat(bytes) {
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) throw new Error(BOM_MESSAGE);
+  const bad = utf8Problem(bytes);
+  if (bad) throw new Error(`JSON is UTF-8, and this file is not (${bad}) (section 2)`);
+  const text = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes);
+  if (nesting(text) > LIMITS.nesting) throw new Error(`JSON nested more than ${LIMITS.nesting} levels deep`);
+  class Bad {
+    constructor(token) {
+      this.problem = numberProblem(token);
+    }
+  }
+  let value;
+  try {
+    value = HAS_SOURCE
+      ? JSON.parse(text, (key, v, context) => (typeof v === 'number' && numberProblem(context.source) ? new Bad(context.source) : v))
+      : JSON.parse(text);
+  } catch (error) {
+    const constant = numberTokens(text, { constants: true }).find((t) => /^-?(NaN|Infinity)$/.test(t));
+    if (constant) throw new Error(numberProblem(constant));
+    throw new Error(`not JSON (${error.message})`);
+  }
+  if (!HAS_SOURCE) {
+    const token = numberTokens(text).find((t) => numberProblem(t));
+    if (token) throw new Error(numberProblem(token));
+    return value;
+  }
+  const todo = [value];
+  while (todo.length) {
+    const v = todo.pop();
+    if (v instanceof Bad) throw new Error(v.problem);
+    if (v !== null && typeof v === 'object') todo.push(...(Array.isArray(v) ? v : Object.values(v)));
+  }
+  return value;
+}
+
+export function utf8Problem(bytes) {
+  const say = (start, end, why) => (end - start === 1
+    ? `'utf-8' codec can't decode byte 0x${bytes[start].toString(16).padStart(2, '0')} in position ${start}: ${why}`
+    : `'utf-8' codec can't decode bytes in position ${start}-${end - 1}: ${why}`);
+  for (let k = 0; k < bytes.length;) {
+    const b = bytes[k];
+    if (b < 0x80) {
+      k++;
+      continue;
+    }
+    const size = b >= 0xc2 && b <= 0xdf ? 2 : b >= 0xe0 && b <= 0xef ? 3 : b >= 0xf0 && b <= 0xf4 ? 4 : 0;
+    if (!size) return say(k, k + 1, 'invalid start byte');
+    const [low, high] = b === 0xe0 ? [0xa0, 0xbf] : b === 0xed ? [0x80, 0x9f] : b === 0xf0 ? [0x90, 0xbf]
+      : b === 0xf4 ? [0x80, 0x8f] : [0x80, 0xbf];
+    for (let j = 1; j < size; j++) {
+      if (k + j >= bytes.length) return say(k, bytes.length, 'unexpected end of data');
+      const c = bytes[k + j];
+      if (j === 1 ? c < low || c > high : c < 0x80 || c > 0xbf) return say(k, k + j, 'invalid continuation byte');
+    }
+    k += size;
+  }
+  return null;
 }
 
 export async function sha512(bytes) {

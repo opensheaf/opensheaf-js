@@ -129,6 +129,12 @@ export class Resolver {
           this.note('warning', `unavailable: ${where}: ${archive.pageProblems[0]}`);
           return null;
         }
+        if (archive.rootRefused) {
+          const root = archive.disc.storageRoot;
+          this.note('warning', `unavailable: ${where}: the storage root ` +
+                    `${typeof root === 'string' ? `'${root}'` : JSON.stringify(root)} is not a relative path below the archive`);
+          return null;
+        }
         return archive;
       }, (error) => {
         if (error?.kind === 'aborted') {
@@ -201,9 +207,7 @@ export class Resolver {
         }
         if (archive.old || archive.disc.specification !== '0.2') continue;
       }
-      const root = archive.disc.storageRoot ?? 'ocfl/';
-      if (typeof root !== 'string' || root.includes(':') || !root.endsWith('/') ||
-          root.slice(0, -1).split('/').some((x) => ['', '.', '..'].includes(x)) || root.includes('\\')) continue;
+      if (archive.rootRefused) continue;
       if (whole.startsWith(archive.root) && whole.length > archive.root.length) {
         this.archives.set(base, Promise.resolve(archive));
         out.push(base);
@@ -488,7 +492,7 @@ export class Resolver {
 
   async expand(u, where, options = {}) {
     if (u.isComplete() && u.owner !== null) return [u.name, u.owner];
-    const candidates = new Set();
+    const candidates = new Map();
     for (const w of this.places(where)) {
       const archive = await this.source(w, options);
       if (!archive) continue;
@@ -498,15 +502,23 @@ export class Resolver {
         if (u.owner === null) {
           if (o.kind === 'owner' ? name !== owner : await this.originator(archive, o.id, options) !== owner) continue;
         }
-        candidates.add(`${name} ${owner}`);
+        if (!candidates.has(`${name} ${owner}`)) candidates.set(`${name} ${owner}`, { archive, o });
       }
     }
     if (candidates.size !== 1) {
-      const listed = [...candidates].sort().map((c) => `  sheaf:${c.replace(' ', ':')}`).join('\n');
+      const lines = [];
+      for (const c of [...candidates.keys()].sort()) {
+        const [name, owner] = c.split(' ');
+        const { archive, o } = candidates.get(c);
+        const originator = u.owner === null || o.kind === 'owner' ? owner
+          : (await this.originator(archive, o.id, options)) ?? 'not read';
+        lines.push(`  sheaf:${name}:${owner}  originator ${originator}`);
+      }
+      const listed = lines.join('\n');
       throw new Error(`${u}: ` + (candidates.size ? 'ambiguous, the candidates are:\n' + listed
         : 'no line of that name in the archives read'));
     }
-    return [...candidates][0].split(' ');
+    return [...candidates.keys()][0].split(' ');
   }
 
   async originator(archive, id, options = {}) {

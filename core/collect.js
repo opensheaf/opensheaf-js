@@ -3,7 +3,7 @@ import { currentVersion, dateOf } from './versions.js';
 import { same } from './schema.js';
 import { joinPath } from './storage.js';
 import { jsonBytes, sha512hex } from './write.js';
-import { OBJ, OBJ_FORMAT, GENESIS, SPEC, CATALOGUE_LABEL, plural, short, exit } from './folder.js';
+import { OBJ, OBJ_FORMAT, GENESIS, SPEC, CATALOGUE_LABEL, CannotSign, plural, short, exit, stop } from './folder.js';
 import { objectId } from './names.js';
 import { writeDiscovery } from './discovery.js';
 import { displayName, RIGHTS } from './deposit.js';
@@ -51,11 +51,33 @@ export function catalogueLabel(f, owner) {
   return own && own.length <= 64 - '-catalogue'.length ? `${own}-catalogue` : null;
 }
 
-export async function collect(f, { owner = null, curated = false, iKnow = false } = {}) {
+export async function collect(f, { owner = null, curated = false, iKnow = false, present = null } = {}) {
   await f.initStorageRoot();
   if (owner && !f.archiveOwners().includes(owner)) exit(`${owner} is not an owner this archive hosts`);
+  if (owner) return collectOwner(f, owner, { curated, iKnow });
   let last = null;
-  for (const o of owner ? [owner] : f.archiveOwners()) last = (await collectOwner(f, o, { curated, iKnow })) ?? last;
+  const skipped = [];
+  for (const o of f.archiveOwners()) {
+    const noted = [new Map(f.labels), new Map(f.catalogues)];
+    try {
+      last = (await collectOwner(f, o, { curated, iKnow })) ?? last;
+    } catch (error) {
+      if (!(error instanceof CannotSign)) throw error;
+      for (const [now, before] of [[f.labels, noted[0]], [f.catalogues, noted[1]]]) {
+        now.clear();
+        for (const [k, v] of before) now.set(k, v);
+      }
+      skipped.push(o);
+      f.env.warn(`skipped the owner catalogue of ${short(o)}: ${error.reason}; osheaf collect --owner ${o} ` +
+                 'collects it on a computer that holds its keys');
+    }
+  }
+  if (skipped.length) {
+    if (present) await present(f);
+    stop(`${plural(skipped.length, 'owner catalogue')} not collected (${skipped.map(short).join(', ')}): this ` +
+         `computer does not hold the keys to sign for ${skipped.length === 1 ? 'it' : 'them'}; the others are ` +
+         'collected and the website is written');
+  }
   return last;
 }
 

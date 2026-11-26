@@ -216,9 +216,27 @@ below. The tests pass `engine: 'webcrypto'` to verify the equation with
 WebCrypto instead, to compare the two; a key or a signature that WebCrypto
 refuses to read is then a signature that does not verify.
 
+A verification reads one signature file several times (the check of the
+line, of a branch point that pins it, of a member), so the answers of
+the verifier of its own are kept, by key, message and signature, as
+opensheaf-py keeps them during one `osheaf verify` (its issue #6): the
+answer is a function of the three, so keeping it changes no finding. At
+most `REMEMBERED` answers are kept; the store is emptied when full.
+
     // in core/crypto.js:
+    const REMEMBERED = 4096;
+    const remembered = new Map();
+
     export async function verifyEd25519(publicKey, message, signature, { engine = 'js' } = {}) {
       if (!strictlyAcceptable(publicKey, signature)) return false;
+      if (engine === 'js') {
+        const key = [publicKey, signature, message].map((b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')).join(' ');
+        if (remembered.has(key)) return remembered.get(key);
+        if (remembered.size >= REMEMBERED) remembered.clear();
+        const answer = await verifyInJs(publicKey, message, signature);
+        remembered.set(key, answer);
+        return answer;
+      }
       if (engine === 'webcrypto') {
         try {
           const key = await subtle().importKey('raw', publicKey, { name: 'Ed25519' }, false, ['verify']);

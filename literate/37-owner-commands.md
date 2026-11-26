@@ -52,7 +52,7 @@ The module is `core/owner.js`.
     import { signatureFile, sha512hex, writeKeyLog, jsonText } from './write.js';
     import { joinPath, readJson, writeText } from './storage.js';
     import { collect } from './collect.js';
-    import { stop, exit, short, plural, CONFIG_NAME, OBJ } from './folder.js';
+    import { stop, exit, short, plural, ask, CONFIG_NAME, OBJ } from './folder.js';
     import { rotate, end, pull, describeLog, loadKeyLog, checked, completeOrphan, OwnerError } from './keylogs.js';
     import { keeperLink, keeperOf, successorClaim, NOT_CHECKED } from './keepers.js';
     import { WalletError, parseWallet, configuredWallet, archiveRepositories, putKey, getKey, readAny,
@@ -182,7 +182,7 @@ The words of the commands
 
     async function confirmed(env, word, args = null) {
       if (args?.yes) return true;
-      return (await env.input(`Type ${word} to confirm: `)).trim() === word;
+      return (await ask(env, `Type ${word} to confirm: `)).trim() === word;
     }
 
     function walletStop(error) {
@@ -522,6 +522,11 @@ exposing keys if asked.
       const successor = args.successor ?? null;
       if (successor !== null && !OWNER_NAME.test(successor)) stop(`the successor is an owner name: ${successor}`);
       if (!log.latest()) stop(`the owner ${who} has ended (section 6.3): its key log takes no new version`);
+      if (!args.yes) {
+        f.env.out(`Ending the owner ${who}: its key log takes no new version after this one, and nothing is ` +
+                  'signed for it again (section 6.3). This cannot be undone.');
+        if (!(await confirmed(f.env, owner.slice(0, 8)))) stop('not confirmed: the owner has not ended');
+      }
       const [signers] = await rotationSigners(f, args, owner, log.latest());
       let v;
       try {

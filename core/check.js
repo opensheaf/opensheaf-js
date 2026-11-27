@@ -11,6 +11,8 @@ import { memberPins } from './versions.js';
 import { ArchiveFolder, environment } from './folder.js';
 import { nameAddress } from './deposit.js';
 import { keeperOf, keeperLink, successorClaim, NOT_CHECKED } from './keepers.js';
+import { pathOf } from './paths.js';
+import { validateObject, validateStorageRoot } from './ocfl.js';
 
 export async function verifyFolder(storage, { schemas, remote = false, fetch = globalThis.fetch,
                                               digests = true, fetchJson = null } = {}) {
@@ -53,7 +55,7 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
   if (!archive.old && f) {
     report.add(...await guarded('the keepers', () => keeperFindings(f, remote, fetchJson, schemas)));
     report.add(...await guarded('the presentation files', () => presentationFindings(f, unread ? {} : archive.disc)));
-    report.add(...await guarded('the storage root', () => emptyFolders(f, report)));
+    report.add(...await guarded('the storage root', () => ocflFindings(f, report)));
   }
   if (!report.findings.some((f) => f.message === 'specification 0.1: rebuild (section 16.1)')) {
     report.add(...await lookForKeys(storage));
@@ -285,48 +287,50 @@ export async function lookForLinks(storage) {
   return found;
 }
 
-async function emptyFolders(f, report) {
-  const out = [];
+async function ocflFindings(f, report) {
   const s = f.storage;
-  const leaves = async (dir) => {
-    const entries = ((await s.list(dir)) || []).filter((e) => e.kind !== 'link');
-    if (!entries.length) return [dir];
-    const below = [];
-    for (const e of entries) if (e.kind === 'dir') below.push(...await leaves(joinPath(dir, e.name)));
-    return below;
-  };
-  let rootEmpty = false;
-  const walk = async (dir) => {
-    for (const e of (await s.list(dir)) || []) {
-      if (e.kind !== 'dir') continue;
-      const child = joinPath(dir, e.name);
-      if ((await s.kind(joinPath(child, '0=ocfl_object_1.1'))) === 'file') continue;
-      if (!((await s.list(child)) || []).length) rootEmpty = true;
-      else await walk(child);
+  if (typeof s.stream !== 'function' || (await s.kind('ocfl')) !== 'dir') return [];
+  const out = [];
+  const found = new Map();
+  let unread = 0;
+  const checkedNoFurther = (id) => report.findings.some((x) => x.level === 'error' && x.object === id &&
+    (x.message.endsWith('nor the object checked further') || x.message.endsWith('section 2: not checked further')));
+  for (const { id, dir, inv } of await f.objects()) {
+    if (!isObject(inv) || id === null || id === undefined) {
+      unread++;
+      continue;
     }
-  };
-  if ((await s.kind('ocfl')) === 'dir') await walk('ocfl');
-  const unread = report.findings.some((x) => x.level === 'error' &&
-    (x.message === 'an object without a readable inventory' || x.message.endsWith('not checked further')));
+    try {
+      await pathOf(id, f.layout);
+    } catch {
+      continue;
+    }
+    found.set(id, dir);
+    if (inventoryProblem(inv) || checkedNoFurther(id)) {
+      found.delete(id);
+      unread++;
+    }
+  }
+  for (const [id, dir] of found) {
+    const { valid, log } = await validateObject(s, dir);
+    if (!valid) out.push(finding('error', where(f, id), `OCFL validator: ${log.statusStr()}`));
+  }
   if (unread) {
     out.push(finding('warning', 'ocfl', 'the storage root as a whole is not given to the OCFL validator: it would read ' +
                      'the files of the objects that cannot be read'));
-  } else if (rootEmpty) {
+  } else if (!(await validateStorageRoot(s, 'ocfl', { validateObjects: false })).valid) {
     out.push(finding('error', 'ocfl', 'the OCFL validator rejects the storage root'));
   }
-  for (const { id, dir, inv } of await f.objects()) {
-    if (!inv || typeof id !== 'string' || !isObject(inv.versions)) continue;
-    const cd = typeof inv.contentDirectory === 'string' ? inv.contentDirectory : 'content';
-    const empty = [];
-    for (const ver of Object.keys(inv.versions).sort((x, y) => (Number(x.slice(1)) || 0) - (Number(y.slice(1)) || 0))) {
-      const content = joinPath(dir, ver, cd);
-      if ((await s.kind(content)) !== 'dir') continue;
-      for (const leaf of await leaves(content)) {
-        empty.push(`[E024] OCFL Object version ${ver} content directory includes empty path /${leaf.slice(dir.length + 1)} ` +
-                   '(see https://ocfl.io/1.1/spec/#E024)');
-      }
-    }
-    if (empty.length) out.push(finding('error', where(f, id), `OCFL validator: ${empty.join('\n')}`));
-  }
   return out;
+}
+
+function inventoryProblem(inv) {
+  const pathsMap = (m) => isObject(m) && Object.values(m).every((v) =>
+    Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === 'string'));
+  if (!pathsMap(inv.manifest)) return true;
+  const versions = inv.versions;
+  if (!isObject(versions) || !Object.keys(versions).length || !Object.values(versions).every(isObject)) return true;
+  if (typeof inv.head !== 'string' || !Object.hasOwn(versions, inv.head)) return true;
+  return Object.values(versions).some((v) => !pathsMap(v.state) || ('user' in v && !isObject(v.user)) ||
+    ('message' in v && typeof v.message !== 'string') || ('created' in v && typeof v.created !== 'string'));
 }

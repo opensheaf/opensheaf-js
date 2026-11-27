@@ -20,6 +20,9 @@ The tests are written with `node:test` and `node:assert`, which both
 - `tests/services.test.js` (chapter [75](75-tests-services.md)): arXiv
   and Zenodo, against doubles of both: the metadata, the e-prints, an
   import, deposits, a deposit interrupted and completed.
+- `tests/ocfl.test.js` (chapter [77](77-tests-ocfl.md)): the OCFL
+  validator, on the fixtures of the OCFL editors and on storage roots
+  made here, and against ocfl-py.
 
 `deno task test` runs them all (`deno test -A tests/`).
 

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { checkPath, compareText, StorageError } from '../core/storage.js';
 
 const MISSING = ['ENOENT', 'ENOTDIR'];
+const PIECE = 4 * 2 ** 20;
 let temporaries = 0;
 
 export class DiskStorage {
@@ -49,6 +50,32 @@ export class DiskStorage {
       if (MISSING.includes(error.code)) return null;
       throw error;
     }
+  }
+
+  async stream(p) {
+    const f = this.full(checkPath(p));
+    try {
+      if (await this.linked(p)) return null;
+      if (!(await fs.lstat(f)).isFile()) return null;
+    } catch (error) {
+      if (MISSING.includes(error.code)) return null;
+      throw error;
+    }
+    return (async function* () {
+      const handle = await fs.open(f, 'r');
+      try {
+        let left = (await handle.stat()).size;
+        for (;;) {
+          const buffer = new Uint8Array(Math.min(PIECE, left + 1));
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+          if (!bytesRead) return;
+          left = Math.max(0, left - bytesRead);
+          yield buffer.subarray(0, bytesRead);
+        }
+      } finally {
+        await handle.close();
+      }
+    })();
   }
 
   async write(p, bytes, { exclusive = false } = {}) {

@@ -50,7 +50,13 @@ part of it; the new file has the usual permissions (those the umask
 leaves). Its name is made of the process, the time and a count, not drawn
 from the generator of nonces, which the tests make repeatable. A file
 written exclusively is created in place, the system
-refusing it if it exists.
+refusing it if it exists. A file is also read in pieces of at most 4 MiB
+(`stream`), for the digests of the OCFL validator, which reads every
+content file whatever its size; the file is opened when the first piece
+is asked for, and closed after the last, or when the reader stops. A
+piece is no larger than what is left of the file as its size was when it
+was opened (and one byte more, to see the end): most files are small, and
+a buffer of 4 MiB for each would cost more than reading them.
 
     // in cli/disk.js:
     import { promises as fs } from 'node:fs';
@@ -59,6 +65,7 @@ refusing it if it exists.
     import { checkPath, compareText, StorageError } from '../core/storage.js';
 
     const MISSING = ['ENOENT', 'ENOTDIR'];
+    const PIECE = 4 * 2 ** 20;
     let temporaries = 0;
 
     export class DiskStorage {
@@ -103,6 +110,32 @@ refusing it if it exists.
           if (MISSING.includes(error.code)) return null;
           throw error;
         }
+      }
+
+      async stream(p) {
+        const f = this.full(checkPath(p));
+        try {
+          if (await this.linked(p)) return null;
+          if (!(await fs.lstat(f)).isFile()) return null;
+        } catch (error) {
+          if (MISSING.includes(error.code)) return null;
+          throw error;
+        }
+        return (async function* () {
+          const handle = await fs.open(f, 'r');
+          try {
+            let left = (await handle.stat()).size;
+            for (;;) {
+              const buffer = new Uint8Array(Math.min(PIECE, left + 1));
+              const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+              if (!bytesRead) return;
+              left = Math.max(0, left - bytesRead);
+              yield buffer.subarray(0, bytesRead);
+            }
+          } finally {
+            await handle.close();
+          }
+        })();
       }
 
       async write(p, bytes, { exclusive = false } = {}) {

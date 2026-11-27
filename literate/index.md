@@ -103,81 +103,85 @@ Keeping an archive
 21. [A new owner, a new archive](27-init.md).
 22. [Verifying an archive folder](28-verify-folder.md), with the
     presentation and the keepers checked as opensheaf-py checks them.
-23. [Descriptions](29-description.md): notices, withdrawals, completions,
+23. [An OCFL validator](50-ocfl.md): a port of ocfl-py, for the objects
+    and the storage root, with its messages.
+24. [Descriptions](29-description.md): notices, withdrawals, completions,
     related works, licences and corrections.
-24. [Collections](30-collections.md): catalogues and selections, with
+25. [Collections](30-collections.md): catalogues and selections, with
     members of any archive.
-25. [The website](31-website.md): home page, landing pages, owner pages
+26. [The website](31-website.md): home page, landing pages, owner pages
     and sitemap, from opensheaf-py's templates.
-26. [Keepers](32-keepers.md): the link of an owner to its keeper.
-27. [Options from files](33-inputs.md): `--from FILE`, YAML or JSON.
+27. [Keepers](32-keepers.md): the link of an owner to its keeper.
+28. [Options from files](33-inputs.md): `--from FILE`, YAML or JSON.
 
 Owners and keys
 ---------------
 
-28. [Key logs, changed](34-key-logs.md): rotating, exposing, ending, fork
+29. [Key logs, changed](34-key-logs.md): rotating, exposing, ending, fork
     records, copies met, key logs read from folders.
-29. [Key wallets](35-wallets.md): a private GitHub repository through
+30. [Key wallets](35-wallets.md): a private GitHub repository through
     GitHub's API, or commands of the user's.
-30. [Passkey unlock](36-passkeys.md): the hand-off from
+31. [Passkey unlock](36-passkeys.md): the hand-off from
     `unlock.opensheaf.org`, X25519 and HKDF with WebCrypto.
-31. [The commands of owners and keys](37-owner-commands.md): `owner`,
+32. [The commands of owners and keys](37-owner-commands.md): `owner`,
     `key`, `sign`, `init --owner`.
 
 Across archives
 ---------------
 
-32. [Resolution and mirrors](38-mirrors.md): `resolve`, objects copied
+33. [Resolution and mirrors](38-mirrors.md): `resolve`, objects copied
     from other archives, `mirror`.
-33. [Branches and accepted copies](39-branches-kept.md): `branch`,
+34. [Branches and accepted copies](39-branches-kept.md): `branch`,
     `accept`.
-34. [Drafts and sealing](41-drafts.md): `draft`, `seal`.
-35. [Takedowns and tombstones](42-takedown.md): `takedown`, the return of
+35. [Drafts and sealing](41-drafts.md): `draft`, `seal`.
+36. [Takedowns and tombstones](42-takedown.md): `takedown`, the return of
     a line.
 
 Services
 --------
 
-36. [Importing from arXiv: fetching](43-arxiv.md): the downloads folder,
+37. [Importing from arXiv: fetching](43-arxiv.md): the downloads folder,
     arXiv asked politely.
-37. [Importing from arXiv: the metadata](44-arxiv-metadata.md): the
+38. [Importing from arXiv: the metadata](44-arxiv-metadata.md): the
     record, names, titles and abstracts from TeX, licences.
-38. [Importing from arXiv: the signed versions](45-arxiv-import.md):
+39. [Importing from arXiv: the signed versions](45-arxiv-import.md):
     e-prints unpacked, one sealed line per paper, `arxiv import`.
-39. [Zenodo: DOIs for document versions](46-zenodo.md): a version built
+40. [Zenodo: DOIs for document versions](46-zenodo.md): a version built
     and signed before Zenodo publishes it, `sources.zip`, the sandbox.
 
 The Manager
 -----------
 
-40. [A storage over GitHub](47-github-storage.md): the head of a branch
+41. [A storage over GitHub](47-github-storage.md): the head of a branch
     read through its tree, blobs checked by their git names, a mirror,
     and every command one commit, never forced.
-41. [The requests of a page](48-requests.md): the archive template's
+42. [The requests of a page](48-requests.md): the archive template's
     script, which carries out the forms, in JavaScript.
-42. [The Manager's core](49-manager.md): the keys a passkey unlocks,
+43. [The Manager's core](49-manager.md): the keys a passkey unlocks,
     kept unexportable, a request written directly, the bundle.
 
 The command line
 ----------------
 
-43. [The command line](40-cli.md): a folder on a disk, the keys of this
+44. [The command line](40-cli.md): a folder on a disk, the keys of this
     device (files, the macOS keychain), the clipboard, the listener of
     the passkey hand-off, the tokens of Zenodo, the commands.
 
 The tests
 ---------
 
-44. [The tests](70-tests.md): storages, files, key files, an archive in
+45. [The tests](70-tests.md): storages, files, key files, an archive in
     memory, owners, wallets and passkeys.
-45. [The tests of names, keys and signatures](71-tests-identity.md),
+46. [The tests of names, keys and signatures](71-tests-identity.md),
     against appendix C and the edge cases of Ed25519.
-46. [The tests of parity with opensheaf-py](72-tests-parity.md).
-47. [The tests across archives](74-tests-across.md): resolution, mirrors,
+47. [The tests of parity with opensheaf-py](72-tests-parity.md).
+48. [The tests across archives](74-tests-across.md): resolution, mirrors,
     branches, drafts and takedowns, by both programs.
-48. [The tests of the services](75-tests-services.md): arXiv and Zenodo,
+49. [The tests of the services](75-tests-services.md): arXiv and Zenodo,
     against doubles, by both programs.
-49. [The tests of GitHub and the requests](76-tests-github.md): the
+50. [The tests of GitHub and the requests](76-tests-github.md): the
     storage against a double of GitHub, the same requests on a disk and
     on GitHub, by the template's script and by this program, and the
     Manager's core.
+51. [The tests of the OCFL validator](77-tests-ocfl.md): the fixtures of
+    the OCFL editors, storage roots, and ocfl-py on the same files.

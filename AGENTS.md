@@ -54,7 +54,8 @@ To make a change:
   and the outside world through the environment of chapter 23. The only
   packages are `hash-wasm`, `tweetnacl`, `yaml` and `pako` (pinned in
   `deno.json` and `package.json`), imported by bare name and only where a
-  key file is encrypted or decrypted, MD5 computed, a YAML file read, a
+  key file is encrypted or decrypted, MD5 computed, a file digested as it
+  is read (the OCFL validator, `core/ocfl.js`), a YAML file read, a
   secret sealed for GitHub's Actions (`web/manager.js`), or a
   `sources.zip` compressed (zlib's bytes, which no runtime's own zlib
   gives everywhere).

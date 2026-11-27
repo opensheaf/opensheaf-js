@@ -89,7 +89,9 @@ signatures of a line exactly as a verification does.
 kept outside an archive, are not in WebCrypto. They come from
 `hash-wasm` 4.12.0 and `tweetnacl` 1.0.3, pinned, loaded only when a key
 file is encrypted or decrypted (chapter [21](21-keys.md) says why these
-two). `hash-wasm` also gives MD5, for the fixity of OCFL inventories.
+two). `hash-wasm` also gives MD5, for the fixity of OCFL inventories,
+and digests computed as a file is read, piece by piece, for the OCFL
+validator (chapter [50](50-ocfl.md)), which WebCrypto cannot do.
 YAML, read by `--from FILE` and `osheaf collection sync`, comes from
 `yaml` 2.8.1, pinned the same way and loaded only when a YAML file is read
 (chapter [33](33-inputs.md)). Deflate, for the `sources.zip` of a deposit on
@@ -390,10 +392,12 @@ Where the two differ:
   included, into a mirror or the evidence of a branch, while this program,
   which reaches such a folder through its `fetch`, copies the signature
   files only. The archive's own witness folders are listed by both.
-- **The OCFL validator.** opensheaf-py also runs `ocfl-py` when it is
-  installed; this program makes the checks of OCFL that OpenSheaf relies
-  on itself (chapter [28](28-verify-folder.md)), and reports an object at
-  a path other than its identifier gives as not listed, where
+- **The OCFL validator.** opensheaf-py runs `ocfl-py` when it is
+  installed; this program runs its port (chapter [50](50-ocfl.md)) on the
+  disk of the command line, with the same messages, but not in the
+  Manager, whose storage over GitHub would have to download every file of
+  the archive (chapter [28](28-verify-folder.md)). An object at a path
+  other than its identifier gives is reported as not listed, where
   opensheaf-py says where it is.
 - **Quoting in two messages.** A `sheaf:` URI that cannot be read is
   quoted in opensheaf-py's message (Python's `repr`), and not here (the

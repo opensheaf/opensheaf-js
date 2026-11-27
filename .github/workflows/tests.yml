@@ -37,7 +37,7 @@ jobs:
           node-version: "24"
       - run: npm ci
       - name: the tests of the core under Node
-        run: node --test tests/core.test.js tests/identity.test.js tests/owners.test.js tests/services.test.js tests/github.test.js
+        run: node --test tests/core.test.js tests/identity.test.js tests/owners.test.js tests/services.test.js tests/github.test.js tests/ocfl.test.js
       - run: node cli/osheaf.js --version
   weave:
     runs-on: ubuntu-latest

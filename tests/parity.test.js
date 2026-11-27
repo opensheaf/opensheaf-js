@@ -1537,6 +1537,59 @@ test('the checks of the final review, by both', { skip }, async () => {
   }
 });
 
+test('the OCFL validator on broken copies, by both', { skip }, async () => {
+  const s = await across();
+  try {
+    const arch = await archiveBy(s, 'py', 'ocfl');
+    await paper(s, 'py', arch, 'paper', 'one', ['--new']);
+    await paper(s, 'py', arch, 'paper', 'two', ['--changes', 'Second.']);
+    ok(s.py(['collect'], { cwd: arch }), 'py collect');
+    const id = await idOf(arch, 'paper'), [, name, owner] = id.split(':');
+    const dir = (root) => path.join(root, 'ocfl', owner, name);
+    const put = async (file, text = 'x') => {
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, text);
+    };
+    const cases = {
+      'a file in the root of an object': [/\[E001a\] OCFL Object root contains unexpected file: stray.txt/,
+        (r) => put(path.join(dir(r), 'stray.txt'))],
+      'a folder that looks like a version': [/\[E046b\]/, (r) => put(path.join(dir(r), 'v9', 'f'))],
+      'a file in a version folder': [/\[E015\]/, (r) => put(path.join(dir(r), 'v1', 'stray.txt'))],
+      'a file of the content not in the manifest': [/\[E023a\]/, (r) => put(path.join(dir(r), 'v1', 'content', 'extra.txt'))],
+      'a file in the extensions folder of an object': [/\[E067\]/, (r) => put(path.join(dir(r), 'extensions', 'stray.txt'))],
+      'a version inventory that is not JSON': [/\[E033\] OCFL Object v1 inventory is not valid JSON \(.*: line \d+ column \d+ \(char \d+\)\)/,
+        async (r) => {
+          const file = path.join(dir(r), 'v1', 'inventory.json');
+          const text = await readFile(file, 'utf-8');
+          await writeFile(file, text.slice(0, text.length >> 1));
+        }],
+      'a content file changed': [/\[E092a\]/, async (r) => {
+        const inv = JSON.parse(await readFile(path.join(dir(r), 'inventory.json'), 'utf-8'));
+        const file = path.join(dir(r), Object.values(inv.manifest).flat().find((p) => p.endsWith('.pdf')));
+        await writeFile(file, Buffer.concat([await readFile(file), Buffer.from('x')]));
+      }],
+      'a file between the storage root and the objects': [/ocfl: the OCFL validator rejects the storage root/,
+        (r) => put(path.join(r, 'ocfl', owner, 'stray.txt'))],
+      'an empty folder down the storage root': [/ocfl: the OCFL validator rejects the storage root/,
+        (r) => mkdir(path.join(r, 'ocfl', 'x', 'y'), { recursive: true })],
+      'a file in the extensions folder of the storage root': [/ocfl: the OCFL validator rejects the storage root/,
+        (r) => put(path.join(r, 'ocfl', 'extensions', 'stray.txt'))],
+      'a logs folder': [null, (r) => put(path.join(dir(r), 'logs', 'a log.txt'))],
+    };
+    for (const [what, [expected, breakIt]] of Object.entries(cases)) {
+      const copy = path.join(s.root, 'broken');
+      await rm(copy, { recursive: true, force: true });
+      await cp(arch, copy, { recursive: true });
+      await breakIt(copy);
+      const found = verified(s, copy);
+      if (expected) assert.ok(found.some((f) => expected.test(f)), `${what}:\n${found.join('\n')}`);
+      else assert.ok(!found.some((f) => /OCFL validator/.test(f)), `${what}:\n${found.join('\n')}`);
+    }
+  } finally {
+    await s.done();
+  }
+});
+
 import { main as jsMain } from '../cli/osheaf.js';
 
 const FAKE_TOKEN = 'fake-token-of-the-tests';

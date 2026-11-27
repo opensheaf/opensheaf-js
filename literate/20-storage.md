@@ -44,7 +44,12 @@ written with `/` whatever the system: `ocfl/0=ocfl_1.1`,
   the kind `'link'`, so that walks can leave it out, as opensheaf-py does;
 - `rename(from, to)`: move a file or a folder; an existing *file* at `to`
   is replaced (as `os.replace` does), an existing folder is an error;
-- `remove(path)`: remove a file, or an empty folder.
+- `remove(path)`: remove a file, or an empty folder;
+- optionally, `stream(path)`: the bytes of the file in pieces (an async
+  iterable of `Uint8Array`), or `null` if there is no file there, so that
+  a file larger than the memory of the program can be digested: the disk
+  of the command line has it, and the OCFL validator (chapter
+  [50](50-ocfl.md)) uses it, and runs on such a storage only.
 
 That is all an archive needs: versions are added by building them in a
 staging folder and moving them into place (chapter [22](22-writing.md)),

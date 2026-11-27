@@ -39,6 +39,8 @@ that each copies, branches and checks what the other wrote:
    section 2, symbolic links, a private key, empty folders, a tombstone
    sharing a genesis record, signature files where they do not belong
    or with a byte order mark, a discovery document with a fraction.
+8. the OCFL validator and ocfl-py on the same archive, broken where OCFL
+   allows nothing: the same findings, in ocfl-py's words.
 
 These tests are part of `tests/parity.test.js`, and use its helpers.
 
@@ -54,6 +56,8 @@ These tests are part of `tests/parity.test.js`, and use its helpers.
     <<across: owner catalogues>>
 
     <<across: the checks of the final review>>
+
+    <<across: the OCFL validator on broken copies>>
 
 The archives
 ------------
@@ -484,6 +488,78 @@ find, so that a case that breaks nothing does not pass unnoticed.
           await breakIt(copy);
           const found = verified(s, copy);
           assert.ok(found.some((f) => expected.test(f)), `${what}:\n${found.join('\n')}`);
+        }
+      } finally {
+        await s.done();
+      }
+    });
+
+The OCFL validator on broken copies
+-----------------------------------
+
+The same archive of opensheaf-py, broken in the ways an OCFL validator
+finds (chapter [50](50-ocfl.md)): files and folders where OCFL allows
+none, in an object, a version folder, a content directory, the
+`extensions` folder of an object or of the storage root, or between the
+storage root and the objects; a version inventory that is not JSON, a
+content file changed. A checksum file of the wrong form and a fixity
+block with a wrong digest are left to the fixtures (chapter
+[77](77-tests-ocfl.md)): either changes what the index `sha512/` must
+hold, on which the two programs differ (opensheaf-py reads every file of
+the index, and builds its entries from the checksum files; this program
+reads the files of the prefixes it expects). Both verifications give the
+same findings, the messages of `ocfl-py` and of its port included, and
+each case finds what it must; a `logs` folder in an object, which OCFL
+allows, is no error of the validator.
+
+    // in across: the OCFL validator on broken copies:
+    test('the OCFL validator on broken copies, by both', { skip }, async () => {
+      const s = await across();
+      try {
+        const arch = await archiveBy(s, 'py', 'ocfl');
+        await paper(s, 'py', arch, 'paper', 'one', ['--new']);
+        await paper(s, 'py', arch, 'paper', 'two', ['--changes', 'Second.']);
+        ok(s.py(['collect'], { cwd: arch }), 'py collect');
+        const id = await idOf(arch, 'paper'), [, name, owner] = id.split(':');
+        const dir = (root) => path.join(root, 'ocfl', owner, name);
+        const put = async (file, text = 'x') => {
+          await mkdir(path.dirname(file), { recursive: true });
+          await writeFile(file, text);
+        };
+        const cases = {
+          'a file in the root of an object': [/\[E001a\] OCFL Object root contains unexpected file: stray.txt/,
+            (r) => put(path.join(dir(r), 'stray.txt'))],
+          'a folder that looks like a version': [/\[E046b\]/, (r) => put(path.join(dir(r), 'v9', 'f'))],
+          'a file in a version folder': [/\[E015\]/, (r) => put(path.join(dir(r), 'v1', 'stray.txt'))],
+          'a file of the content not in the manifest': [/\[E023a\]/, (r) => put(path.join(dir(r), 'v1', 'content', 'extra.txt'))],
+          'a file in the extensions folder of an object': [/\[E067\]/, (r) => put(path.join(dir(r), 'extensions', 'stray.txt'))],
+          'a version inventory that is not JSON': [/\[E033\] OCFL Object v1 inventory is not valid JSON \(.*: line \d+ column \d+ \(char \d+\)\)/,
+            async (r) => {
+              const file = path.join(dir(r), 'v1', 'inventory.json');
+              const text = await readFile(file, 'utf-8');
+              await writeFile(file, text.slice(0, text.length >> 1));
+            }],
+          'a content file changed': [/\[E092a\]/, async (r) => {
+            const inv = JSON.parse(await readFile(path.join(dir(r), 'inventory.json'), 'utf-8'));
+            const file = path.join(dir(r), Object.values(inv.manifest).flat().find((p) => p.endsWith('.pdf')));
+            await writeFile(file, Buffer.concat([await readFile(file), Buffer.from('x')]));
+          }],
+          'a file between the storage root and the objects': [/ocfl: the OCFL validator rejects the storage root/,
+            (r) => put(path.join(r, 'ocfl', owner, 'stray.txt'))],
+          'an empty folder down the storage root': [/ocfl: the OCFL validator rejects the storage root/,
+            (r) => mkdir(path.join(r, 'ocfl', 'x', 'y'), { recursive: true })],
+          'a file in the extensions folder of the storage root': [/ocfl: the OCFL validator rejects the storage root/,
+            (r) => put(path.join(r, 'ocfl', 'extensions', 'stray.txt'))],
+          'a logs folder': [null, (r) => put(path.join(dir(r), 'logs', 'a log.txt'))],
+        };
+        for (const [what, [expected, breakIt]] of Object.entries(cases)) {
+          const copy = path.join(s.root, 'broken');
+          await rm(copy, { recursive: true, force: true });
+          await cp(arch, copy, { recursive: true });
+          await breakIt(copy);
+          const found = verified(s, copy);
+          if (expected) assert.ok(found.some((f) => expected.test(f)), `${what}:\n${found.join('\n')}`);
+          else assert.ok(!found.some((f) => /OCFL validator/.test(f)), `${what}:\n${found.join('\n')}`);
         }
       } finally {
         await s.done();

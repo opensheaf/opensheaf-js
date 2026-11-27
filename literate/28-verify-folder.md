@@ -22,26 +22,20 @@ read (the `lister` of chapter [14](14-archive.md)), so that signature
 files of keys the key log does not list, or without a key log, are
 judged, and other files and folders are reported (section 7.2).
 
-What opensheaf-py checks and this program does not: an independent OCFL
-validator. opensheaf-py runs `ocfl-py` when it is installed, and reports
-only its errors; this program makes the checks of OCFL that OpenSheaf
-relies on itself (the declarations, the layout, every inventory and its
-checksum files, versions without gaps, safe content paths, every content
-digest), and, of the others, those that a folder left by a tool can
-break and that are cheap to make, in the validator's words: an empty
-folder in the storage root outside the objects (OCFL E073, which
-`ocfl-py` reports as the storage root rejected) and an empty folder in
-the content directory of an object version (E024); an object at a path
-other than its identifier gives is reported as not listed rather than
-misplaced. Two checks are made as opensheaf-py makes
-them, from the folder rather than over HTTP: the presentation of appendix
-A.3, which also applies to an archive that configures a readable index or
-has landing pages without declaring the profile `website`; and the links
-of owners to their keepers (section 6.6), reported as not checked, or with
-`--remote` read from the keeper's place (chapter [32](32-keepers.md)). The
-parity tests (chapter
-[72](72-tests-parity.md)) compare the findings of the two on the archives
-each makes.
+The storage root is also given to an independent OCFL validator, a port
+of `ocfl-py`, which opensheaf-py runs when it is installed (chapter
+[50](50-ocfl.md)): each object, then the storage root without its
+objects, as opensheaf-py gives them to `ocfl-py`, with its errors in its
+words (below). An object at a path other than its identifier gives is
+reported as not listed rather than misplaced. Two checks are made as
+opensheaf-py makes them, from the folder rather than over HTTP: the
+presentation of appendix A.3, which also applies to an archive that
+configures a readable index or has landing pages without declaring the
+profile `website`; and the links of owners to their keepers (section
+6.6), reported as not checked, or with `--remote` read from the keeper's
+place (chapter [32](32-keepers.md)). The parity tests (chapter
+[72](72-tests-parity.md)) compare the findings of the two on the
+archives each makes.
 
 The module is `core/check.js`.
 
@@ -58,6 +52,8 @@ The module is `core/check.js`.
     import { ArchiveFolder, environment } from './folder.js';
     import { nameAddress } from './deposit.js';
     import { keeperOf, keeperLink, successorClaim, NOT_CHECKED } from './keepers.js';
+    import { pathOf } from './paths.js';
+    import { validateObject, validateStorageRoot } from './ocfl.js';
 
     <<verifying a folder>>
 
@@ -69,7 +65,7 @@ The module is `core/check.js`.
 
     <<symbolic links>>
 
-    <<empty folders>>
+    <<the OCFL validator>>
 
 Verifying a folder
 ------------------
@@ -121,7 +117,7 @@ over the network, through `fetch`.
       if (!archive.old && f) {
         report.add(...await guarded('the keepers', () => keeperFindings(f, remote, fetchJson, schemas)));
         report.add(...await guarded('the presentation files', () => presentationFindings(f, unread ? {} : archive.disc)));
-        report.add(...await guarded('the storage root', () => emptyFolders(f, report)));
+        report.add(...await guarded('the storage root', () => ocflFindings(f, report)));
       }
       if (!report.findings.some((f) => f.message === 'specification 0.1: rebuild (section 16.1)')) {
         report.add(...await lookForKeys(storage));
@@ -447,63 +443,95 @@ opensheaf-py's `look_for_links` reports it; a link is not walked into.
       return found;
     }
 
-Empty folders
--------------
+The OCFL validator
+------------------
 
-Two checks of the OCFL validator that opensheaf-py runs, made here in its
-words: a folder of the storage root that holds nothing and is in no
-object (E073; `ocfl-py` rejects the storage root, which opensheaf-py
-reports once, and only when every object could be read: otherwise it
-warns that the storage root is not given to the validator, and so does
-this program), and the empty
-folders of the content directory of each version of an object (E024, one
-error at the object listing them, as `ocfl-py` gives them). A folder left
-empty by a tool (the folder `draft/` once its last draft is sealed, for
-instance) is what they find.
+The storage root is given to the OCFL validator of chapter
+[50](50-ocfl.md) exactly where opensheaf-py gives it to `ocfl-py`, and
+reported in the same words. Each object that opensheaf-py's checks of
+storage keep (its `found`) is validated once, by itself, and an object
+the validator rejects is one error at the object, `OCFL validator:`
+followed by the errors of the validator, one per line, sorted (its
+warnings are not reported: they are on what OpenSheaf does on purpose).
+Then, if every object could be read, the storage root as a whole is
+validated without its objects: its declaration, its layout, its
+`extensions` folder and the hierarchy of folders down to the objects,
+whose errors (a folder left empty by a tool, such as `draft/` once its
+last draft is sealed, E073; files outside the objects, E072) are the only
+ones that make it rejected, which is one error, "the OCFL validator
+rejects the storage root"; otherwise a warning says that it is not given
+to the validator, which would read the files of the objects that cannot
+be read.
 
-    // in empty folders:
-    async function emptyFolders(f, report) {
-      const out = [];
+The objects kept are those of opensheaf-py's `check_storage`: every
+object of the storage root with a readable inventory and an identifier
+(the others are the objects that cannot be read), whose identifier is
+that of a line or of a draft (one that is not is left out, and is not
+counted as unread); an object whose inventory does not have the shape the
+checks read (`inventoryProblem`, opensheaf-py's `inventory_problem`), or
+that the verification checked no further (a content path outside the
+object, a file of the specification that breaks section 2), is left out,
+and counted as unread. Two objects with one identifier are one entry, the
+last, as in opensheaf-py's dictionary.
+
+The validator runs where files can be read in pieces (a storage with
+`stream`, the disk of the command line): it reads every file of every
+object, and its content digests are of files of any size. Elsewhere (the
+Manager's storage over GitHub, a storage in memory) it does not run, and
+the verification says nothing of it.
+
+    // in the OCFL validator:
+    async function ocflFindings(f, report) {
       const s = f.storage;
-      const leaves = async (dir) => {
-        const entries = ((await s.list(dir)) || []).filter((e) => e.kind !== 'link');
-        if (!entries.length) return [dir];
-        const below = [];
-        for (const e of entries) if (e.kind === 'dir') below.push(...await leaves(joinPath(dir, e.name)));
-        return below;
-      };
-      let rootEmpty = false;
-      const walk = async (dir) => {
-        for (const e of (await s.list(dir)) || []) {
-          if (e.kind !== 'dir') continue;
-          const child = joinPath(dir, e.name);
-          if ((await s.kind(joinPath(child, '0=ocfl_object_1.1'))) === 'file') continue;
-          if (!((await s.list(child)) || []).length) rootEmpty = true;
-          else await walk(child);
+      if (typeof s.stream !== 'function' || (await s.kind('ocfl')) !== 'dir') return [];
+      const out = [];
+      const found = new Map();
+      let unread = 0;
+      const checkedNoFurther = (id) => report.findings.some((x) => x.level === 'error' && x.object === id &&
+        (x.message.endsWith('nor the object checked further') || x.message.endsWith('section 2: not checked further')));
+      for (const { id, dir, inv } of await f.objects()) {
+        if (!isObject(inv) || id === null || id === undefined) {
+          unread++;
+          continue;
         }
-      };
-      if ((await s.kind('ocfl')) === 'dir') await walk('ocfl');
-      const unread = report.findings.some((x) => x.level === 'error' &&
-        (x.message === 'an object without a readable inventory' || x.message.endsWith('not checked further')));
+        try {
+          await pathOf(id, f.layout);
+        } catch {
+          continue;
+        }
+        found.set(id, dir);
+        if (inventoryProblem(inv) || checkedNoFurther(id)) {
+          found.delete(id);
+          unread++;
+        }
+      }
+      for (const [id, dir] of found) {
+        const { valid, log } = await validateObject(s, dir);
+        if (!valid) out.push(finding('error', where(f, id), `OCFL validator: ${log.statusStr()}`));
+      }
       if (unread) {
         out.push(finding('warning', 'ocfl', 'the storage root as a whole is not given to the OCFL validator: it would read ' +
                          'the files of the objects that cannot be read'));
-      } else if (rootEmpty) {
+      } else if (!(await validateStorageRoot(s, 'ocfl', { validateObjects: false })).valid) {
         out.push(finding('error', 'ocfl', 'the OCFL validator rejects the storage root'));
       }
-      for (const { id, dir, inv } of await f.objects()) {
-        if (!inv || typeof id !== 'string' || !isObject(inv.versions)) continue;
-        const cd = typeof inv.contentDirectory === 'string' ? inv.contentDirectory : 'content';
-        const empty = [];
-        for (const ver of Object.keys(inv.versions).sort((x, y) => (Number(x.slice(1)) || 0) - (Number(y.slice(1)) || 0))) {
-          const content = joinPath(dir, ver, cd);
-          if ((await s.kind(content)) !== 'dir') continue;
-          for (const leaf of await leaves(content)) {
-            empty.push(`[E024] OCFL Object version ${ver} content directory includes empty path /${leaf.slice(dir.length + 1)} ` +
-                       '(see https://ocfl.io/1.1/spec/#E024)');
-          }
-        }
-        if (empty.length) out.push(finding('error', where(f, id), `OCFL validator: ${empty.join('\n')}`));
-      }
       return out;
+    }
+
+Whether an inventory has the shape the checks of storage read, as
+opensheaf-py's `inventory_problem` decides it: a manifest of digests each
+with a non-empty list of content paths, versions (at least one), each a
+JSON object, the head one of them, each version with a state of that
+shape, and a user, a message and a time, if given, of the right kinds.
+
+    // in the OCFL validator:
+    function inventoryProblem(inv) {
+      const pathsMap = (m) => isObject(m) && Object.values(m).every((v) =>
+        Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === 'string'));
+      if (!pathsMap(inv.manifest)) return true;
+      const versions = inv.versions;
+      if (!isObject(versions) || !Object.keys(versions).length || !Object.values(versions).every(isObject)) return true;
+      if (typeof inv.head !== 'string' || !Object.hasOwn(versions, inv.head)) return true;
+      return Object.values(versions).some((v) => !pathsMap(v.state) || ('user' in v && !isObject(v.user)) ||
+        ('message' in v && typeof v.message !== 'string') || ('created' in v && typeof v.created !== 'string'));
     }

@@ -163,9 +163,13 @@ The entries of the three indexes for the objects held (section 12.5): in
 `names/`, an entry for each object with a genesis record, with its
 status, originator (an owner object being its own) and the text of its
 genesis record; in `owners/`, the names of each owner's lines; in
-`sha512/`, an entry for each version, by the digest its checksum file
-states, and one for each version of a key log a fork record carries. The
-objects are given as the verification read them.
+`sha512/`, an entry for each version that has a checksum file, by the
+digest it states, and one for each version of a key log a fork record
+carries. The objects are given as the verification read them, each
+version's checksum file as the digest it states, `null` when it states
+none (a file of another form: the entry then has no digest, and the one
+the index holds is stale, as `osheaf verify` finds it), and `undefined`
+when there is no checksum file (no entry).
 
     // in core/rules.js:
     export const INDEX_KEY = { names: 'name', owners: 'owner', sha512: 'inventorySha512' };
@@ -183,7 +187,7 @@ objects are given as the verification read them.
         if (!lines.has(owner)) lines.set(owner, []);
         lines.get(owner).push(name);
         o.sidecars.forEach((digest, k) => {
-          if (digest !== null) out.sha512.push({ inventorySha512: digest, id: o.id, version: `v${k + 1}`, status: o.status });
+          if (digest !== undefined) out.sha512.push({ inventorySha512: digest, id: o.id, version: `v${k + 1}`, status: o.status });
         });
         for (const c of o.carried || []) {
           out.sha512.push({ inventorySha512: c.digest, id: o.id, version: `v${c.number}`, status: 'active' });

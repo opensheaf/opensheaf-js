@@ -383,7 +383,7 @@ with the key logs, below.
         const kindOfHead = await a.json(id, inv, inv.head, 'object.json', options).catch((e) => { if (this.aborted(e)) throw e; return null; });
         const kind = kindOfHead?.kind;
         const draft = Boolean(parseId(id).draft);
-        const o = { id, inv, rootBytes, head: kindOfHead, objs: new Map(), digests: [], sidecars: [], kind, draft };
+        const o = { id, inv, rootBytes, head: kindOfHead, objs: new Map(), digests: [], sidecars: [], stated: [], kind, draft };
         let malformed = false;
         this.found.set(id, o);
         const at = (ver) => ({ object: id, ver });
@@ -417,6 +417,7 @@ with the key logs, below.
           const copySc = await a.sidecarBytes(id, ver, this.options).catch((e) => { if (this.aborted(e)) throw e; return null; });
           o.digests[k] = copy ? await sha512(copy) : '';
           o.sidecars[k] = copySc ? sidecarDigest(copySc) : null;
+          o.stated[k] = copySc ? sidecarDigest(copySc) : undefined;
           upper(copySc, `${ver}/inventory.json.sha512`);
           if (!copy || !copySc) {
             this.add('error', where, 'no copy of the inventory with its checksum file in the version folder (section 4.1)', at(ver));
@@ -1156,7 +1157,14 @@ error. A server lists no folders: the files read are those of the
 prefixes of the entries expected, of the tombstones and of the objects
 not checked further (whose entries `osheaf verify`, which lists the
 folders, finds unjustified), and, in `names/`, of the names `owners/`
-lists; an entry in another file is not seen.
+lists; an entry in another file is not seen. An archive that can be
+listed (a `lister`, which opensheaf-js gives an archive read from a
+folder, chapter [14](14-archive.md); the explorer, reading over HTTP,
+has none, and reads the files above) has every file of each index read, in the order of their names,
+as `osheaf verify` reads them (`*.json`, names starting with a dot left
+out), so that a stale entry in a file no entry expected leads to (the
+entry of a version whose inventory changed, whose digest starts
+otherwise) is found unjustified.
 `owners/` is read first, for that. An index file is JSON as section 2 defines it,
 read as the discovery document is (`parseFormat`, chapter
 [10](10-http.md)): bytes that are not UTF-8, or start with a byte order
@@ -1178,9 +1186,9 @@ words of `osheaf verify`.
             const log = this.logs.get(parseId(id).owner);
             if (!log) continue;
             objects.push({ id, rec: { kind: 'owner' }, genesis: log.genesis, status: 'active', label: a.labelOf(id),
-                           sidecars: o.sidecars, carried: log.versions.filter((v) => v.forkRecord).flatMap((v) => v.carried) });
+                           sidecars: o.stated, carried: log.versions.filter((v) => v.forkRecord).flatMap((v) => v.carried) });
           } else if (o.rec) {
-            objects.push({ id, rec: o.rec, genesis: o.genesis, status: this.status(id, o), label: a.labelOf(id), sidecars: o.sidecars });
+            objects.push({ id, rec: o.rec, genesis: o.genesis, status: this.status(id, o), label: a.labelOf(id), sidecars: o.stated });
           }
         }
         const expected = indexEntries(objects);
@@ -1191,7 +1199,7 @@ words of `osheaf verify`.
           if (!Object.hasOwn(INDEX_KEY, index)) continue;
           const key = INDEX_KEY[index];
           const want = expected[index];
-          const prefixes = new Set(want.map((e) => String(e[key]).slice(0, length)));
+          const prefixes = new Set(want.filter((e) => typeof e[key] === 'string').map((e) => e[key].slice(0, length)));
           if (index === 'names') for (const n of listedNames) prefixes.add(n.slice(0, length));
           for (const [id, o] of this.dropped) {
             const parts = parseId(id);
@@ -1203,8 +1211,12 @@ words of `osheaf verify`.
             const k = index === 'names' ? t.name : index === 'owners' ? t.owner : t.inventorySha512;
             if (typeof k === 'string') prefixes.add(k.slice(0, length));
           }
+          const listing = a.lister ? await a.lister(`${a.base}${index}/`) : null;
+          const files = listing
+            ? listing.filter((e) => e.kind !== 'dir' && e.name.endsWith('.json') && !e.name.startsWith('.')).map((e) => e.name.slice(0, -5))
+            : [...prefixes].sort();
           const held = [];
-          for (const p of [...prefixes].sort()) {
+          for (const p of files) {
             const place = `${index}/${p}.json`;
             let data;
             try {

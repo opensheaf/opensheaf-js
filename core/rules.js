@@ -94,7 +94,7 @@ export function indexEntries(objects) {
     if (!lines.has(owner)) lines.set(owner, []);
     lines.get(owner).push(name);
     o.sidecars.forEach((digest, k) => {
-      if (digest !== null) out.sha512.push({ inventorySha512: digest, id: o.id, version: `v${k + 1}`, status: o.status });
+      if (digest !== undefined) out.sha512.push({ inventorySha512: digest, id: o.id, version: `v${k + 1}`, status: o.status });
     });
     for (const c of o.carried || []) {
       out.sha512.push({ inventorySha512: c.digest, id: o.id, version: `v${c.number}`, status: 'active' });

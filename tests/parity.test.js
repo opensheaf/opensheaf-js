@@ -1563,6 +1563,21 @@ test('the OCFL validator on broken copies, by both', { skip }, async () => {
           const text = await readFile(file, 'utf-8');
           await writeFile(file, text.slice(0, text.length >> 1));
         }],
+      'a checksum file of the wrong form': [/\[E061\]/, async (r) => {
+        await put(path.join(dir(r), 'v1', 'inventory.json.sha512'), 'not a digest\n');
+        return /sha512\/: an entry the storage root does not justify: .* v1 \(section 12\.5\)/;
+      }],
+      'a fixity block with a wrong digest': [/\[E093a\]/, async (r) => {
+        const inv = JSON.parse(await readFile(path.join(dir(r), 'inventory.json'), 'utf-8'));
+        inv.fixity = { md5: { [Array(32).fill('0').join('')]: [Object.values(inv.manifest)[0][0]] } };
+        const bytes = Buffer.from(JSON.stringify(inv, null, 2));
+        const sidecar = `${Buffer.from(await crypto.subtle.digest('SHA-512', bytes)).toString('hex')}  inventory.json\n`;
+        for (const d of [dir(r), path.join(dir(r), inv.head)]) {
+          await writeFile(path.join(d, 'inventory.json'), bytes);
+          await writeFile(path.join(d, 'inventory.json.sha512'), sidecar);
+        }
+        return new RegExp(`sha512/: an entry the storage root does not justify: ${id} ${inv.head} \\(section 12\\.5\\)`);
+      }],
       'a content file changed': [/\[E092a\]/, async (r) => {
         const inv = JSON.parse(await readFile(path.join(dir(r), 'inventory.json'), 'utf-8'));
         const file = path.join(dir(r), Object.values(inv.manifest).flat().find((p) => p.endsWith('.pdf')));
@@ -1580,8 +1595,9 @@ test('the OCFL validator on broken copies, by both', { skip }, async () => {
       const copy = path.join(s.root, 'broken');
       await rm(copy, { recursive: true, force: true });
       await cp(arch, copy, { recursive: true });
-      await breakIt(copy);
+      const also = await breakIt(copy);
       const found = verified(s, copy);
+      if (also instanceof RegExp) assert.ok(found.some((f) => also.test(f)), `${what}:\n${found.join('\n')}`);
       if (expected) assert.ok(found.some((f) => expected.test(f)), `${what}:\n${found.join('\n')}`);
       else assert.ok(!found.some((f) => /OCFL validator/.test(f)), `${what}:\n${found.join('\n')}`);
     }

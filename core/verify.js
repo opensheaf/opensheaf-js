@@ -74,6 +74,8 @@ export async function verify(given, { schemas, remote = true, digests = false, s
     if (Object.hasOwn(given, 'labelOf')) archive.labelOf = given.labelOf;
     archive.lister = given.lister ?? null;
     archive.unlisted = given.unlisted ?? [];
+    archive.contentProblems = given.contentProblems ?? null;
+    archive.linkedObjects = given.linkedObjects ?? null;
     report.archive = archive;
     if (archive.old) {
       add('error', 'archive', 'specification 0.1: rebuild (section 16.1)');
@@ -212,7 +214,7 @@ class Verification {
     } else {
       const layout = jsonOrNull(await read('ocfl_layout.json'));
       if (layout?.extension !== HASHED_LAYOUT) this.add('error', 'ocfl', `ocfl_layout.json must name the extension ${HASHED_LAYOUT} (section 3.2)`);
-      if (!(typeof layout?.description === 'string' && layout.description.trim())) {
+      if (!(typeof layout?.description === 'string' && pyStrip(layout.description))) {
         this.add('error', 'ocfl', 'ocfl_layout.json has a description (section 3.2)');
       }
       const raw = await read(`extensions/${HASHED_LAYOUT}/config.json`);
@@ -230,6 +232,10 @@ class Verification {
     const place = this.where(id);
     const options = this.options;
     const listed = (message) => this.add('error', 'opensheaf.json', message, { object: id });
+    if (a.linkedObjects?.has(id)) {
+      if (!parseId(id)?.draft) listed(`lists ${id}, which is not an object of the storage root (section 3.1)`);
+      return;
+    }
     let rootBytes;
     try {
       await a.locate(id);
@@ -281,7 +287,17 @@ class Verification {
     const head = typeof inv.head === 'string' ? inv.head : '';
     const headCopy = /^v[0-9]+$/.test(head) ? await this.fetchOrNull(a.inventoryUrl(id, head)).catch((e) => { if (this.aborted(e)) throw e; return null; }) : null;
     if (!headCopy || await sha512(headCopy) !== rootDigest) this.add('error', place, `the inventory of ${head} is not the root inventory`, at());
+    const unsafe = a.contentProblems?.get(id);
+    if (unsafe?.size) {
+      for (const problem of unsafe.values()) this.add('error', place, `${problem}: it is not read, nor the object checked further`, at());
+      if (!draft) listed(`lists ${id}, which is not an object of the storage root (section 3.1)`);
+      o.unsafe = new Set(unsafe.keys());
+      this.found.delete(id);
+      this.dropped.set(id, o);
+      return;
+    }
     const names = Object.keys(inv.versions).sort((x, y) => (Number(x.slice(1)) || 0) - (Number(y.slice(1)) || 0));
+    const checksums = new Map();
     for (const [k, ver] of names.entries()) {
       const n = k + 1;
       const where = `${place} ${ver}`;
@@ -294,7 +310,7 @@ class Verification {
       const copySc = await a.sidecarBytes(id, ver, this.options).catch((e) => { if (this.aborted(e)) throw e; return null; });
       o.digests[k] = copy ? await sha512(copy) : '';
       o.sidecars[k] = copySc ? sidecarDigest(copySc) : null;
-      o.stated[k] = copySc ? sidecarDigest(copySc) : undefined;
+      checksums.set(ver, copySc);
       upper(copySc, `${ver}/inventory.json.sha512`);
       if (!copy || !copySc) {
         this.add('error', where, 'no copy of the inventory with its checksum file in the version folder (section 4.1)', at(ver));
@@ -329,7 +345,9 @@ class Verification {
         obj = await a.json(id, inv, ver, 'object.json', this.options);
       } catch (error) {
         if (this.aborted(error)) throw error;
-        this.add('error', where, `object.json cannot be read: ${error.detail || error.message}`, at(ver));
+        this.add('error', where, error.kind === 'digest'
+          ? 'object.json cannot be read: it does not have the digest its inventory states (section 4.1)'
+          : `object.json cannot be read: ${error.detail || error.message}`, at(ver));
       }
       o.objs.set(ver, obj);
       if (!obj) continue;
@@ -347,6 +365,13 @@ class Verification {
       } else if (obj.previous !== o.sidecars[k - 1]) {
         this.add('error', where, `previous is not the digest of the inventory of v${n - 1} (section 4.3)`, at(ver));
       }
+    }
+    const last = /^v[0-9]+$/.test(head) ? Math.min(Number(head.slice(1)), LIMITS.versions) : 0;
+    for (let n = 1; n <= last; n++) {
+      const ver = `v${n}`;
+      const sc = checksums.has(ver) ? checksums.get(ver)
+        : await a.sidecarBytes(id, ver, this.options).catch((e) => { if (this.aborted(e)) throw e; return null; });
+      o.stated[n - 1] = sc ? sidecarDigest(sc) : undefined;
     }
     if (malformed) {
       this.add('error', place, 'a file of the specification in it breaks the rules of section 2: not checked further', at());
@@ -463,7 +488,7 @@ class Verification {
         genesisNames.get(g0).push([id, isObject(head) && 'parent' in head]);
         originators.set(g0, rec.originator);
         if (rec.kind !== head.kind) {
-          this.add('error', place, `its genesis record is of kind ${rec.kind}, its object.json of kind ${head.kind}`, { object: id });
+          this.add('error', place, `its genesis record is of kind ${rec.kind}, its object.json of kind ${py(head?.kind)}`, { object: id });
         }
         if (!await isNameOf(name, genesis)) {
           this.add('error', place, 'its name is not a name of its genesis record (section 5.2)', { object: id });
@@ -929,15 +954,18 @@ class Verification {
         if (typeof k === 'string') prefixes.add(k.slice(0, length));
       }
       const listing = a.lister ? await a.lister(`${a.base}${index}/`) : null;
-      const files = listing
-        ? listing.filter((e) => e.kind !== 'dir' && e.name.endsWith('.json') && !e.name.startsWith('.')).map((e) => e.name.slice(0, -5))
-        : [...prefixes].sort();
+      const files = listing ? [] : [...prefixes].sort();
+      for (const e of (listing || []).filter((x) => x.name.endsWith('.json'))) {
+        if (e.kind === 'dir') this.add('error', `${index}/${e.name}`, 'a folder among the files of the index: not read (section 12.5)');
+        else if (e.kind === 'link') this.add('error', `${index}/${e.name}`, 'a symbolic link in the archive: never followed (section 15.2)');
+        else files.push(e.name.slice(0, -5));
+      }
       const held = [];
       for (const p of files) {
         const place = `${index}/${p}.json`;
         let data;
         try {
-          const bytes = await this.fetchOrNull(a.base + place);
+          const bytes = await this.fetchOrNull(`${a.base}${index}/${encodeURIComponent(`${p}.json`)}`);
           if (bytes === null) continue;
           data = parseFormat(bytes);
         } catch (error) {
@@ -1018,6 +1046,7 @@ class Verification {
     for (const [id, o] of [...this.found, ...this.dropped]) {
       for (const [digest, paths] of Object.entries(o.inv.manifest)) {
         for (const cp of Array.isArray(paths) ? paths : []) {
+          if (o.unsafe?.has(cp)) continue;
           try {
             files.push({ id, url: a.contentUrl(id, o.inv, cp), cp, digest });
           } catch {
@@ -1093,13 +1122,22 @@ export function formatFile(p) {
   return null;
 }
 
+const PY_SPACE = '\\t-\\r\\x1c-\\x20\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000';
+const STRIP = new RegExp(`^[${PY_SPACE}]+|[${PY_SPACE}]+$`, 'gu');
+
+export function pyStrip(s) {
+  return s.replace(STRIP, '');
+}
+
 export function hasPartErrors(dc, mem) {
   const rels = isObject(dc) && Array.isArray(dc.relatedIdentifiers) ? dc.relatedIdentifiers : [];
   const parts = new Set(rels.filter((r) => isObject(r) && r.relationType === 'HasPart' && r.relatedIdentifierType === 'DOI')
     .map((r) => py(r.relatedIdentifier).toLowerCase()));
   const members = isObject(mem) && Array.isArray(mem.members) ? mem.members.filter(isObject) : [];
-  const dois = [...members.map((m) => m.doi),
-    ...members.flatMap((m) => (Array.isArray(m.revisions) ? m.revisions : []).filter(isObject).map((r) => r.doi))];
+  const kind = isObject(mem) ? mem.type : null;
+  const dois = [...members.filter(() => kind === 'catalogue').map((m) => m.doi),
+    ...members.filter(() => kind === 'selection')
+      .flatMap((m) => (Array.isArray(m.revisions) ? m.revisions : []).filter(isObject).map((r) => r.doi))];
   return [...new Set(dois.filter((x) => typeof x === 'string' && x))].filter((doi) => !parts.has(doi.toLowerCase()))
     .map((doi) => `datacite.json has no HasPart relation to ${doi}, the DOI of a member (section 8.6)`);
 }

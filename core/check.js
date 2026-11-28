@@ -49,9 +49,20 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
     if (lenient) archive.labelOf = (id) => lenient.labelOf(id);
   }
   archive.lister = storageLister(storage, base);
-  if (f) archive.unlisted = await unlistedObjects(f, archive);
+  const linked = [];
+  if (f) {
+    archive.unlisted = await unlistedObjects(f, archive);
+    archive.contentProblems = await contentProblems(f);
+    for (const { id, dir } of await f.objects()) {
+      if (!(await holdsLink(storage, dir))) continue;
+      linked.push(finding('warning', dir, 'an object holding a symbolic link: not read, nor given to the OCFL validator ' +
+                          '(section 15.2)'));
+      if (typeof id === 'string') (archive.linkedObjects ??= new Set()).add(id);
+    }
+  }
   const report = await verify(archive, { schemas, remote, digests, pages: false });
-  if (unread) report.add(unread);
+  report.add(...linked);
+  if (unread && (await storage.kind('opensheaf.json')) !== 'link') report.add(unread);
   if (!archive.old && f) {
     report.add(...await guarded('the keepers', () => keeperFindings(f, remote, fetchJson, schemas)));
     report.add(...await guarded('the presentation files', () => presentationFindings(f, unread ? {} : archive.disc)));
@@ -59,7 +70,8 @@ export async function verifyFolder(storage, { schemas, remote = false, fetch = g
   }
   if (!report.findings.some((f) => f.message === 'specification 0.1: rebuild (section 16.1)')) {
     report.add(...await lookForKeys(storage));
-    report.add(...await lookForLinks(storage));
+    const said = new Set(report.findings.map((x) => `${x.place}\n${x.message}`));
+    report.add(...(await lookForLinks(storage)).filter((x) => !said.has(`${x.place}\n${x.message}`)));
   }
   return report;
 }
@@ -89,6 +101,22 @@ async function unlistedObjects(f, archive) {
   const out = [];
   for (const { id } of await f.objects()) {
     if (typeof id === 'string' && parseId(id) && !listed.has(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+async function contentProblems(f) {
+  const out = new Map();
+  for (const { id, dir, inv } of await f.objects()) {
+    if (typeof id !== 'string' || out.has(id) || !isObject(inv?.manifest)) continue;
+    const found = new Map();
+    for (const paths of Object.values(inv.manifest)) {
+      for (const cp of Array.isArray(paths) ? paths : []) {
+        const problem = await f.contentProblem(dir, cp);
+        if (problem && !found.has(cp)) found.set(cp, problem);
+      }
+    }
+    if (found.size) out.set(id, found);
   }
   return out;
 }
@@ -267,6 +295,15 @@ export async function lookForKeys(storage) {
   return found;
 }
 
+export async function holdsLink(storage, dir) {
+  if ((await storage.kind(dir)) === 'link' || await storage.linked?.(dir)) return true;
+  for (const entry of (await storage.list(dir).catch(() => null)) || []) {
+    if (entry.kind === 'link') return true;
+    if (entry.kind === 'dir' && await holdsLink(storage, joinPath(dir, entry.name))) return true;
+  }
+  return false;
+}
+
 const LINKS_SEARCHED = ['ocfl', 'opensheaf.json', 'objects', 'indexes.json', 'names', 'owners', 'sha512'];
 
 export async function lookForLinks(storage) {
@@ -291,33 +328,37 @@ async function ocflFindings(f, report) {
   const s = f.storage;
   if (typeof s.stream !== 'function' || (await s.kind('ocfl')) !== 'dir') return [];
   const out = [];
-  const found = new Map();
+  const given = [];
   let unread = 0;
   const checkedNoFurther = (id) => report.findings.some((x) => x.level === 'error' && x.object === id &&
     (x.message.endsWith('nor the object checked further') || x.message.endsWith('section 2: not checked further')));
   for (const { id, dir, inv } of await f.objects()) {
-    if (!isObject(inv) || id === null || id === undefined) {
+    if (await holdsLink(s, dir) || !isObject(inv) || id === null || id === undefined) {
       unread++;
       continue;
     }
     try {
       await pathOf(id, f.layout);
     } catch {
+      let unsafe = inventoryProblem(inv);
+      for (const cp of unsafe ? [] : Object.values(inv.manifest).flat()) unsafe ||= Boolean(await f.contentProblem(dir, cp));
+      if (unsafe) unread++;
+      else given.push([dir, dir]);
       continue;
     }
-    found.set(id, dir);
-    if (inventoryProblem(inv) || checkedNoFurther(id)) {
-      found.delete(id);
-      unread++;
-    }
+    if (inventoryProblem(inv) || checkedNoFurther(id)) unread++;
+    else given.push([where(f, id), dir]);
   }
-  for (const [id, dir] of found) {
+  for (const [place, dir] of given) {
     const { valid, log } = await validateObject(s, dir);
-    if (!valid) out.push(finding('error', where(f, id), `OCFL validator: ${log.statusStr()}`));
+    if (!valid) out.push(finding('error', place, `OCFL validator: ${log.statusStr()}`));
   }
   if (unread) {
     out.push(finding('warning', 'ocfl', 'the storage root as a whole is not given to the OCFL validator: it would read ' +
                      'the files of the objects that cannot be read'));
+  } else if (await holdsLink(s, 'ocfl')) {
+    out.push(finding('warning', 'ocfl', 'the storage root as a whole is not given to the OCFL validator: it would follow ' +
+                     'the symbolic links in it'));
   } else if (!(await validateStorageRoot(s, 'ocfl', { validateObjects: false })).valid) {
     out.push(finding('error', 'ocfl', 'the OCFL validator rejects the storage root'));
   }

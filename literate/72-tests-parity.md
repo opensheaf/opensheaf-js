@@ -809,7 +809,9 @@ agree, without a finding.
 Copies of the key log across the two: an archive made by each for the
 owner of an archive of the other (`init --owner --key-log`), brought up to
 date by `owner pull` of each, then forked, each recording the fork the
-other's copy shows.
+other's copy shows. On a computer without the owner's keys, `init --owner`
+stops in both, with the same message, when it collects the owner
+catalogue it cannot sign.
 
     // in parity: owners kept by both:
     test('copies of a key log met by both: init --owner, pull, forks', { skip }, async () => {
@@ -821,6 +823,11 @@ other's copy shows.
         const folder = (dir) => path.join(dir, 'ocfl', owner, owner);
         const init = (dir) => ['init', dir, '--name', 'B', '--base-url', 'https://example.org/b/', '--curator', 'Doe, Jane',
                                '--owner', owner, '--key-log', folder(k('one'))];
+        const elsewhere = { more: { XDG_CONFIG_HOME: path.join(s.root, 'xdg-elsewhere') } };
+        const [nj, np] = [s.js(init(k('four')), elsewhere), s.py(init(k('five')), elsewhere)];
+        assert.ok(nj.status !== 0 && np.status !== 0, `init --owner without the keys:\n${nj.stderr}\n${np.stderr}`);
+        assert.match(nj.stderr, /holds 0 of the current keys/);
+        assert.equal(nj.stderr.replaceAll(k('four'), 'D'), np.stderr.replaceAll(k('five'), 'D'));
         ok(s.js(init(k('two'))), 'js init --owner');
         ok(s.py([...init(k('three')).slice(0, 2), '--name', 'C', '--base-url', 'https://example.org/c/', ...init(k('three')).slice(6)]),
            'py init --owner');

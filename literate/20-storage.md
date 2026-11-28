@@ -239,7 +239,14 @@ that the addresses the archive gives itself (the `at` of the members of
 its owner catalogues) are read from the storage too.
 
 The answers are `Response` objects, which browsers, Deno and Node all
-have. A path that is not safe, or that names a folder, is not found.
+have. A path that is not safe, or that names a folder, is not found. A
+storage that can `stream` (the disk) answers with a body read in pieces
+as the reader takes them: the reader stops at its limit (`LIMITS.json`,
+`LIMITS.file`), and a file of gigabytes where an inventory is expected is
+not read whole into memory before being refused. Its first piece is read
+before the answer is given, so that a file that cannot be read is not
+found, as with `read`; the answer to `HEAD` counts the pieces for its
+`content-length`.
 
     // in reading a storage over fetch:
     export const ORIGIN = 'https://archive.invalid/';
@@ -252,9 +259,11 @@ have. A path that is not safe, or that names a folder, is not found.
           if (fallback) return fallback(url, init);
           throw new TypeError(`fetch failed: ${url} is not in this archive`);
         }
-        let bytes = null;
+        let path, bytes = null;
         try {
-          bytes = await storage.read(checkPath(decodeURIComponent(u.pathname.slice(base.pathname.length))));
+          path = checkPath(decodeURIComponent(u.pathname.slice(base.pathname.length)));
+          if (storage.stream) return await streamed(storage, path, init.method === 'HEAD');
+          bytes = await storage.read(path);
         } catch {
           bytes = null;
         }
@@ -271,6 +280,34 @@ under `origin`, an empty list when there is no such folder, and `null`
 for an address elsewhere, which it cannot list.
 
     // in reading a storage over fetch:
+    async function streamed(storage, path, head) {
+      const source = await storage.stream(path);
+      if (source === null) return new Response('not found', { status: 404 });
+      const it = source[Symbol.asyncIterator]();
+      const first = await it.next().catch(async (error) => {
+        await it.return?.();
+        throw error;
+      });
+      if (head) {
+        let size = 0;
+        for (let next = first; !next.done; next = await it.next()) size += next.value.length;
+        return new Response(null, { status: 200, headers: { 'content-length': String(size) } });
+      }
+      let pending = first;
+      const body = new ReadableStream({
+        async pull(controller) {
+          const next = pending ?? await it.next();
+          pending = null;
+          if (next.done) controller.close();
+          else controller.enqueue(next.value);
+        },
+        async cancel() {
+          await it.return?.();
+        },
+      });
+      return new Response(body, { status: 200 });
+    }
+
     export function storageLister(storage, origin = ORIGIN) {
       const base = new URL(origin);
       return async (url) => {

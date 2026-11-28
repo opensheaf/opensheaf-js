@@ -20,6 +20,7 @@ const out = process.argv[2] || path.join(ROOT, 'dist', 'opensheaf-manager.js');
 const r = spawnSync('deno', ['bundle', '--platform', 'browser', '--config', path.join(ROOT, 'deno.json'), '-o', out, entry],
                     { cwd: ROOT, stdio: 'inherit' });
 if (r.status !== 0) process.exit(r.status ?? 1);
-const bundled = await readFile(out, 'utf-8');
+const NPM = /(?:\.\.\/)*(?:[^\s"'`]*?\/)?npm\/registry\.npmjs\.org\/((?:@[^/\s"'`]+\/)?[^/\s"'`]+)\/([^/\s"'`]+)\//g;
+const bundled = (await readFile(out, 'utf-8')).replace(NPM, 'npm:$1@$2/');
 await writeFile(out, `// opensheaf-js ${commit}: web/manager.js bundled by tools/bundle.js (GPL-3.0-or-later)\n${bundled}`);
 console.log(`${out}: opensheaf-js ${commit}`);

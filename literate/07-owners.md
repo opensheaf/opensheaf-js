@@ -128,18 +128,17 @@ Its number is the head of its inventory.
 The digest a checksum file states: two words, the digest and
 `inventory.json`; `null` if it says anything else. The digest is read as
 written, in lower case (section 4.1): one in upper case matches no digest,
-and the verifier says why.
+and the verifier says why. The words are those of opensheaf-py's
+`sidecar_digest`, which decodes the file as ASCII (a byte from 0x80 on
+gives no digest; JavaScript's decoder named `ascii` is windows-1252, which
+would take them) and splits it with `str.split()`, on the white space of
+Python among ASCII characters: space, `\t` to `\r`, and the separators
+`\x1c` to `\x1f`.
 
     // in core/owners.js:
     export function sidecarDigest(bytes) {
-      if (!bytes) return null;
-      let text;
-      try {
-        text = new TextDecoder('ascii', { fatal: true }).decode(bytes);
-      } catch {
-        return null;
-      }
-      const parts = text.split(/\s+/).filter(Boolean);
+      if (!bytes || bytes.some((b) => b >= 0x80)) return null;
+      const parts = new TextDecoder().decode(bytes).split(/[\t-\r\x1c-\x20]+/).filter(Boolean);
       return parts.length === 2 && parts[1] === 'inventory.json' ? parts[0] : null;
     }
 

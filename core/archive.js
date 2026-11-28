@@ -227,7 +227,8 @@ export class Archive {
     const bytes = await this.http.cached(url, { ...options, limit: LIMITS.file });
     const digest = filesOf(inv, ver)[logical];
     if (typeof digest !== 'string' || (await sha512(bytes)) !== digest.toLowerCase()) {
-      throw new FetchError('digest', url, `does not have the digest its inventory states for ${logical} (section 4.1)`);
+      throw Object.assign(new FetchError('digest', url, `does not have the digest its inventory states for ${logical} (section 4.1)`),
+                          { logical });
     }
     return bytes;
   }

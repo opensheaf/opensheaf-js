@@ -1677,7 +1677,7 @@ of their own.
 The checks of the final review of 0.2 that need no archive of
 opensheaf-py (the others are compared with it, chapter
 [74](74-tests-across.md)): the `HasPart` relations of a collection
-(section 8.6), the files of the specification among the logical paths of
+(section 8.6: the doi of catalogue members, of selection revisions), the files of the specification among the logical paths of
 a version, the rule of the storage root, an `at` whose escapes are not
 UTF-8 (section 12.1), as in opensheaf-py's
 `test_checks_of_the_final_review` and `test_sheaf_uri_syntax`.
@@ -1689,7 +1689,9 @@ UTF-8 (section 12.1), as in opensheaf-py's
       const { parseSheaf } = await import('../core/names.js');
       const dc = { relatedIdentifiers: [{ relationType: 'HasPart', relatedIdentifierType: 'DOI', relatedIdentifier: '10.1/A' },
                                         { relationType: 'IsPartOf', relatedIdentifierType: 'DOI', relatedIdentifier: '10.2/b' }] };
-      assert.deepEqual(hasPartErrors(dc, { members: [{ doi: '10.1/a' }, { doi: '10.2/b' }, { revisions: [{ doi: '10.2/b' }, { doi: '' }] }] }),
+      assert.deepEqual(hasPartErrors(dc, { type: 'catalogue', members: [{ doi: '10.1/a' }, { doi: '10.2/b' }, { revisions: [{ doi: '10.3/c' }] }] }),
+                       ['datacite.json has no HasPart relation to 10.2/b, the DOI of a member (section 8.6)']);
+      assert.deepEqual(hasPartErrors(dc, { type: 'selection', members: [{ doi: '10.4/d', revisions: [{ doi: '10.2/b' }, { doi: '' }] }] }),
                        ['datacite.json has no HasPart relation to 10.2/b, the DOI of a member (section 8.6)']);
       assert.deepEqual(['object.json', 'members.json', 'parent/object.json', 'parent/parent/signatures/signature-x.json',
                         'parent/inventory.json', 'parent/members.json', 'a/object.json'].map(formatFile),

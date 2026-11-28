@@ -224,13 +224,15 @@ Writing a collection
 A new version of a collection, signed by its owner: `members.json`, in the
 order the collection declares, and `datacite.json`, whose title and
 description are kept unless new ones are given, with the DOIs of the
-members as parts, and, for a collection with a label, the address of its
+members as parts (section 8.6: the `doi` of each member of a catalogue,
+the `doi` of each revision of a member of a selection, as opensheaf-py's
+`describe` takes them by the kind of the collection), and, for a collection with a label, the address of its
 landing page, built from its name (chapter [26](26-deposit.md)). The document version of a collection counts the changes
 of its members; a new title or description alone keeps it. Nothing
 changed, nothing is written.
 
     // in writing a collection:
-    export function describeCollection(f, title, description, version, issued, members, url = null) {
+    export function describeCollection(f, title, description, version, issued, members, url = null, kind = 'catalogue') {
       const cur = f.archive.curator;
       const creator = { name: cur.name, nameType: 'Personal', familyName: cur.familyName };
       if (cur.givenName) creator.givenName = cur.givenName;
@@ -241,8 +243,8 @@ changed, nothing is written.
                    rightsList: [{ ...RIGHTS['cc0-1.0'] }] };
       if (url) dc.url = url;
       if (description) dc.descriptions = [{ description, descriptionType: 'Abstract' }];
-      const dois = [...members.filter((m) => m.doi).map((m) => m.doi),
-                    ...members.flatMap((m) => (m.revisions || []).filter((x) => x.doi).map((x) => x.doi))];
+      const dois = kind === 'catalogue' ? members.filter((m) => m.doi).map((m) => m.doi)
+        : members.flatMap((m) => (m.revisions || []).filter((x) => x.doi).map((x) => x.doi));
       if (dois.length) {
         dc.relatedIdentifiers = [...new Set(dois)].map((x) => ({ relatedIdentifier: x, relatedIdentifierType: 'DOI',
                                                                   relationType: 'HasPart' }));
@@ -280,7 +282,7 @@ changed, nothing is written.
       const files = new Map([
         ['members.json', jsonBytes(mem)], [GENESIS, genesis],
         ['datacite.json', jsonBytes(describeCollection(f, title, description, version, issued, mem.members,
-                                                         label ? await landingUrl(f, collId) : null))],
+                                                         label ? await landingUrl(f, collId) : null, mem.type ?? null))],
       ]);
       const obj = { format: OBJ_FORMAT, specification: SPEC, kind: 'collection', name: collId.split(':')[1], owner,
                     documentVersion: version, status: 'active' };

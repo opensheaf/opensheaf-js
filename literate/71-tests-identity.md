@@ -32,7 +32,7 @@ deterministic.
     import { verifyEd25519, strictlyAcceptable, base32, sha256, utf8, unbase64, hex } from '../core/crypto.js';
     import { nameOf, algorithm, isNameOf, readGenesis, didKey, didKeyPublic, keyDigest, keyId, jcs, parseSheaf,
              orcidValid, keeperValid } from '../core/names.js';
-    import { firstVersion, KeyLog, Version, keyRules, ownerObject, jsonOrNull } from '../core/owners.js';
+    import { firstVersion, KeyLog, Version, keyRules, ownerObject, jsonOrNull, sidecarDigest } from '../core/owners.js';
     import { message, fileName, judge, lineStatuses, latestSigned, readSignatureFile, GOOD, UNCHECKED, INVALID }
       from '../core/signatures.js';
     import { Key, exampleKey } from '../core/keys.js';
@@ -389,6 +389,25 @@ three; the explorer decides with its own verifier (chapter
 
 Key logs
 --------
+
+The digest a checksum file states, as opensheaf-py's `sidecar_digest`
+reads it: ASCII only (a byte from 0x80 on, which windows-1252 would
+decode, gives none), split on Python's white space among ASCII
+characters, the separators `\x1c` to `\x1f` included, and no other.
+
+    // in tests of key logs:
+    test('the digest a checksum file states, read as opensheaf-py reads it', () => {
+      const d = 'a'.repeat(128);
+      const bytes = (s) => Uint8Array.from([...s], (c) => c.charCodeAt(0));
+      assert.equal(sidecarDigest(bytes(`${d} inventory.json\n`)), d);
+      assert.equal(sidecarDigest(bytes(`${d}\x0binventory.json\x0c`)), d);
+      assert.equal(sidecarDigest(bytes('abc\x1finventory.json')), 'abc');
+      assert.equal(sidecarDigest(bytes('\xe9abc inventory.json')), null);
+      assert.equal(sidecarDigest(bytes('abc\xa0inventory.json')), null);
+      assert.equal(sidecarDigest(bytes('abc\x85inventory.json')), null);
+      assert.equal(sidecarDigest(bytes(`${d} inventory.json x`)), null);
+      assert.equal(sidecarDigest(new Uint8Array()), null);
+    });
 
 The first version of the authors' key log, rebuilt from its genesis
 record: its `object.json` and `keys.json` are the JCS forms appendix C

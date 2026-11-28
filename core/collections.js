@@ -139,7 +139,7 @@ export async function pinned(r, name, owner, u, places, kind, revisions = []) {
   return founds;
 }
 
-export function describeCollection(f, title, description, version, issued, members, url = null) {
+export function describeCollection(f, title, description, version, issued, members, url = null, kind = 'catalogue') {
   const cur = f.archive.curator;
   const creator = { name: cur.name, nameType: 'Personal', familyName: cur.familyName };
   if (cur.givenName) creator.givenName = cur.givenName;
@@ -150,8 +150,8 @@ export function describeCollection(f, title, description, version, issued, membe
                rightsList: [{ ...RIGHTS['cc0-1.0'] }] };
   if (url) dc.url = url;
   if (description) dc.descriptions = [{ description, descriptionType: 'Abstract' }];
-  const dois = [...members.filter((m) => m.doi).map((m) => m.doi),
-                ...members.flatMap((m) => (m.revisions || []).filter((x) => x.doi).map((x) => x.doi))];
+  const dois = kind === 'catalogue' ? members.filter((m) => m.doi).map((m) => m.doi)
+    : members.flatMap((m) => (m.revisions || []).filter((x) => x.doi).map((x) => x.doi));
   if (dois.length) {
     dc.relatedIdentifiers = [...new Set(dois)].map((x) => ({ relatedIdentifier: x, relatedIdentifierType: 'DOI',
                                                               relationType: 'HasPart' }));
@@ -189,7 +189,7 @@ export async function write(f, collId, mem, { message, title = null, description
   const files = new Map([
     ['members.json', jsonBytes(mem)], [GENESIS, genesis],
     ['datacite.json', jsonBytes(describeCollection(f, title, description, version, issued, mem.members,
-                                                     label ? await landingUrl(f, collId) : null))],
+                                                     label ? await landingUrl(f, collId) : null, mem.type ?? null))],
   ]);
   const obj = { format: OBJ_FORMAT, specification: SPEC, kind: 'collection', name: collId.split(':')[1], owner,
                 documentVersion: version, status: 'active' };

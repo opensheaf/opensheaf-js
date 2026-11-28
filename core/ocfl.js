@@ -252,6 +252,25 @@ function hashable(x) {
   return x;
 }
 
+function pyJoin(sep, items) {
+  const list = [...items];
+  list.forEach((x, k) => {
+    if (!isStr(x)) throw new PyStop(`TypeError: sequence item ${k}: expected str instance, ${pyType(x)} found`);
+  });
+  return list.join(sep);
+}
+
+function pySorted(items) {
+  const list = [...items];
+  const kinds = new Set(list.map((x) => (pyType(x) === 'bool' ? 'int' : pyType(x))));
+  if (kinds.size > 1) throw new PyStop(`TypeError: '<' not supported between instances of '${[...kinds][1]}' and '${[...kinds][0]}'`);
+  return list.sort((a, b) => (isStr(a) ? compareCodePoints(a, b) : (a < b ? -1 : a > b ? 1 : 0)));
+}
+
+function pyMessage(error) {
+  return error instanceof PyStop ? error.message.replace(/^[A-Za-z]+: /, '') : error.message;
+}
+
 function pyNumber(x) {
   if (typeof x === 'boolean') return x ? 1 : 0;
   if (typeof x === 'number' || typeof x === 'bigint') return x;
@@ -322,6 +341,25 @@ function stringRepr(s) {
     } else out += ch;
   }
   return out + quote;
+}
+
+const PY_SPACE = '\\t-\\r\\x1c-\\x20\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000';
+const PY_LETTER = 'A-Za-z\\u0130\\u0131\\u017f\\u212a';
+const STRIP = new RegExp(`^[${PY_SPACE}]+|[${PY_SPACE}]+$`, 'gu');
+
+function pyStrip(s) {
+  return s.replace(STRIP, '');
+}
+
+function pyInt(s) {
+  let n = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    let zero = c;
+    while (/\p{Nd}/u.test(String.fromCodePoint(zero - 1))) zero--;
+    n = 10 * n + (c - zero) % 10;
+  }
+  return n;
 }
 
 export class PyJsonError extends Error {
@@ -398,6 +436,11 @@ export function pyJson(doc) {
     if (!m) throw new PyJsonError('Expecting value', doc, k);
     const end = k + m[0].length;
     if (m[2] || m[3]) return [new PyFloat(Number(m[0])), end];
+    const digits = m[1].replace('-', '').length;
+    if (digits > 4300) {
+      throw new PyStop(`ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has ${digits} digits; ` +
+                       'use sys.set_int_max_str_digits() to increase the limit');
+    }
     const n = Number(m[1]);
     return [Number.isSafeInteger(n) ? n : BigInt(m[1]), end];
   };
@@ -461,22 +504,80 @@ function jsonText(text) {
   return pyJson(text);
 }
 
+function jsonBytes(bytes) {
+  return jsonText(decodeDetected(bytes));
+}
+
+function decodeDetected(b) {
+  const starts = (...xs) => xs.every((x, k) => b[k] === x);
+  if (b.length >= 4 && (starts(0, 0, 0xfe, 0xff) || starts(0xff, 0xfe, 0, 0))) return wide(b, 4, b[0] === 0, 4);
+  if (b.length >= 2 && (starts(0xfe, 0xff) || starts(0xff, 0xfe))) return wide(b, 2, b[0] === 0xfe, 2);
+  if (b.length >= 3 && starts(0xef, 0xbb, 0xbf)) return utf8Pass(b.subarray(3));
+  if (b.length >= 4) {
+    if (!b[0]) return b[1] ? wide(b, 2, true, 0) : wide(b, 4, true, 0);
+    if (!b[1]) return b[2] || b[3] ? wide(b, 2, false, 0) : wide(b, 4, false, 0);
+  } else if (b.length === 2) {
+    if (!b[0]) return wide(b, 2, true, 0);
+    if (!b[1]) return wide(b, 2, false, 0);
+  }
+  return utf8Pass(b);
+}
+
+function wide(b, size, bigEndian, start) {
+  const codec = `'utf-${size * 8}-${bigEndian ? 'be' : 'le'}' codec`;
+  let out = '';
+  for (let k = start; k < b.length; k += size) {
+    if (k + size > b.length) {
+      const left = b.length - k;
+      throw new PyStop(left === 1
+        ? `UnicodeDecodeError: ${codec} can't decode byte 0x${b[k].toString(16).padStart(2, '0')} in position ${k}: truncated data`
+        : `UnicodeDecodeError: ${codec} can't decode bytes in position ${k}-${b.length - 1}: truncated data`);
+    }
+    let unit = 0;
+    for (let j = 0; j < size; j++) unit = unit * 256 + b[bigEndian ? k + j : k + size - 1 - j];
+    if (unit > 0x10ffff) throw new PyStop(`UnicodeDecodeError: ${codec} can't decode bytes in position ${k}-${k + size - 1}: code point not in range(0x110000)`);
+    out += unit > 0xffff ? String.fromCodePoint(unit) : String.fromCharCode(unit);
+  }
+  return out;
+}
+
+function utf8Pass(bytes) {
+  const copy = bytes.slice();
+  const surrogates = new Map();
+  for (let k = 0; k + 2 < copy.length; k++) {
+    if (copy[k] === 0xed && copy[k + 1] >= 0xa0 && copy[k + 1] <= 0xbf && copy[k + 2] >= 0x80 && copy[k + 2] <= 0xbf) {
+      surrogates.set(k, 0xd000 | ((copy[k + 1] & 0x3f) << 6) | (copy[k + 2] & 0x3f));
+      copy.set([0xe0, 0xa0, 0x80], k);
+      k += 2;
+    }
+  }
+  const bad = utf8Problem(copy);
+  if (bad) throw new PyStop(`UnicodeDecodeError: ${bad}`);
+  if (!surrogates.size) return new TextDecoder('utf-8', { ignoreBOM: true }).decode(copy);
+  let out = '', from = 0;
+  for (const [k, unit] of surrogates) {
+    out += new TextDecoder('utf-8', { ignoreBOM: true }).decode(copy.subarray(from, k)) + String.fromCharCode(unit);
+    from = k + 3;
+  }
+  return out + new TextDecoder('utf-8', { ignoreBOM: true }).decode(copy.subarray(from));
+}
+
 class DateError extends Error {}
 
 function strToDatetime(s) {
   if (s === '') throw new DateError('Attempt to set empty datetime');
-  let m = /^\d\d\d\d(-\d\d(-\d\d)?)?(?=\n?$)/.exec(s);
+  let m = /^\p{Nd}{4}(-\p{Nd}{2}(-\p{Nd}{2})?)?(?=\n?$)/u.exec(s);
   if (m) {
     if (m[1] === undefined) s += '-01-01';
     else if (m[2] === undefined) s += '-01';
     s += 'T00:00:00Z';
   }
-  m = /^(.*\d{2}:\d{2}:\d{2})(\.\d+)([^\d].*)?(?=\n?$)/.exec(s);
+  m = /^([^\n]*\p{Nd}{2}:\p{Nd}{2}:\p{Nd}{2})(\.\p{Nd}+)([^\p{Nd}][^\n]*)?(?=\n?$)/u.exec(s);
   if (m) s = m[1] + (m[3] ?? '');
-  m = /^(\d\d\d\d-\d\d-\d\dT\d\d:\d\d(:\d\d)?)(Z|([+-])(\d\d):(\d\d))?(?=\n?$)/.exec(s);
+  m = /^(\p{Nd}{4}-\p{Nd}{2}-\p{Nd}{2}T\p{Nd}{2}:\p{Nd}{2}(:\p{Nd}{2})?)(Z|([+-])(\p{Nd}{2}):(\p{Nd}{2}))?(?=\n?$)/u.exec(s);
   if (!m) throw new DateError(`Bad datetime format (${s})`);
   const given = m[1] + 'Z';
-  const [year, month, day, hour, minute, second] = m[1].split(/[-T:]/).map(Number).concat(0).slice(0, 6);
+  const [year, month, day, hour, minute, second] = m[1].split(/[-T:]/).map(pyInt).concat(0).slice(0, 6);
   const days = [31, (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0 ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   const problem = year < 1 ? `year ${year} is out of range`
     : month < 1 || month > 12 ? 'month must be in 1..12'
@@ -485,7 +586,7 @@ function strToDatetime(s) {
           : minute > 59 ? 'minute must be in 0..59'
             : second > 59 ? 'second must be in 0..59' : null;
   if (problem) throw new DateError(`${problem}: ${given}`);
-  if (m[3] && m[3] !== 'Z' && (Number(m[5]) > 23 || Number(m[6]) > 59)) throw new DateError(`Bad timezone offset (${s})`);
+  if (m[3] && m[3] !== 'Z' && (pyInt(m[5]) > 23 || pyInt(m[6]) > 59)) throw new DateError(`Bad timezone offset (${s})`);
 }
 
 const DIGEST_FORMS = {
@@ -566,6 +667,8 @@ async function digestsOf(chunks, algs) {
   return out;
 }
 
+const osError = (error) => (['EACCES', 'EPERM'].includes(error?.code) ? 'PermissionError' : 'OSError');
+
 class Folder {
   constructor(storage, base) {
     this.storage = storage;
@@ -593,48 +696,66 @@ class Folder {
   }
 
   async listdir(p) {
-    let entries = null;
+    let entries;
     try {
       entries = await this.storage.list(this.at(p));
-    } catch {
-      entries = null;
+    } catch (error) {
+      throw new PyStop(`PermissionError: ${p || '.'} cannot be listed (${error.message})`);
     }
-    if (entries === null) return null;
+    if (entries === null) throw new PyStop(`FileNotFoundError: ${p || '.'}`);
     return entries.map((e) => ({ name: e.name, type: e.kind === 'dir' ? 'directory' : e.kind === 'file' ? 'file' : 'other' }));
   }
 
-  async bytes(p, limit = LIMITS.json) {
-    let bytes;
+  async source(p) {
     try {
-      bytes = await this.storage.read(this.at(p));
+      if (this.storage.stream) return await this.storage.stream(this.at(p));
+      const whole = await this.storage.read(this.at(p));
+      return whole === null ? null : [whole];
     } catch (error) {
-      throw new PyStop(`OSError: ${p} cannot be read (${error.message})`);
+      throw new PyStop(`${osError(error)}: ${p} cannot be read (${error.message})`);
     }
-    if (bytes === null) return null;
-    if (bytes.length > limit) throw new TooLarge(`larger than ${limit} bytes`);
-    return bytes;
+  }
+
+  async* pieces(p, source, limit) {
+    const it = (source[Symbol.asyncIterator] ?? source[Symbol.iterator]).call(source);
+    let total = 0;
+    try {
+      for (;;) {
+        let next;
+        try {
+          next = await it.next();
+        } catch (error) {
+          throw new PyStop(`${osError(error)}: ${p} cannot be read (${error.message})`);
+        }
+        if (next.done) return;
+        total += next.value.length;
+        if (total > limit) throw new TooLarge(`larger than ${limit} bytes`);
+        yield next.value;
+      }
+    } finally {
+      await it.return?.();
+    }
+  }
+
+  async bytes(p, limit = LIMITS.json) {
+    const source = await this.source(p);
+    if (source === null) return null;
+    const parts = [];
+    for await (const piece of this.pieces(p, source, limit)) parts.push(piece);
+    if (parts.length === 1) return parts[0];
+    const out = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
+    let at = 0;
+    for (const x of parts) {
+      out.set(x, at);
+      at += x.length;
+    }
+    return out;
   }
 
   async chunks(p, limit = LIMITS.file) {
-    let source;
-    try {
-      source = this.storage.stream ? await this.storage.stream(this.at(p)) : null;
-      if (!source) {
-        const whole = await this.storage.read(this.at(p));
-        source = whole === null ? null : [whole];
-      }
-    } catch (error) {
-      throw new PyStop(`OSError: ${p} cannot be read (${error.message})`);
-    }
+    const source = await this.source(p);
     if (source === null) throw new PyStop(`FileNotFoundError: ${p}`);
-    return (async function* () {
-      let total = 0;
-      for await (const chunk of source) {
-        total += chunk.length;
-        if (total > limit) throw new TooLarge(`larger than ${limit} bytes`);
-        yield chunk;
-      }
-    })();
+    return this.pieces(p, source, limit);
   }
 }
 
@@ -677,7 +798,7 @@ export class InventoryValidator {
       if (!isStr(iid) || iid === '') {
         this.error('E037a');
       } else {
-        if (!/^[a-z][a-z\d+\-.]*:./i.test(iid)) this.warning('W005', { id: iid });
+        if (!new RegExp(`^[${PY_LETTER}][${PY_LETTER}\\p{Nd}+\\-.]*:[^\\n]`, 'u').test(iid)) this.warning('W005', { id: iid });
         this.id = iid;
       }
     } else {
@@ -690,7 +811,7 @@ export class InventoryValidator {
     } else if (forceSpecVersion && inventory.type !== `https://ocfl.io/${forceSpecVersion}/spec/#inventory`) {
       this.error('E038a', { expected: `https://ocfl.io/${forceSpecVersion}/spec/#inventory`, got: inventory.type });
     } else {
-      const m = /^https:\/\/ocfl.io\/(\d+.\d)\/spec\/#inventory/.exec(inventory.type);
+      const m = /^https:\/\/ocfl[^\n]io\/(\p{Nd}+[^\n]\p{Nd})\/spec\/#inventory/u.exec(inventory.type);
       if (!m) {
         this.error('E038b', { got: inventory.type, assumed_spec_version: this.specVersion });
       } else if (SPEC_VERSIONS.includes(m[1])) {
@@ -765,17 +886,17 @@ export class InventoryValidator {
         const onlyInSelf = [...selfMap.keys()].filter((p) => !priorMap.has(p));
         if (onlyInPrior.length || onlyInSelf.length) {
           if (onlyInPrior.length) {
-            this.error('E066b', { version, prior_head: prior.head, only_in: prior.head, logical_paths: onlyInPrior.join(',') });
+            this.error('E066b', { version, prior_head: prior.head, only_in: prior.head, logical_paths: pyJoin(',', onlyInPrior) });
           }
           if (onlyInSelf.length) {
-            this.error('E066b', { version, prior_head: prior.head, only_in: this.where, logical_paths: onlyInSelf.join(',') });
+            this.error('E066b', { version, prior_head: prior.head, only_in: this.where, logical_paths: pyJoin(',', onlyInSelf) });
           }
         } else {
           for (const [logicalPath, thisMap] of priorMap) {
             const theirs = selfMap.get(logicalPath);
             if (![...thisMap].every((p) => theirs.has(p))) {
               this.error('E066c', { version, prior_head: prior.head, logical_path: logicalPath,
-                                    prior_content: [...thisMap].join(','), current_content: [...theirs].join(',') });
+                                    prior_content: pyJoin(',', thisMap), current_content: pyJoin(',', theirs) });
             }
           }
         }
@@ -910,8 +1031,8 @@ export class InventoryValidator {
         const created = version.created;
         try {
           strToDatetime(created);
-          if (!/(Z|[+-]\d\d:\d\d)(?=\n?$)/.test(created)) this.error('E049a', { version: v });
-          if (!/T\d\d:\d\d:\d\d/.test(created)) this.error('E049b', { version: v });
+          if (!/(Z|[+-]\p{Nd}{2}:\p{Nd}{2})(?=\n?$)/u.test(created)) this.error('E049a', { version: v });
+          if (!/T\p{Nd}{2}:\p{Nd}{2}:\p{Nd}{2}/u.test(created)) this.error('E049b', { version: v });
         } catch (error) {
           if (!(error instanceof DateError)) throw error;
           this.error('E049c', { version: v, description: error.message });
@@ -1008,7 +1129,7 @@ export class InventoryValidator {
       this.error('E100', { path: p });
       return false;
     }
-    const m = /^(v\d+)\/([^/]+)\/(.+)/.exec(p);
+    const m = /^(v\p{Nd}+)\/([^/]+)\/([^\n]+)/u.exec(p);
     if (!m) {
       this.error('E042a', { path: p });
       return false;
@@ -1037,9 +1158,9 @@ export class InventoryValidator {
     const digests = [...new Set([...pyIter(selfState), ...pyIter(priorState)])];
     for (const digest of digests) {
       if (!has(priorState, digest)) {
-        this.error('E066d', { version, prior_head: prior.head, digest, logical_files: pyIter(get(selfState, digest)).join(', ') });
+        this.error('E066d', { version, prior_head: prior.head, digest, logical_files: pyJoin(', ', pyIter(get(selfState, digest))) });
       } else if (!has(selfState, digest)) {
-        this.error('E066e', { version, prior_head: prior.head, digest, logical_files: pyIter(get(priorState, digest)).join(', ') });
+        this.error('E066e', { version, prior_head: prior.head, digest, logical_files: pyJoin(', ', pyIter(get(priorState, digest))) });
       }
     }
   }
@@ -1051,7 +1172,7 @@ function logicalPathMap(inventory, version) {
   const out = new Map();
   for (const digest of pyIter(state)) {
     if (has(manifest, digest)) {
-      for (const file of pyIter(get(state, digest))) out.set(hashable(file), new Set(pyIter(get(manifest, digest))));
+      for (const file of pyIter(get(state, digest))) out.set(hashable(file), new Set(pyIter(get(manifest, digest)).map(hashable)));
     }
   }
   return out;
@@ -1063,6 +1184,10 @@ const REGISTERED_OBJECT_EXTENSIONS = ['0001-digest-algorithms', '0002-flat-direc
 
 class Abort extends Error {}
 class DigestFileError extends Error {}
+
+function stopped(error) {
+  return error instanceof PyStop ? error.message : `${error?.constructor?.name ?? 'Error'}: ${error?.message ?? error}`;
+}
 
 export async function validateObject(storage, dir, { logWarnings = false, checkDigests = true, log = null } = {}) {
   const v = new ObjectValidator(storage, dir, { logWarnings, checkDigests, log });
@@ -1093,10 +1218,8 @@ class ObjectValidator {
     } catch (error) {
       if (error instanceof Abort) {
         // ocfl-py's ValidatorAbortException: what was found stands
-      } else if (error instanceof PyStop) {
-        this.log.error('E904', { explanation: error.message });
       } else {
-        throw error;
+        this.log.error('E904', { explanation: stopped(error) });
       }
     }
     return this.log.numErrors === start;
@@ -1109,6 +1232,7 @@ class ObjectValidator {
       throw new Abort();
     }
     const names = (await fs.listdir('')).map((e) => e.name).filter((n) => n.startsWith('0=')).sort(compareCodePoints);
+    if (names.length > 10) throw new PyStop('NamasteException: Found too many Namaste files with tag 0 in ');
     if (names.length === 0) {
       this.log.error('E003a', { assumed_version: this.specVersion });
     } else {
@@ -1207,18 +1331,17 @@ class ObjectValidator {
   }
 
   async readInventoryDigest(sidecar) {
-    let text;
+    let line;
     try {
       const bytes = await this.fs.bytes(sidecar);
       if (bytes === null) throw new PyStop(`FileNotFoundError: ${sidecar}`);
-      text = textOf(bytes);
+      line = firstLine(bytes);
     } catch (error) {
       if (error instanceof TooLarge) throw new DigestFileError(`Bad inventory digest file ${sidecar}, wrong format`);
+      if (error instanceof PyStop && error.message.startsWith('UnicodeDecodeError: ')) throw new DigestFileError(pyMessage(error));
       throw error;
     }
-    const nl = text.indexOf('\n');
-    const line = nl < 0 ? text : text.slice(0, nl + 1);
-    const m = /^([\p{L}\p{N}_]+)\s+(\S+)\s*$/u.exec(line);
+    const m = new RegExp(`^([\\p{L}\\p{N}_]+)[${PY_SPACE}]+([^${PY_SPACE}]+)[${PY_SPACE}]*$`, 'u').exec(line);
     if (!m) throw new DigestFileError(`Bad inventory digest file ${sidecar}, wrong format`);
     if (m[2] !== INVENTORY) throw new DigestFileError(`Bad inventory name in inventory digest file ${sidecar}`);
     return m[1];
@@ -1232,7 +1355,7 @@ class ObjectValidator {
       } else if (type === 'directory') {
         if (versionDirs.includes(name) || name === 'logs') continue;
         if (name === 'extensions') await this.validateExtensionsDir();
-        else if (/^v\d+$/.test(name)) this.log.error('E046b', { dir: name });
+        else if (/^v\p{Nd}+(?=\n?$)/u.test(name)) this.log.error('E046b', { dir: name });
         else this.log.error('E001b', { dir: name });
       } else {
         this.log.error('E001c', { entry: name });
@@ -1243,7 +1366,7 @@ class ObjectValidator {
   async validateExtensionsDir() {
     for (const { name, type } of await this.fs.listdir('extensions')) {
       if (type === 'directory') {
-        if (!REGISTERED_OBJECT_EXTENSIONS.includes(name)) this.log.warning('W013', { entry: `extensions/${name}` });
+        if (!REGISTERED_OBJECT_EXTENSIONS.includes(`extensions/${name}`)) this.log.warning('W013', { entry: `extensions/${name}` });
       } else {
         this.log.error('E067', { entry: `extensions/${name}` });
       }
@@ -1299,7 +1422,7 @@ class ObjectValidator {
             for (const p of pyIter(get(manifest, digest))) notSeen.delete(hashable(p));
           }
           if (notSeen.size) {
-            this.log.error('E023b', { where: versionDir, missing_filepaths: [...notSeen].map(pyStr).sort(compareCodePoints).join(', ') });
+            this.log.error('E023b', { where: versionDir, missing_filepaths: pyJoin(', ', pySorted(notSeen)) });
           }
           for (const digest of pyIter(manifest)) {
             const norm = normalizedDigest(digest, alg);
@@ -1461,12 +1584,50 @@ class ObjectValidator {
   }
 }
 
+function firstLine(bytes) {
+  const PIECE = 8192;
+  const nl = bytes.findIndex((b) => b === 0x0a || b === 0x0d);
+  const end = nl < 0 ? bytes.length : Math.min(bytes.length, (Math.floor(nl / PIECE) + 1) * PIECE);
+  let carry = new Uint8Array(0), text = '';
+  for (let k = 0; k < end; k += PIECE) {
+    const piece = new Uint8Array(carry.length + Math.min(PIECE, end - k));
+    piece.set(carry);
+    piece.set(bytes.subarray(k, k + PIECE).subarray(0, piece.length - carry.length), carry.length);
+    const cut = k + PIECE >= bytes.length ? 0 : incompleteTail(piece);
+    const whole = piece.subarray(0, piece.length - cut);
+    const bad = utf8Problem(whole);
+    if (bad) throw new PyStop(`UnicodeDecodeError: ${bad}`);
+    text += new TextDecoder('utf-8', { ignoreBOM: true }).decode(whole);
+    carry = piece.slice(piece.length - cut);
+  }
+  const m = /\r\n|\r|\n/.exec(text);
+  return m ? text.slice(0, m.index) + '\n' : text;
+}
+
+function incompleteTail(b) {
+  for (let back = 1; back <= Math.min(3, b.length); back++) {
+    const lead = b[b.length - back];
+    if (lead < 0x80) return 0;
+    if (lead < 0xc0) continue;
+    const size = lead >= 0xc2 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 0;
+    if (size <= back) return 0;
+    const [low, high] = lead === 0xe0 ? [0xa0, 0xbf] : lead === 0xed ? [0x80, 0x9f] : lead === 0xf0 ? [0x90, 0xbf]
+      : lead === 0xf4 ? [0x80, 0x8f] : [0x80, 0xbf];
+    for (let j = 1; j < back; j++) {
+      const c = b[b.length - back + j];
+      if (j === 1 ? c < low || c > high : c < 0x80 || c > 0xbf) return 0;
+    }
+    return back;
+  }
+  return 0;
+}
+
 async function namasteContentOk(fs, name) {
   try {
     const bytes = await fs.bytes(name);
     if (bytes === null) return false;
-    const content = textOf(bytes).trim();
-    return name.slice(2) === [...content].slice(0, 40).join('').replace(/[^\p{L}\p{N}_.\-:]/gu, '_');
+    const content = pyStrip(textOf(bytes));
+    return name.slice(2) !== '' && name.slice(2) === [...content].slice(0, 40).join('').replace(/[^\p{L}\p{N}_.\-:]/gu, '_');
   } catch (error) {
     if (error instanceof TooLarge) return false;
     throw error;
@@ -1520,8 +1681,7 @@ export async function validateStorageRoot(storage, root, { validateObjects = tru
     log.specVersion = await checkRootStructure(fs, root);
   } catch (error) {
     if (error instanceof RootError) log.error(error.code, error.args);
-    else if (error instanceof PyStop) log.error('E904', { explanation: error.message });
-    else throw error;
+    else log.error('E904', { explanation: stopped(error) });
     return { valid: false, log, objects };
   }
   try {
@@ -1535,16 +1695,15 @@ export async function validateStorageRoot(storage, root, { validateObjects = tru
       objects.push(entry);
     }
   } catch (error) {
-    if (!(error instanceof PyStop)) throw error;
-    traversalError('E904', { explanation: error.message });
+    traversalError('E904', { explanation: stopped(error) });
   }
   return { valid: traversal === 0, log, objects };
 }
 
 async function checkRootStructure(fs, root) {
-  const listing = await fs.listdir('');
-  if (listing === null) throw new PyStop(`FileNotFoundError: no folder ${root}`);
-  const names = listing.map((e) => e.name).filter((n) => n.startsWith('0=')).sort(compareCodePoints);
+  if (!(await fs.isdir(''))) throw new PyStop(`FileNotFoundError: no folder ${root}`);
+  const names = (await fs.listdir('')).map((e) => e.name).filter((n) => n.startsWith('0=')).sort(compareCodePoints);
+  if (names.length > 10) throw new PyStop('NamasteException: Found too many Namaste files with tag 0 in ');
   if (names.length === 0) throw new RootError('E069a', { root });
   if (names.length > 1) throw new RootError('E069b', { root });
   const spec = SPEC_VERSIONS.find((x) => names[0] === `0=ocfl_${x}`);
@@ -1553,13 +1712,9 @@ async function checkRootStructure(fs, root) {
   if (await fs.exists('ocfl_layout.json')) {
     let layout;
     try {
-      const bytes = await fs.bytes('ocfl_layout.json');
-      layout = jsonText(textOf(bytes ?? new Uint8Array()));
+      layout = jsonBytes((await fs.bytes('ocfl_layout.json')) ?? new Uint8Array());
     } catch (error) {
-      if (error instanceof PyJsonError || error instanceof TooLarge || error instanceof PyStop) {
-        throw new RootError('E070a', { root, message: error.message });
-      }
-      throw error;
+      throw new RootError('E070a', { root, message: pyMessage(error) });
     }
     if (!isDict(layout)) throw new RootError('E070b', { root });
     if (!isStr(layout.extension) || !isStr(layout.description)) throw new RootError('E070c', { root });
@@ -1569,12 +1724,9 @@ async function checkRootStructure(fs, root) {
     if (await fs.exists(file)) {
       let config;
       try {
-        config = jsonText(textOf((await fs.bytes(file)) ?? new Uint8Array()));
+        config = jsonBytes((await fs.bytes(file)) ?? new Uint8Array());
       } catch (error) {
-        if (error instanceof PyJsonError || error instanceof TooLarge || error instanceof PyStop) {
-          throw new PyStop(`LayoutException: Storage root extension config file ${file} exists but can't be read/parsed (${error.message})`);
-        }
-        throw error;
+        throw new PyStop(`LayoutException: Storage root extension config file ${file} exists but can't be read/parsed (${pyMessage(error)})`);
       }
       if (!isDict(config)) throw new PyStop(`LayoutException: Storage root extension config ${file} contents not a JSON object`);
       if (!Object.hasOwn(config, 'extensionName')) throw new PyStop('LayoutException: Storage root extension config missing extensionName');
@@ -1595,7 +1747,7 @@ const HEX_LENGTHS = { sha512: 128, sha256: 64, sha1: 40, md5: 32 };
 function checkHashedLayout(config) {
   const alg = config.digestAlgorithm ?? null, size = config.tupleSize ?? null, count = config.numberOfTuples ?? null;
   if (alg === null) return 'digestAlgorithm parameter must be specified';
-  if (!Object.hasOwn(HEX_LENGTHS, alg)) return `digestAlgorithm parameter specifies unknown or unsupported digests ${pyStr(alg)} (Unsupport digest type ${pyStr(alg)})`;
+  if (!isStr(alg) || !Object.hasOwn(HEX_LENGTHS, alg)) return `digestAlgorithm parameter specifies unknown or unsupported digests ${pyStr(alg)} (Unsupport digest type ${pyStr(alg)})`;
   if (size === null) return 'tupleSize parameter must be specified';
   if (!isInt(size) || size < 0 || size > 32) return 'tupleSize parameter must be aninteger between 0 and 32 inclusive';
   if (count === null) return 'numberOfTuples parameter must be specified';
@@ -1644,7 +1796,7 @@ async function* objectPaths(fs, log, traversalError) {
       if (declarations.length > 1) {
         traversalError('E003d', { path: dirpath });
       } else if (declarations.length === 1) {
-        const m = /^0=ocfl_object_(\d+\.\d+)/.exec(declarations[0]);
+        const m = /^0=ocfl_object_(\p{Nd}+\.\p{Nd}+)/u.exec(declarations[0]);
         if (m && SPEC_VERSIONS.includes(m[1])) yield dirpath.replace(/^\/+/, '');
         else if (m) traversalError('E004a', { path: dirpath, version: m[1] });
         else traversalError('E004b', { path: dirpath, declaration: declarations[0] });

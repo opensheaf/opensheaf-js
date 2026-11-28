@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { verifyEd25519, strictlyAcceptable, base32, sha256, utf8, unbase64, hex } from '../core/crypto.js';
 import { nameOf, algorithm, isNameOf, readGenesis, didKey, didKeyPublic, keyDigest, keyId, jcs, parseSheaf,
          orcidValid, keeperValid } from '../core/names.js';
-import { firstVersion, KeyLog, Version, keyRules, ownerObject, jsonOrNull } from '../core/owners.js';
+import { firstVersion, KeyLog, Version, keyRules, ownerObject, jsonOrNull, sidecarDigest } from '../core/owners.js';
 import { message, fileName, judge, lineStatuses, latestSigned, readSignatureFile, GOOD, UNCHECKED, INVALID }
   from '../core/signatures.js';
 import { Key, exampleKey } from '../core/keys.js';
@@ -225,6 +225,19 @@ test('the edge cases of Ed25519, with both verifiers (section 7.2)', async () =>
   }
   assert.deepEqual(VECTORS.map(([, key, sig]) => strictlyAcceptable(bytes(key), bytes(sig))),
     [false, false, false, true, true, true, false, false, false, false, false, false]);
+});
+
+test('the digest a checksum file states, read as opensheaf-py reads it', () => {
+  const d = 'a'.repeat(128);
+  const bytes = (s) => Uint8Array.from([...s], (c) => c.charCodeAt(0));
+  assert.equal(sidecarDigest(bytes(`${d} inventory.json\n`)), d);
+  assert.equal(sidecarDigest(bytes(`${d}\x0binventory.json\x0c`)), d);
+  assert.equal(sidecarDigest(bytes('abc\x1finventory.json')), 'abc');
+  assert.equal(sidecarDigest(bytes('\xe9abc inventory.json')), null);
+  assert.equal(sidecarDigest(bytes('abc\xa0inventory.json')), null);
+  assert.equal(sidecarDigest(bytes('abc\x85inventory.json')), null);
+  assert.equal(sidecarDigest(bytes(`${d} inventory.json x`)), null);
+  assert.equal(sidecarDigest(new Uint8Array()), null);
 });
 
 test('the computed first version (sections 6.1 and C.1)', async () => {

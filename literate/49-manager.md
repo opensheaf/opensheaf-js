@@ -990,7 +990,11 @@ schemas and the templates, as text, then bundles it for browsers with
 `deno bundle` (esbuild): one ES module, with the packages of the core
 (`yaml`, `hash-wasm`, `tweetnacl`) inside. Its first line names the
 commit of this repository it was made from, and whether the working
-tree had changes.
+tree had changes. esbuild names each module it takes in by its path
+relative to the working folder, and the packages are in Deno's cache
+(`DENO_DIR`, in the user's home by default): those paths are made
+`npm:NAME@VERSION/...`, so that the bundle is the same wherever it is
+made, and names no one's folders.
 
     // in tools/bundle.js:
     import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
@@ -1014,6 +1018,7 @@ tree had changes.
     const r = spawnSync('deno', ['bundle', '--platform', 'browser', '--config', path.join(ROOT, 'deno.json'), '-o', out, entry],
                         { cwd: ROOT, stdio: 'inherit' });
     if (r.status !== 0) process.exit(r.status ?? 1);
-    const bundled = await readFile(out, 'utf-8');
+    const NPM = /(?:\.\.\/)*(?:[^\s"'`]*?\/)?npm\/registry\.npmjs\.org\/((?:@[^/\s"'`]+\/)?[^/\s"'`]+)\/([^/\s"'`]+)\//g;
+    const bundled = (await readFile(out, 'utf-8')).replace(NPM, 'npm:$1@$2/');
     await writeFile(out, `// opensheaf-js ${commit}: web/manager.js bundled by tools/bundle.js (GPL-3.0-or-later)\n${bundled}`);
     console.log(`${out}: opensheaf-js ${commit}`);

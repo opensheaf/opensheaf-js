@@ -1332,7 +1332,9 @@ test('the checks of the final review', async () => {
   const { parseSheaf } = await import('../core/names.js');
   const dc = { relatedIdentifiers: [{ relationType: 'HasPart', relatedIdentifierType: 'DOI', relatedIdentifier: '10.1/A' },
                                     { relationType: 'IsPartOf', relatedIdentifierType: 'DOI', relatedIdentifier: '10.2/b' }] };
-  assert.deepEqual(hasPartErrors(dc, { members: [{ doi: '10.1/a' }, { doi: '10.2/b' }, { revisions: [{ doi: '10.2/b' }, { doi: '' }] }] }),
+  assert.deepEqual(hasPartErrors(dc, { type: 'catalogue', members: [{ doi: '10.1/a' }, { doi: '10.2/b' }, { revisions: [{ doi: '10.3/c' }] }] }),
+                   ['datacite.json has no HasPart relation to 10.2/b, the DOI of a member (section 8.6)']);
+  assert.deepEqual(hasPartErrors(dc, { type: 'selection', members: [{ doi: '10.4/d', revisions: [{ doi: '10.2/b' }, { doi: '' }] }] }),
                    ['datacite.json has no HasPart relation to 10.2/b, the DOI of a member (section 8.6)']);
   assert.deepEqual(['object.json', 'members.json', 'parent/object.json', 'parent/parent/signatures/signature-x.json',
                     'parent/inventory.json', 'parent/members.json', 'a/object.json'].map(formatFile),

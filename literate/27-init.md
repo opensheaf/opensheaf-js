@@ -304,7 +304,7 @@ what is there, as opensheaf-py's `init` does.
         if (!(await storage.kind(`templates/${name}`))) await storage.write(`templates/${name}`, await env.template(name));
       }
       await f.configure();
-      await collect(f, { curated: args.curated });
+      await collect(f, { owner: args.owner || null, curated: args.curated });
       await writeDiscovery(f);
       await readableIndex(f);
       if (cfg.keys) {

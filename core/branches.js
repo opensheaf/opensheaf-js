@@ -33,6 +33,10 @@ export async function verdict(lv, obj, genesis, logs, depth = 0, resolve = null)
     return await levelVerdict(lv, obj, genesis, logs, depth, resolve);
   } catch (error) {
     if (error?.kind === 'aborted') throw error;
+    if (error?.kind === 'digest' && error.logical) {
+      return [INCONSISTENT, [`the evidence of the branch point cannot be read: ${error.logical} does not have the digest its ` +
+                             'inventory states (section 4.1)']];
+    }
     return [INCONSISTENT, [`the evidence of the branch point cannot be read: ${error?.constructor?.name ?? 'Error'} ` +
                            `${error?.message ?? error}`]];
   }
@@ -108,6 +112,7 @@ async function levelVerdict(lv, obj, genesis, logs, depth = 0, resolve = null) {
   let status = lineStatuses([judgements], log ? { exposed: log.exposedKeys(), forkPoint: log.forkPoint } : {})[0];
   const resolved = resolve ? await resolve(p) : null;
   if (resolved && !resolved[0]) problems.push('the parent version, resolved, does not match the pin (section 9.3)');
+  else if (resolved && resolved[1] === CONTESTED) status = CONTESTED;
   else if (resolved && (resolved[1] === SIGNED || resolved[1] === VOUCHED) && status !== CONTESTED) status = resolved[1];
   if (status === UNSIGNED || status === INVALID) problems.push(`the parent version is not a version: ${status} (sections 7.3 and 9.3)`);
   let result = status === SIGNED || status === VOUCHED ? CONFIRMED : UNCHECKED;

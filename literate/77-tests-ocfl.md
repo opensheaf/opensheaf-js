@@ -30,8 +30,10 @@ programs, are in chapter [74](74-tests-across.md).
 
     // in tests/ocfl.test.js:
     import { test } from 'node:test';
+    import { Buffer } from 'node:buffer';
+    import { createHash } from 'node:crypto';
     import assert from 'node:assert/strict';
-    import { mkdtemp, mkdir, writeFile, readdir, rm, cp, readFile } from 'node:fs/promises';
+    import { mkdtemp, mkdir, writeFile, readdir, rm, cp, readFile, chmod } from 'node:fs/promises';
     import { existsSync } from 'node:fs';
     import { spawnSync } from 'node:child_process';
     import os from 'node:os';
@@ -47,6 +49,8 @@ programs, are in chapter [74](74-tests-across.md).
     <<ocfl: storage roots>>
 
     <<ocfl: Python's words>>
+
+    <<ocfl: the cases of the audit>>
 
     <<ocfl: against ocfl-py>>
 
@@ -201,7 +205,34 @@ error is the reason.
         await mkdir(path.join(r, 'e'));
         await writeFile(path.join(r, 'e', '0=something'), 'something\n');
       }],
+      'a declaration of a version in other digits': ['E004a', async (r) => {
+        await mkdir(path.join(r, 'e'));
+        await writeFile(path.join(r, 'e', '0=ocfl_object_\u0661.1'), 'x\n');
+      }],
+      'a declaration with a byte order mark': ['E069e', async (r) => writeFile(path.join(r, '0=ocfl_1.1'), '\ufeffocfl_1.1\n')],
+      'a layout file with a byte order mark': [null, async (r) => writeFile(path.join(r, 'ocfl_layout.json'), '\ufeff' + LAYOUT_0002)],
+      'a layout file in UTF-16': [null, async (r) => writeFile(path.join(r, 'ocfl_layout.json'), Buffer.from('\ufeff' + LAYOUT_0002, 'utf16le'))],
+      'a layout file in UTF-16 cut short': ['E070a', async (r) => writeFile(path.join(r, 'ocfl_layout.json'),
+                                                                            Buffer.concat([Buffer.from('\ufeff' + LAYOUT_0002, 'utf16le'), Buffer.from([0x20])]))],
+      'a layout file with an integer of 5000 digits': ['E070a', async (r) => writeFile(path.join(r, 'ocfl_layout.json'),
+                                                                                       `{"extension": "0002", "description": "x", "n": ${'9'.repeat(5000)}}`)],
+      'a configuration with a byte order mark': [null, async (r) => hashedLayout(r, '\ufeff' + config3('sha256'))],
+      'a configuration whose digest algorithm is a list': ['E904', async (r) => hashedLayout(r, config3(['md5']))],
+      'a configuration whose digest algorithm is a mapping': ['E904', async (r) => hashedLayout(r, config3({ md5: 1 }))],
+      'eleven declarations': ['E904', async (r) => {
+        for (let k = 0; k < 10; k++) await writeFile(path.join(r, `0=x${k}`), 'x\n');
+      }],
     };
+
+    const LAYOUT_0002 = '{"extension": "0002", "description": "x"}';
+    const config3 = (alg) => JSON.stringify({ extensionName: '0003-hash-and-id-n-tuple-storage-layout', digestAlgorithm: alg,
+                                              tupleSize: 3, numberOfTuples: 3 });
+
+    async function hashedLayout(r, config) {
+      await writeFile(path.join(r, 'ocfl_layout.json'), '{"extension": "0003-hash-and-id-n-tuple-storage-layout", "description": "x"}');
+      await mkdir(path.join(r, 'extensions', '0003-hash-and-id-n-tuple-storage-layout'), { recursive: true });
+      await writeFile(path.join(r, 'extensions', '0003-hash-and-id-n-tuple-storage-layout', 'config.json'), config);
+    }
 
     test('storage roots, valid and broken', async () => {
       const box = await mkdtemp(path.join(os.tmpdir(), 'osheaf-ocfl-'));
@@ -315,6 +346,148 @@ by piece, to the same digest; beyond `LIMITS.file` it is not read, E901.
       }
     });
 
+The cases of the audit
+----------------------
+
+Objects broken in the ways an audit of this validator against ocfl-py
+2.1.0 found them read differently: what Python's `\d`, `\s`, `.`,
+`str.strip` and `re.IGNORECASE` take; the checksum file decoded as
+Python's text mode decodes its first line; W013 for every extension folder
+of an object, registered or not, as ocfl-py gives it; integers beyond
+4300 digits, `join` of what is not a string, ten files `0=...` and more,
+and files or folders that cannot be read, which stop ocfl-py with an
+exception and stop the validation of that object here with E904 (and of
+that object only). Each case is the codes found here; the comparison with
+ocfl-py itself, below, checks the messages of every case where ocfl-py
+does not stop, and that it stops where this program says E904. The cases
+of permissions are left out where they cannot be made (a user who reads
+everything, as root does).
+
+    // in ocfl: the cases of the audit:
+    const ONE = path.join(FIXTURES, 'good-objects', 'minimal_one_version_one_file');
+    const THREE = path.join(FIXTURES, 'good-objects', 'updates_three_versions_one_file');
+
+    async function rewrite(d, change) {
+      const inv = JSON.parse(await readFile(path.join(d, 'inventory.json'), 'utf-8'));
+      const raw = Buffer.from(change(inv) ?? JSON.stringify(inv, null, 1));
+      for (const at of ['', `${inv.head}/`]) {
+        await writeFile(path.join(d, at, 'inventory.json'), raw);
+        await writeFile(path.join(d, at, 'inventory.json.sha512'), `${createHash('sha512').update(raw).digest('hex')} inventory.json\n`);
+      }
+    }
+
+    async function sidecars(d, text) {
+      for (const at of ['', 'v1/']) await writeFile(path.join(d, at, 'inventory.json.sha512'), text);
+    }
+
+    const digestOf = async (d) => createHash('sha512').update(await readFile(path.join(d, 'inventory.json'))).digest('hex');
+    const created = (value) => (d) => rewrite(d, (inv) => { inv.versions.v1.created = value; });
+    const id = (value) => (d) => rewrite(d, (inv) => { inv.id = value; });
+
+    const AUDIT = {
+      'a created date in other digits': [ONE, [], created('\u0662\u0660\u0661\u0669-01-01T02:03:04+0\u0661:00')],
+      'a created date ending with a carriage return': [ONE, ['E049c'], created('2019-01-01T00:00:00Z\r')],
+      'an identifier ending with a carriage return': [ONE, [], id('a:\r')],
+      'an identifier with a line separator': [ONE, [], id('a:\u2028')],
+      'an identifier with the Kelvin sign': [ONE, [], id('\u212a:x')],
+      'an identifier with a dotted capital I': [ONE, [], id('\u0130:x')],
+      'a type of OCFL in other digits': [ONE, ['E038c'], (d) => rewrite(d, (inv) => { inv.type = 'https://ocfl.io/\u0661.1/spec/#inventory'; })],
+      'a content path with a carriage return and ..': [ONE, ['E099'], (d) => rewrite(d, (inv) => {
+        Object.values(inv.manifest)[0].push('v1/content/a\r/../b');
+      })],
+      'a folder v in other digits': [ONE, ['E046b'], (d) => mkdir(path.join(d, 'v\u0661'))],
+      'a registered extension folder': [ONE, ['W013'], (d) => mkdir(path.join(d, 'extensions', '0001-digest-algorithms'), { recursive: true })],
+      'a declaration ending with a byte order mark': [ONE, ['E007'], (d) => writeFile(path.join(d, '0=ocfl_object_1.1'), 'ocfl_object_1.1\ufeff\n')],
+      'a declaration ending with a separator of Python': [ONE, [], (d) => writeFile(path.join(d, '0=ocfl_object_1.1'), 'ocfl_object_1.1\x1f\n')],
+      'a checksum file separated by \\x1f': [ONE, [], async (d) => sidecars(d, `${await digestOf(d)}\x1finventory.json\n`)],
+      'a checksum file separated by U+0085': [ONE, [], async (d) => sidecars(d, `${await digestOf(d)}\u0085inventory.json\n`)],
+      'a checksum file separated by a byte order mark': [ONE, ['E061', 'E061'], async (d) => sidecars(d, `${await digestOf(d)}\ufeffinventory.json\n`)],
+      'a checksum file not UTF-8': [ONE, ['E061', 'E061'], async (d) => sidecars(d, Buffer.from([0xff, 0xfe, 0x30, 0x20]))],
+      'a checksum file not UTF-8 after its line': [ONE, ['E061', 'E061'], async (d) => sidecars(d, Buffer.concat([
+        Buffer.from(`${await digestOf(d)} inventory.json\n`), Buffer.from([0xff])]))],
+      'a checksum file not UTF-8 beyond the first 8192 bytes': [ONE, [], async (d) => sidecars(d, Buffer.concat([
+        Buffer.from(`${await digestOf(d)} inventory.json\n${'x'.repeat(9000)}`), Buffer.from([0xff])]))],
+      'an integer of 4300 digits': [ONE, [], (d) => rewrite(d, (inv) => JSON.stringify(inv).replace('"head"', `"n": ${'9'.repeat(4300)}, "head"`))],
+      'an integer of 4301 digits': [ONE, ['E904'], (d) => rewrite(d, (inv) => JSON.stringify(inv).replace('"head"', `"n": -${'9'.repeat(4301)}, "head"`))],
+      'eleven declarations': [ONE, ['E904'], async (d) => {
+        for (let k = 0; k < 10; k++) await writeFile(path.join(d, `0=x${k}`), 'x\n');
+      }],
+      'a state of an earlier version joined from a mapping': [THREE, ['E050d', 'E904'], (d) => rewrite(d, (inv) => {
+        inv.versions.v1.state.zz = [{ x: [] }];
+      })],
+      'a state of an earlier version joined from a number': [THREE, ['E050d', 'E904'], (d) => rewrite(d, (inv) => {
+        inv.versions.v1.state.zz = [5];
+      })],
+      'a content file that cannot be read': [ONE, ['E904'], (d) => chmod(path.join(d, 'v1', 'content', 'a_file.txt'), 0o000), true],
+      'an extensions folder that cannot be read': [ONE, ['E904'], async (d) => {
+        await mkdir(path.join(d, 'extensions'));
+        await chmod(path.join(d, 'extensions'), 0o000);
+      }, true],
+      'a version folder that cannot be read': [ONE, ['E904', 'W010'], (d) => chmod(path.join(d, 'v1'), 0o000), true],
+    };
+
+    const CAN_LOCK = process.platform !== 'win32' && process.getuid?.() !== 0;
+
+    async function auditCases(box) {
+      const out = [];
+      for (const [what, [from, codes, breakIt, locks]] of Object.entries(AUDIT)) {
+        if (locks && !CAN_LOCK) continue;
+        const name = what.replace(/[^A-Za-z0-9]+/g, '-');
+        await cp(from, path.join(box, name), { recursive: true });
+        await breakIt(path.join(box, name));
+        out.push({ what, name, codes });
+      }
+      return out;
+    }
+
+    async function unlock(box) {
+      for (const sub of ['v1/content/a_file.txt', 'extensions', 'v1']) {
+        for (const what of Object.keys(AUDIT)) await chmod(path.join(box, what.replace(/[^A-Za-z0-9]+/g, '-'), sub), 0o755).catch(() => {});
+      }
+    }
+
+    test('the cases of the audit against ocfl-py 2.1.0 give the codes ocfl-py gives, or E904 where it stops', async () => {
+      const box = await mkdtemp(path.join(os.tmpdir(), 'osheaf-ocfl-'));
+      try {
+        const s = new DiskStorage(box);
+        for (const { what, name, codes } of await auditCases(box)) {
+          const { valid, log } = await validateObject(s, name, { logWarnings: true });
+          assert.deepEqual([...log.errors, ...log.warnings].map((e) => e.code), codes, `${what}: ${log.statusStr()}`);
+          assert.equal(valid, !codes.some((c) => c.startsWith('E')), what);
+        }
+      } finally {
+        await unlock(box);
+        await rm(box, { recursive: true, force: true });
+      }
+    });
+
+    test('a file far larger than LIMITS.json is not read whole', async () => {
+      const box = await mkdtemp(path.join(os.tmpdir(), 'osheaf-ocfl-'));
+      try {
+        await cp(ONE, path.join(box, 'o'), { recursive: true });
+        const reads = [];
+        const disk = new DiskStorage(box);
+        const s = Object.assign(Object.create(disk), {
+          read: async () => assert.fail('read whole'),
+          stream: async (p) => {
+            const source = await disk.stream(p);
+            return source && (async function* () {
+              for await (const piece of source) {
+                if (p === 'o/inventory.json') reads.push(piece.length);
+                yield piece;
+              }
+            })();
+          },
+        });
+        await writeFile(path.join(box, 'o', 'inventory.json'), Buffer.alloc(LIMITS.json + 3 * 2 ** 22, 0x20));
+        const { log } = await validateObject(s, 'o');
+        assert.match(log.statusStr(), /^\[E902\] OCFL file inventory.json is not read: larger than/);
+        assert.ok(reads.reduce((n, x) => n + x, 0) <= LIMITS.json + 4 * 2 ** 20, reads.join(' '));
+      } finally {
+        await rm(box, { recursive: true, force: true });
+      }
+    });
+
 Against ocfl-py
 ---------------
 
@@ -350,7 +523,10 @@ in, as this program names them.
     for kind, where in json.loads(sys.argv[1]):
         if kind == "object":
             v = Validator(log_warnings=True)
-            out.append({"valid": v.validate_object(where), "status": v.status_str()})
+            try:
+                out.append({"valid": v.validate_object(where), "status": v.status_str()})
+            except Exception as e:
+                out.append({"crash": type(e).__name__})
         else:
             r = ocfl.StorageRoot(root=where)
             try:
@@ -383,6 +559,27 @@ in, as this program names them.
         const { valid, log } = await validateObject(s, where, { logWarnings: true });
         assert.equal(valid, theirs[k].valid, where);
         assert.equal(unordered(log.statusStr()), unordered(theirs[k].status), where);
+      }
+    });
+
+    test('ocfl-py and this validator say the same of the cases of the audit', { skip: noPython }, async () => {
+      const box = await mkdtemp(path.join(os.tmpdir(), 'osheaf-ocfl-'));
+      try {
+        const s = new DiskStorage(box);
+        const cases = await auditCases(box);
+        const theirs = ocflPy(box, cases.map(({ name }) => ['object', name]));
+        for (const [k, { what, name }] of cases.entries()) {
+          const { valid, log } = await validateObject(s, name, { logWarnings: true });
+          if (theirs[k].crash) {
+            assert.ok(log.errors.some((e) => e.code === 'E904'), `${what}: ocfl-py stops (${theirs[k].crash}), here ${log.statusStr()}`);
+            continue;
+          }
+          assert.equal(valid, theirs[k].valid, what);
+          assert.equal(unordered(log.statusStr()), unordered(theirs[k].status), what);
+        }
+      } finally {
+        await unlock(box);
+        await rm(box, { recursive: true, force: true });
       }
     });
 

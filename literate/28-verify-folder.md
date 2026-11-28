@@ -111,9 +111,20 @@ over the network, through `fetch`.
         if (lenient) archive.labelOf = (id) => lenient.labelOf(id);
       }
       archive.lister = storageLister(storage, base);
-      if (f) archive.unlisted = await unlistedObjects(f, archive);
+      const linked = [];
+      if (f) {
+        archive.unlisted = await unlistedObjects(f, archive);
+        archive.contentProblems = await contentProblems(f);
+        for (const { id, dir } of await f.objects()) {
+          if (!(await holdsLink(storage, dir))) continue;
+          linked.push(finding('warning', dir, 'an object holding a symbolic link: not read, nor given to the OCFL validator ' +
+                              '(section 15.2)'));
+          if (typeof id === 'string') (archive.linkedObjects ??= new Set()).add(id);
+        }
+      }
       const report = await verify(archive, { schemas, remote, digests, pages: false });
-      if (unread) report.add(unread);
+      report.add(...linked);
+      if (unread && (await storage.kind('opensheaf.json')) !== 'link') report.add(unread);
       if (!archive.old && f) {
         report.add(...await guarded('the keepers', () => keeperFindings(f, remote, fetchJson, schemas)));
         report.add(...await guarded('the presentation files', () => presentationFindings(f, unread ? {} : archive.disc)));
@@ -121,7 +132,8 @@ over the network, through `fetch`.
       }
       if (!report.findings.some((f) => f.message === 'specification 0.1: rebuild (section 16.1)')) {
         report.add(...await lookForKeys(storage));
-        report.add(...await lookForLinks(storage));
+        const said = new Set(report.findings.map((x) => `${x.place}\n${x.message}`));
+        report.add(...(await lookForLinks(storage)).filter((x) => !said.has(`${x.place}\n${x.message}`)));
       }
       return report;
     }
@@ -179,6 +191,31 @@ The objects the discovery document does not list:
       const out = [];
       for (const { id } of await f.objects()) {
         if (typeof id === 'string' && parseId(id) && !listed.has(id) && !out.includes(id)) out.push(id);
+      }
+      return out;
+    }
+
+The content paths of each object that are not read, with the reason
+(`contentProblem`, chapter [23](23-folder.md)): a path out of the object,
+one that passes through a symbolic link, one that names a folder. The
+verification (chapter [17](17-verify.md)) reports them and checks such an
+object no further, as opensheaf-py's `check_object_storage` does; over
+HTTP no link is seen, and only the paths out of the object are found
+there, by their form.
+
+    // in verifying a folder:
+    async function contentProblems(f) {
+      const out = new Map();
+      for (const { id, dir, inv } of await f.objects()) {
+        if (typeof id !== 'string' || out.has(id) || !isObject(inv?.manifest)) continue;
+        const found = new Map();
+        for (const paths of Object.values(inv.manifest)) {
+          for (const cp of Array.isArray(paths) ? paths : []) {
+            const problem = await f.contentProblem(dir, cp);
+            if (problem && !found.has(cp)) found.set(cp, problem);
+          }
+        }
+        if (found.size) out.set(id, found);
       }
       return out;
     }
@@ -420,9 +457,27 @@ storage of a disk reads none (chapter [40](40-cli.md)), so a signature
 file or a content file reached through one is not there. Each link among
 the files of the specification (the storage root, the discovery
 document and its pages, the indexes) is an error at its path, as
-opensheaf-py's `look_for_links` reports it; a link is not walked into.
+opensheaf-py's `look_for_links` reports it; a link is not walked into. A
+link the verification has reported already (a link named as a file of
+an index, chapter [17](17-verify.md)) is not reported twice, and a
+discovery document that is a link is that error alone, not also a
+document missing. An object
+whose folder holds a link anywhere (`holdsLink`, opensheaf-py's
+`links_in`), or that is reached through one, is not read at all: a
+warning says so at its folder, the verification leaves it out
+(`linkedObjects`), as opensheaf-py leaves it out of the storage root its
+later steps see, and the OCFL validator is not given it.
 
     // in symbolic links:
+    export async function holdsLink(storage, dir) {
+      if ((await storage.kind(dir)) === 'link' || await storage.linked?.(dir)) return true;
+      for (const entry of (await storage.list(dir).catch(() => null)) || []) {
+        if (entry.kind === 'link') return true;
+        if (entry.kind === 'dir' && await holdsLink(storage, joinPath(dir, entry.name))) return true;
+      }
+      return false;
+    }
+
     const LINKS_SEARCHED = ['ocfl', 'opensheaf.json', 'objects', 'indexes.json', 'names', 'owners', 'sha512'];
 
     export async function lookForLinks(storage) {
@@ -463,16 +518,19 @@ rejects the storage root"; otherwise a warning says that it is not given
 to the validator, which would read the files of the objects that cannot
 be read.
 
-The objects kept are those of opensheaf-py's `check_storage`: every
-object of the storage root with a readable inventory and an identifier
-(the others are the objects that cannot be read), whose identifier is
-that of a line or of a draft (one that is not is left out, and is not
-counted as unread); an object whose inventory does not have the shape the
-checks read (`inventoryProblem`, opensheaf-py's `inventory_problem`), or
-that the verification checked no further (a content path outside the
-object, a file of the specification that breaks section 2), is left out,
-and counted as unread. Two objects with one identifier are one entry, the
-last, as in opensheaf-py's dictionary.
+The objects given to the validator are those opensheaf-py's
+`check_storage` gives it: every folder of an object once (two objects
+with one identifier are both given), but those left out, which are
+counted as unread: an object that holds a symbolic link anywhere (the
+validator would follow it, chapter [17](17-verify.md)), one without a
+readable inventory or an identifier, one whose inventory does not have the
+shape the checks read (`inventoryProblem`, opensheaf-py's
+`inventory_problem`), one that the verification checked no further (a
+content path out of the object, a file of the specification that breaks
+section 2). An object whose identifier is not that of a line or of a
+draft is given, at its folder, when its inventory has that shape and its
+content paths can be read. The storage root as a whole is not given when
+an object was left out, nor when a symbolic link is in it.
 
 The validator runs where files can be read in pieces (a storage with
 `stream`, the disk of the command line): it reads every file of every
@@ -485,46 +543,43 @@ the verification says nothing of it.
       const s = f.storage;
       if (typeof s.stream !== 'function' || (await s.kind('ocfl')) !== 'dir') return [];
       const out = [];
-      const found = new Map();
+      const given = [];
       let unread = 0;
       const checkedNoFurther = (id) => report.findings.some((x) => x.level === 'error' && x.object === id &&
         (x.message.endsWith('nor the object checked further') || x.message.endsWith('section 2: not checked further')));
       for (const { id, dir, inv } of await f.objects()) {
-        if (!isObject(inv) || id === null || id === undefined) {
+        if (await holdsLink(s, dir) || !isObject(inv) || id === null || id === undefined) {
           unread++;
           continue;
         }
         try {
           await pathOf(id, f.layout);
         } catch {
+          let unsafe = inventoryProblem(inv);
+          for (const cp of unsafe ? [] : Object.values(inv.manifest).flat()) unsafe ||= Boolean(await f.contentProblem(dir, cp));
+          if (unsafe) unread++;
+          else given.push([dir, dir]);
           continue;
         }
-        found.set(id, dir);
-        if (inventoryProblem(inv) || checkedNoFurther(id)) {
-          found.delete(id);
-          unread++;
-        }
+        if (inventoryProblem(inv) || checkedNoFurther(id)) unread++;
+        else given.push([where(f, id), dir]);
       }
-      for (const [id, dir] of found) {
+      for (const [place, dir] of given) {
         const { valid, log } = await validateObject(s, dir);
-        if (!valid) out.push(finding('error', where(f, id), `OCFL validator: ${log.statusStr()}`));
+        if (!valid) out.push(finding('error', place, `OCFL validator: ${log.statusStr()}`));
       }
       if (unread) {
         out.push(finding('warning', 'ocfl', 'the storage root as a whole is not given to the OCFL validator: it would read ' +
                          'the files of the objects that cannot be read'));
+      } else if (await holdsLink(s, 'ocfl')) {
+        out.push(finding('warning', 'ocfl', 'the storage root as a whole is not given to the OCFL validator: it would follow ' +
+                         'the symbolic links in it'));
       } else if (!(await validateStorageRoot(s, 'ocfl', { validateObjects: false })).valid) {
         out.push(finding('error', 'ocfl', 'the OCFL validator rejects the storage root'));
       }
       return out;
     }
 
-Whether an inventory has the shape the checks of storage read, as
-opensheaf-py's `inventory_problem` decides it: a manifest of digests each
-with a non-empty list of content paths, versions (at least one), each a
-JSON object, the head one of them, each version with a state of that
-shape, and a user, a message and a time, if given, of the right kinds.
-
-    // in the OCFL validator:
     function inventoryProblem(inv) {
       const pathsMap = (m) => isObject(m) && Object.values(m).every((v) =>
         Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === 'string'));

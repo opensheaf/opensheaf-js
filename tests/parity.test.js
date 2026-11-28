@@ -594,6 +594,11 @@ test('copies of a key log met by both: init --owner, pull, forks', { skip }, asy
     const folder = (dir) => path.join(dir, 'ocfl', owner, owner);
     const init = (dir) => ['init', dir, '--name', 'B', '--base-url', 'https://example.org/b/', '--curator', 'Doe, Jane',
                            '--owner', owner, '--key-log', folder(k('one'))];
+    const elsewhere = { more: { XDG_CONFIG_HOME: path.join(s.root, 'xdg-elsewhere') } };
+    const [nj, np] = [s.js(init(k('four')), elsewhere), s.py(init(k('five')), elsewhere)];
+    assert.ok(nj.status !== 0 && np.status !== 0, `init --owner without the keys:\n${nj.stderr}\n${np.stderr}`);
+    assert.match(nj.stderr, /holds 0 of the current keys/);
+    assert.equal(nj.stderr.replaceAll(k('four'), 'D'), np.stderr.replaceAll(k('five'), 'D'));
     ok(s.js(init(k('two'))), 'js init --owner');
     ok(s.py([...init(k('three')).slice(0, 2), '--name', 'C', '--base-url', 'https://example.org/c/', ...init(k('three')).slice(6)]),
        'py init --owner');
@@ -1499,6 +1504,11 @@ test('the checks of the final review, by both', { skip }, async () => {
         const w = await witness(r);
         await rename(w, path.join(r, 'outside.json'));
         await symlink(path.join(r, 'outside.json'), w);
+      }],
+      'a content file through a link': [/an object holding a symbolic link: not read, nor given to the OCFL validator/, async (r) => {
+        const c = await contentOf(r, 'datacite.json');
+        await rename(c, path.join(r, 'outside.json'));
+        await symlink(path.join(r, 'outside.json'), c);
       }],
       'a private key': [/looks like a private key/, async (r) =>
         writeFile(path.join(r, 'rotation-abcdefghijklmnop-abcdefghijklmnop.txt'), 'x')],

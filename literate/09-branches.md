@@ -92,9 +92,15 @@ or unchecked without one); the parent version as the verifier finds it in
 the parent's line, when it is given `resolve(parent)` (section 9.3), as
 opensheaf-py's `verdict` takes it: `null` when it finds none, else
 whether the version found has the digest of the pin and its status there;
-one of another digest makes the branch point inconsistent, and one signed
-or vouched for there counts as signed, unless the evidence is contested;
-and the chain, level by level.
+one of another digest makes the branch point inconsistent, one contested
+there makes the parent version contested (the branch point is then
+unchecked, never confirmed), and one signed or vouched for there counts
+as signed, unless the evidence is contested;
+and the chain, level by level. A file of the evidence is read only with
+the digest its inventory states; one that does not have it makes the
+branch point inconsistent, with the words of opensheaf-py ("the evidence
+of the branch point cannot be read: PATH does not have the digest its
+inventory states").
 
 The answer is the verdict and its reasons: an inconsistent branch point
 with every problem found at its level, a confirmed one with none, an
@@ -110,6 +116,10 @@ check, as opensheaf-py's `verdict` guards `level_verdict`.
         return await levelVerdict(lv, obj, genesis, logs, depth, resolve);
       } catch (error) {
         if (error?.kind === 'aborted') throw error;
+        if (error?.kind === 'digest' && error.logical) {
+          return [INCONSISTENT, [`the evidence of the branch point cannot be read: ${error.logical} does not have the digest its ` +
+                                 'inventory states (section 4.1)']];
+        }
         return [INCONSISTENT, [`the evidence of the branch point cannot be read: ${error?.constructor?.name ?? 'Error'} ` +
                                `${error?.message ?? error}`]];
       }
@@ -185,6 +195,7 @@ check, as opensheaf-py's `verdict` guards `level_verdict`.
       let status = lineStatuses([judgements], log ? { exposed: log.exposedKeys(), forkPoint: log.forkPoint } : {})[0];
       const resolved = resolve ? await resolve(p) : null;
       if (resolved && !resolved[0]) problems.push('the parent version, resolved, does not match the pin (section 9.3)');
+      else if (resolved && resolved[1] === CONTESTED) status = CONTESTED;
       else if (resolved && (resolved[1] === SIGNED || resolved[1] === VOUCHED) && status !== CONTESTED) status = resolved[1];
       if (status === UNSIGNED || status === INVALID) problems.push(`the parent version is not a version: ${status} (sections 7.3 and 9.3)`);
       let result = status === SIGNED || status === VOUCHED ? CONFIRMED : UNCHECKED;

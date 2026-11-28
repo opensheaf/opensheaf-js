@@ -417,7 +417,7 @@ The checks of the final review
 An archive of opensheaf-py, a paper in two versions, broken one way at a
 time; both verifications find the same, as opensheaf-py's tests of its
 final pass (`test_the_verifier_reports_what_it_cannot_read`,
-`test_symbolic_links_are_not_followed`,
+`test_symbolic_links_are_not_followed`, `test_content_paths_outside_the_object_are_not_read`,
 `test_keys_in_the_archive_are_reported`,
 `test_checks_of_the_final_review`) break it. Each case says what it must
 find, so that a case that breaks nothing does not pass unnoticed.
@@ -456,6 +456,11 @@ find, so that a case that breaks nothing does not pass unnoticed.
             const w = await witness(r);
             await rename(w, path.join(r, 'outside.json'));
             await symlink(path.join(r, 'outside.json'), w);
+          }],
+          'a content file through a link': [/an object holding a symbolic link: not read, nor given to the OCFL validator/, async (r) => {
+            const c = await contentOf(r, 'datacite.json');
+            await rename(c, path.join(r, 'outside.json'));
+            await symlink(path.join(r, 'outside.json'), c);
           }],
           'a private key': [/looks like a private key/, async (r) =>
             writeFile(path.join(r, 'rotation-abcdefghijklmnop-abcdefghijklmnop.txt'), 'x')],

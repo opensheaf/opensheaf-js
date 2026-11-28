@@ -74,14 +74,8 @@ async function carriedOf(files) {
 }
 
 export function sidecarDigest(bytes) {
-  if (!bytes) return null;
-  let text;
-  try {
-    text = new TextDecoder('ascii', { fatal: true }).decode(bytes);
-  } catch {
-    return null;
-  }
-  const parts = text.split(/\s+/).filter(Boolean);
+  if (!bytes || bytes.some((b) => b >= 0x80)) return null;
+  const parts = new TextDecoder().decode(bytes).split(/[\t-\r\x1c-\x20]+/).filter(Boolean);
   return parts.length === 2 && parts[1] === 'inventory.json' ? parts[0] : null;
 }
 

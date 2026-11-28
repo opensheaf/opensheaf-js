@@ -37,6 +37,9 @@ export async function verdict(lv, obj, genesis, logs, depth = 0, resolve = null)
       return [INCONSISTENT, [`the evidence of the branch point cannot be read: ${error.logical} does not have the digest its ` +
                              'inventory states (section 4.1)']];
     }
+    if (error?.kind === 'not-found' && error.logical) {
+      return [INCONSISTENT, [`the evidence of the branch point cannot be read: ${error.logical} is missing (section 4.1)`]];
+    }
     return [INCONSISTENT, [`the evidence of the branch point cannot be read: ${error?.constructor?.name ?? 'Error'} ` +
                            `${error?.message ?? error}`]];
   }

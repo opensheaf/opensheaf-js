@@ -384,7 +384,9 @@ opensheaf-py refuses a copy with such a file.
         await this.locate(id);
         const url = this.fileUrl(id, inv, ver, logical);
         if (!url) return null;
-        const bytes = await this.http.cached(url, { ...options, limit: LIMITS.file });
+        const bytes = await this.http.cached(url, { ...options, limit: LIMITS.file }).catch((error) => {
+          throw error?.kind === 'not-found' ? Object.assign(error, { logical }) : error;
+        });
         const digest = filesOf(inv, ver)[logical];
         if (typeof digest !== 'string' || (await sha512(bytes)) !== digest.toLowerCase()) {
           throw Object.assign(new FetchError('digest', url, `does not have the digest its inventory states for ${logical} (section 4.1)`),

@@ -505,7 +505,19 @@ class Verification {
       for (const ver of versionsOf(o.inv)) {
         const obj = o.objs.get(ver);
         if (!obj || !filesOf(o.inv, ver)['datacite.json']) continue;
-        const dc = await a.json(id, o.inv, ver, 'datacite.json', this.options).catch((e) => { if (this.aborted(e)) throw e; return null; });
+        let dc = null;
+        try {
+          dc = await a.json(id, o.inv, ver, 'datacite.json', this.options);
+        } catch (e) {
+          if (this.aborted(e)) throw e;
+          if (['json', 'too-large', 'html'].includes(e?.kind)) {
+            this.add('error', `${place} ${ver}`, e.detail === 'starts with a byte order mark (section 2)'
+              ? 'datacite.json starts with a byte order mark: JSON is UTF-8 without one (section 2)'
+              : e.detail === 'is not UTF-8 (section 2)' ? 'datacite.json is not UTF-8 (section 2)' : 'datacite.json is not JSON (section 2)',
+                     { object: id, ver });
+            continue;
+          }
+        }
         for (const message of descriptionErrors(o.inv, ver, obj, dc)) this.add('error', `${place} ${ver}`, message, { object: id, ver });
       }
       if (head.kind === 'document' || head.kind === 'collection') {

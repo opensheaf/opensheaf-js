@@ -1,5 +1,5 @@
 // Generated from literate/28-verify-folder.md by opensheaf-literate: edit the document, not this file.
-import { Http, FetchError, nesting, parseFormat, LIMITS } from './http.js';
+import { Http, FetchError, nesting, parseFormat, LIMITS, sha512 } from './http.js';
 import { Archive } from './archive.js';
 import { verify, Report } from './verify.js';
 import { finding, schemaFindings } from './rules.js';
@@ -244,17 +244,25 @@ function where(f, id) {
 }
 
 async function landingNames(f, text, name, owner, id, dir) {
-  let originator = null;
+  const short = new RegExp(`sheaf:${name}(?![a-z0-9:/])`).test(text), long = text.includes(`sheaf:${name}:${owner}`);
+  let g = null;
   try {
     const inv = await f.inventory(dir);
-    const g = await f.readLogical(dir, inv, 'genesis.json', 'v1');
-    if (!g) return false;
-    originator = JSON.parse(new TextDecoder().decode(g)).originator ?? null;
+    const digest = Object.entries(inv?.versions?.v1?.state ?? {}).find(([, ps]) => Array.isArray(ps) && ps.includes('genesis.json'))?.[0];
+    g = typeof digest === 'string' ? await f.readLogical(dir, inv, 'genesis.json', 'v1') : null;
+    if (g && (await sha512(g)) !== digest.toLowerCase()) g = null;
+  } catch {
+    g = null;
+  }
+  if (!g) return short || long;
+  let record;
+  try {
+    record = JSON.parse(new TextDecoder().decode(g));
   } catch {
     return false;
   }
-  if (originator === owner) return new RegExp(`sheaf:${name}(?![a-z0-9:/])`).test(text);
-  return text.includes(`sheaf:${name}:${owner}`);
+  const originator = isObject(record) ? record.originator ?? null : null;
+  return originator === owner ? short : long;
 }
 
 const ROTATION_NAME = /^rotation-[a-z2-7]{16}-[a-z2-7]{16}\.txt$/;

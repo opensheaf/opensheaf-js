@@ -40,7 +40,7 @@ archives each makes.
 The module is `core/check.js`.
 
     // in core/check.js:
-    import { Http, FetchError, nesting, parseFormat, LIMITS } from './http.js';
+    import { Http, FetchError, nesting, parseFormat, LIMITS, sha512 } from './http.js';
     import { Archive } from './archive.js';
     import { verify, Report } from './verify.js';
     import { finding, schemaFindings } from './rules.js';
@@ -382,18 +382,35 @@ nested no deeper than `LIMITS.nesting`; a deeper one is no record.
       return f.labelOf(id) || id || '?';
     }
 
+Whether a landing page gives the `sheaf:` URI of its line in canonical
+form, as opensheaf-py's `landing_names` decides: the short form for the
+originator's line, the long one for another owner's. The originator is
+read from the genesis record of v1, read only with the digest its
+inventory states; a record that is not read (missing, or changed on
+disk, which the verification reports already) lets either form stand, and
+one read that is not JSON gives no URI.
+
+    // in the presentation of a folder:
     async function landingNames(f, text, name, owner, id, dir) {
-      let originator = null;
+      const short = new RegExp(`sheaf:${name}(?![a-z0-9:/])`).test(text), long = text.includes(`sheaf:${name}:${owner}`);
+      let g = null;
       try {
         const inv = await f.inventory(dir);
-        const g = await f.readLogical(dir, inv, 'genesis.json', 'v1');
-        if (!g) return false;
-        originator = JSON.parse(new TextDecoder().decode(g)).originator ?? null;
+        const digest = Object.entries(inv?.versions?.v1?.state ?? {}).find(([, ps]) => Array.isArray(ps) && ps.includes('genesis.json'))?.[0];
+        g = typeof digest === 'string' ? await f.readLogical(dir, inv, 'genesis.json', 'v1') : null;
+        if (g && (await sha512(g)) !== digest.toLowerCase()) g = null;
+      } catch {
+        g = null;
+      }
+      if (!g) return short || long;
+      let record;
+      try {
+        record = JSON.parse(new TextDecoder().decode(g));
       } catch {
         return false;
       }
-      if (originator === owner) return new RegExp(`sheaf:${name}(?![a-z0-9:/])`).test(text);
-      return text.includes(`sheaf:${name}:${owner}`);
+      const originator = isObject(record) ? record.originator ?? null : null;
+      return originator === owner ? short : long;
     }
 
 Files that look like private keys

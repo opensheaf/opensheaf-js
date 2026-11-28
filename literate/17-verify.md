@@ -618,7 +618,11 @@ the genesis record is read and checked against its schema; the line's
 name is a name of it; the originator's line is named by algorithm 0 and
 never has a parent, and another owner's line is a branch, whose branch
 points are checked (below); the descriptions of every version and the
-rules of document versions hold; the owner's key log is held (an error,
+rules of document versions hold (a `datacite.json` that is not JSON as
+section 2 defines it is one error, in opensheaf-py's words: it starts
+with a byte order mark, is not UTF-8, or is not JSON; its descriptions are
+then not checked; one that does not have its digest is the error of the
+digests alone); the owner's key log is held (an error,
 or a warning when it was taken down, section 6.5); and the statuses of
 the signature files and of the versions (section 7.3), with the latest
 signed version and a withdrawal as results, the signature files against
@@ -691,7 +695,19 @@ collections are then checked (14.5).
           for (const ver of versionsOf(o.inv)) {
             const obj = o.objs.get(ver);
             if (!obj || !filesOf(o.inv, ver)['datacite.json']) continue;
-            const dc = await a.json(id, o.inv, ver, 'datacite.json', this.options).catch((e) => { if (this.aborted(e)) throw e; return null; });
+            let dc = null;
+            try {
+              dc = await a.json(id, o.inv, ver, 'datacite.json', this.options);
+            } catch (e) {
+              if (this.aborted(e)) throw e;
+              if (['json', 'too-large', 'html'].includes(e?.kind)) {
+                this.add('error', `${place} ${ver}`, e.detail === 'starts with a byte order mark (section 2)'
+                  ? 'datacite.json starts with a byte order mark: JSON is UTF-8 without one (section 2)'
+                  : e.detail === 'is not UTF-8 (section 2)' ? 'datacite.json is not UTF-8 (section 2)' : 'datacite.json is not JSON (section 2)',
+                         { object: id, ver });
+                continue;
+              }
+            }
             for (const message of descriptionErrors(o.inv, ver, obj, dc)) this.add('error', `${place} ${ver}`, message, { object: id, ver });
           }
           if (head.kind === 'document' || head.kind === 'collection') {
